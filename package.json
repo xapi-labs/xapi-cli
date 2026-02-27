@@ -1,0 +1,25 @@
+{
+  "name": "xapi-cli",
+  "version": "1.0.0",
+  "description": "Agent-friendly CLI for xapi - discover and call capabilities and APIs",
+  "type": "module",
+  "bin": {
+    "xapi": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "XAPI_HOST=localhost:3003 bun run src/index.ts"
+  },
+  "dependencies": {
+    "@x402/core": "^2.1.0",
+    "@x402/evm": "^2.1.0",
+    "@x402/fetch": "^2.1.0",
+    "viem": "^2.38.4"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
