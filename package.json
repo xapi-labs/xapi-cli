@@ -8,7 +8,8 @@
   },
   "scripts": {
     "start": "bun run src/index.ts",
-    "dev": "XAPI_HOST=localhost:3003 bun run src/index.ts"
+    "dev": "XAPI_HOST=localhost:3003 bun run src/index.ts",
+    "test": "bun test src/tests"
   },
   "dependencies": {
     "@x402/core": "^2.1.0",
