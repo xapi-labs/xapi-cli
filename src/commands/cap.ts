@@ -6,6 +6,17 @@ import { getConfig } from '../config.ts';
 import * as client from '../client.ts';
 import { output, err } from '../format.ts';
 
+/** Parse a CLI value: JSON objects/arrays/booleans are parsed, everything else stays as string */
+function parseValue(v: string): unknown {
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  if (v === 'null') return null;
+  if (v.startsWith('{') || v.startsWith('[')) {
+    try { return JSON.parse(v); } catch { return v; }
+  }
+  return v;
+}
+
 export async function capList(args: string[], flags: Record<string, string>) {
   const cfg = getConfig();
   try {
@@ -77,7 +88,7 @@ export async function capCall(args: string[], flags: Record<string, string>) {
     if (eq > 0) {
       const k = arg.slice(0, eq);
       const v = arg.slice(eq + 1);
-      try { input[k] = JSON.parse(v); } catch { input[k] = v; }
+      input[k] = parseValue(v);
     }
   }
   try {

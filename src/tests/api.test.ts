@@ -144,7 +144,7 @@ describe('api commands', () => {
     it('parses positional key=value args', async () => {
       const spy = spyOn(client, 'apiCall').mockResolvedValue({ data: 'ok' });
       await apiCall(['abc-123', 'chain=eth', 'limit=10'], {});
-      expect(spy).toHaveBeenCalledWith('abc-123', { chain: 'eth', limit: 10 }, expect.any(Object));
+      expect(spy).toHaveBeenCalledWith('abc-123', { chain: 'eth', limit: '10' }, expect.any(Object));
       spy.mockRestore();
     });
 

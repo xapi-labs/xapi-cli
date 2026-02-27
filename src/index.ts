@@ -15,7 +15,7 @@
  *   xapi api call <id> [key=val ...] [--input '{"k":"v"}']
  *
  *   xapi config show
- *   xapi config set host=<host> [apiKey=<key>]
+ *   xapi config set apiKey=<key>
  *   xapi config health
  *
  * Global flags:
@@ -23,7 +23,6 @@
  *   --help                       show help
  *
  * Env vars:
- *   XAPI_HOST        backend host (default: localhost:3003)
  *   XAPI_API_KEY     API key
  *   XAPI_OUTPUT      default output format (json|pretty|table)
  */

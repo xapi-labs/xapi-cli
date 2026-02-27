@@ -108,8 +108,8 @@ describe('cap commands', () => {
     it('parses positional key=value args', async () => {
       const spy = spyOn(client, 'capCall').mockResolvedValue({ data: 'ok' });
       await capCall(['twitter.tweet_detail', 'tweet_id=456'], {});
-      // numeric strings are parsed as numbers by JSON.parse
-      expect(spy).toHaveBeenCalledWith('twitter.tweet_detail', { tweet_id: 456 }, expect.any(Object));
+      // numeric strings stay as strings (backend handles type coercion)
+      expect(spy).toHaveBeenCalledWith('twitter.tweet_detail', { tweet_id: '456' }, expect.any(Object));
       spy.mockRestore();
     });
 
