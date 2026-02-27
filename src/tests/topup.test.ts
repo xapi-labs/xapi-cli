@@ -15,7 +15,6 @@ describe('topup command', () => {
     outputSpy = spyOn(format, 'output').mockImplementation(() => {});
     getConfigSpy = spyOn(config, 'getConfig').mockReturnValue({
       capabilityHost: 'c.xapi.to',
-      proxyHost: 'p.xapi.to',
       apiKey: 'sk-test123',
     });
   });
@@ -69,7 +68,7 @@ describe('topup command', () => {
   });
 
   it('omits apikey when no apiKey in config', async () => {
-    getConfigSpy.mockReturnValue({ capabilityHost: 'c.xapi.to', proxyHost: 'p.xapi.to', apiKey: undefined });
+    getConfigSpy.mockReturnValue({ capabilityHost: 'c.xapi.to', apiKey: undefined });
     await topup([], {});
     const call = outputSpy.mock.calls[0][0] as { url: string };
     const url = new URL(call.url);

@@ -9,7 +9,6 @@ const EXECUTE_TIMEOUT_MS = 60_000;
 
 export interface ClientOptions {
   capabilityHost: string;
-  proxyHost: string;
   apiKey?: string;
 }
 
@@ -84,7 +83,7 @@ export async function apiList(
   opts: ClientOptions,
   params: { page?: number; page_size?: number; category?: string } = {},
 ) {
-  const url = new URL(`${scheme(opts.proxyHost)}://${opts.proxyHost}/v1/apis`);
+  const url = new URL(`${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/apis`);
   if (params.page) url.searchParams.set('page', String(params.page));
   if (params.page_size) url.searchParams.set('page_size', String(params.page_size));
   if (params.category) url.searchParams.set('category', params.category);
@@ -99,7 +98,7 @@ export async function apiSearch(
   opts: ClientOptions,
   params: { category?: string; limit?: number } = {},
 ) {
-  const url = new URL(`${scheme(opts.proxyHost)}://${opts.proxyHost}/v1/apis/search`);
+  const url = new URL(`${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/apis/search`);
   url.searchParams.set('q', query);
   if (params.category) url.searchParams.set('category', params.category);
   if (params.limit) url.searchParams.set('limit', String(params.limit));
@@ -111,21 +110,21 @@ export async function apiSearch(
 
 export async function apiCategories(opts: ClientOptions) {
   return request<{ categories: string[]; total: number }>(
-    `${scheme(opts.proxyHost)}://${opts.proxyHost}/v1/apis/categories`,
+    `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/apis/categories`,
     { method: 'GET', headers: headers(opts.apiKey) },
   );
 }
 
 export async function apiGet(id: string, opts: ClientOptions) {
   return request<unknown>(
-    `${scheme(opts.proxyHost)}://${opts.proxyHost}/v1/apis/${encodeURIComponent(id)}`,
+    `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/apis/${encodeURIComponent(id)}`,
     { method: 'GET', headers: headers(opts.apiKey) },
   );
 }
 
 export async function apiBatch(ids: string[], opts: ClientOptions) {
   return request<{ apis: unknown[] }>(
-    `${scheme(opts.proxyHost)}://${opts.proxyHost}/v1/apis/batch`,
+    `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/apis/batch`,
     {
       method: 'POST',
       headers: headers(opts.apiKey),
@@ -140,7 +139,7 @@ export async function apiCall(
   opts: ClientOptions,
 ) {
   return request<unknown>(
-    `${scheme(opts.proxyHost)}://${opts.proxyHost}/v1/apis/execute`,
+    `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/apis/execute`,
     {
       method: 'POST',
       headers: headers(opts.apiKey),

@@ -69,7 +69,6 @@ describe('config commands', () => {
     beforeEach(() => {
       getConfigSpy = spyOn(config, 'getConfig').mockReturnValue({
         capabilityHost: 'c.xapi.to',
-        proxyHost: 'p.xapi.to',
         apiKey: 'sk-test',
       });
     });
