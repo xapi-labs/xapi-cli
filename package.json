@@ -1,10 +1,10 @@
 {
-  "name": "xapi-cli",
-  "version": "1.0.0",
+  "name": "@xapi-to/xapi",
+  "version": "0.1.0-alpha.1",
   "description": "Agent-friendly CLI for xapi - discover and call capabilities and APIs",
   "type": "module",
   "bin": {
-    "xapi": "./src/index.ts"
+    "xapi": "src/index.ts"
   },
   "scripts": {
     "start": "bun run src/index.ts",
