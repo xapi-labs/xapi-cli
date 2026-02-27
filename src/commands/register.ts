@@ -6,14 +6,14 @@
  * Automatically saves apiKey to ~/.xapi/config.json
  */
 
-import { XAPI_API_HOST, saveConfig } from '../config.ts';
+import { XAPI_API_HOST, saveConfig, scheme } from '../config.ts';
 import { output, err } from '../format.ts';
 
 async function registerAccount() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15_000);
   try {
-    const res = await fetch(`http://${XAPI_API_HOST}/api/auth/register`, {
+    const res = await fetch(`${scheme(XAPI_API_HOST)}://${XAPI_API_HOST}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,

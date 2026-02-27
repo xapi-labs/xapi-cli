@@ -8,7 +8,8 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const EXECUTE_TIMEOUT_MS = 60_000;
 
 export interface ClientOptions {
-  host: string;
+  capabilityHost: string;
+  proxyHost: string;
   apiKey?: string;
 }
 
@@ -41,13 +42,13 @@ function headers(apiKey?: string): Record<string, string> {
 
 export async function capList(opts: ClientOptions) {
   return request<{ capabilities: unknown[] }>(
-    `${scheme(opts.host)}://${opts.host}/v1/caps`,
+    `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/caps`,
     { method: 'GET', headers: headers(opts.apiKey) },
   );
 }
 
 export async function capSearch(query: string, opts: ClientOptions) {
-  const url = `${scheme(opts.host)}://${opts.host}/v1/caps/search?q=${encodeURIComponent(query)}`;
+  const url = `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/caps/search?q=${encodeURIComponent(query)}`;
   return request<{ results?: unknown[]; capabilities?: unknown[] }>(
     url,
     { method: 'GET', headers: headers(opts.apiKey) },
@@ -56,7 +57,7 @@ export async function capSearch(query: string, opts: ClientOptions) {
 
 export async function capGet(id: string, opts: ClientOptions) {
   return request<unknown>(
-    `${scheme(opts.host)}://${opts.host}/v1/caps/${encodeURIComponent(id)}`,
+    `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/caps/${encodeURIComponent(id)}`,
     { method: 'GET', headers: headers(opts.apiKey) },
   );
 }
@@ -67,7 +68,7 @@ export async function capCall(
   opts: ClientOptions,
 ) {
   return request<unknown>(
-    `${scheme(opts.host)}://${opts.host}/v1/caps/execute`,
+    `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/caps/execute`,
     {
       method: 'POST',
       headers: headers(opts.apiKey),
@@ -83,7 +84,7 @@ export async function apiList(
   opts: ClientOptions,
   params: { page?: number; page_size?: number; category?: string } = {},
 ) {
-  const url = new URL(`${scheme(opts.host)}://${opts.host}/v1/apis`);
+  const url = new URL(`${scheme(opts.proxyHost)}://${opts.proxyHost}/v1/apis`);
   if (params.page) url.searchParams.set('page', String(params.page));
   if (params.page_size) url.searchParams.set('page_size', String(params.page_size));
   if (params.category) url.searchParams.set('category', params.category);
@@ -98,7 +99,7 @@ export async function apiSearch(
   opts: ClientOptions,
   params: { category?: string; limit?: number } = {},
 ) {
-  const url = new URL(`${scheme(opts.host)}://${opts.host}/v1/apis/search`);
+  const url = new URL(`${scheme(opts.proxyHost)}://${opts.proxyHost}/v1/apis/search`);
   url.searchParams.set('q', query);
   if (params.category) url.searchParams.set('category', params.category);
   if (params.limit) url.searchParams.set('limit', String(params.limit));
@@ -110,21 +111,21 @@ export async function apiSearch(
 
 export async function apiCategories(opts: ClientOptions) {
   return request<{ categories: string[]; total: number }>(
-    `${scheme(opts.host)}://${opts.host}/v1/apis/categories`,
+    `${scheme(opts.proxyHost)}://${opts.proxyHost}/v1/apis/categories`,
     { method: 'GET', headers: headers(opts.apiKey) },
   );
 }
 
 export async function apiGet(id: string, opts: ClientOptions) {
   return request<unknown>(
-    `${scheme(opts.host)}://${opts.host}/v1/apis/${encodeURIComponent(id)}`,
+    `${scheme(opts.proxyHost)}://${opts.proxyHost}/v1/apis/${encodeURIComponent(id)}`,
     { method: 'GET', headers: headers(opts.apiKey) },
   );
 }
 
 export async function apiBatch(ids: string[], opts: ClientOptions) {
   return request<{ apis: unknown[] }>(
-    `${scheme(opts.host)}://${opts.host}/v1/apis/batch`,
+    `${scheme(opts.proxyHost)}://${opts.proxyHost}/v1/apis/batch`,
     {
       method: 'POST',
       headers: headers(opts.apiKey),
@@ -139,7 +140,7 @@ export async function apiCall(
   opts: ClientOptions,
 ) {
   return request<unknown>(
-    `${scheme(opts.host)}://${opts.host}/v1/apis/execute`,
+    `${scheme(opts.proxyHost)}://${opts.proxyHost}/v1/apis/execute`,
     {
       method: 'POST',
       headers: headers(opts.apiKey),
@@ -151,7 +152,7 @@ export async function apiCall(
 
 export async function healthCheck(opts: ClientOptions) {
   return request<unknown>(
-    `${scheme(opts.host)}://${opts.host}/v1/caps`,
+    `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/caps`,
     { method: 'GET', headers: headers(opts.apiKey) },
     5_000,
   );

@@ -31,9 +31,9 @@ export async function configHealth(args: string[], flags: Record<string, string>
   const start = Date.now();
   try {
     await healthCheck(cfg);
-    output({ status: 'ok', host: cfg.host, latency_ms: Date.now() - start }, flags.format as any);
+    output({ status: 'ok', host: cfg.capabilityHost, latency_ms: Date.now() - start }, flags.format as any);
   } catch (e: any) {
-    output({ status: 'error', host: cfg.host, error: e.message }, flags.format as any);
+    output({ status: 'error', host: cfg.capabilityHost, error: e.message }, flags.format as any);
     process.exit(1);
   }
 }

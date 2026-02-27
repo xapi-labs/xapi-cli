@@ -8,8 +8,9 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
-export const XAPI_HOST = 'c.xapi.to';       // capability + APIs service
-export const XAPI_API_HOST = 'api.xapi.to'; // auth + agent API
+export const XAPI_CAPABILITY_HOST = 'c.xapi.to'; // capability service
+export const XAPI_PROXY_HOST = 'p.xapi.to';      // API proxy service
+export const XAPI_API_HOST = 'api.xapi.to';      // auth + agent API
 
 /** Returns https:// for remote hosts, http:// for localhost */
 export function scheme(host: string): string {
@@ -17,7 +18,8 @@ export function scheme(host: string): string {
 }
 
 export interface XapiConfig {
-  host: string;
+  capabilityHost: string;
+  proxyHost: string;
   apiKey?: string;
 }
 
@@ -36,7 +38,8 @@ function loadFileConfig(): { apiKey?: string } {
 export function getConfig(): XapiConfig {
   const file = loadFileConfig();
   return {
-    host: XAPI_HOST,
+    capabilityHost: XAPI_CAPABILITY_HOST,
+    proxyHost: XAPI_PROXY_HOST,
     apiKey: process.env.XAPI_API_KEY || file.apiKey,
   };
 }
@@ -52,7 +55,8 @@ export function showConfig(): void {
   const cfg = getConfig();
   const file = loadFileConfig();
   console.log(JSON.stringify({
-    host: cfg.host,
+    capabilityHost: cfg.capabilityHost,
+    proxyHost: cfg.proxyHost,
     apiKey: cfg.apiKey ? `${cfg.apiKey.slice(0, 8)}...` : undefined,
     source: {
       apiKey: process.env.XAPI_API_KEY ? 'env' : file.apiKey ? 'file' : 'none',
