@@ -5,6 +5,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { err } from './format.ts';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -39,6 +40,12 @@ export function getConfig(): XapiConfig {
     capabilityHost: XAPI_CAPABILITY_HOST,
     apiKey: process.env.XAPI_API_KEY || file.apiKey,
   };
+}
+
+export function requireApiKey(cfg: XapiConfig): void {
+  if (!cfg.apiKey) {
+    err('API key not configured', 'Run "xapi register" to create an account, or "xapi config set apiKey=<key>" to set an existing key.');
+  }
 }
 
 export function saveConfig(updates: { apiKey?: string }): void {

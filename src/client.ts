@@ -25,7 +25,18 @@ export async function request<T>(
       const text = await res.text();
       throw new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
     }
-    return res.json() as Promise<T>;
+    const body = await res.json() as T;
+    // Detect business-level auth errors (HTTP 200 but unauthorized)
+    if (body && typeof body === 'object' && 'success' in body && (body as any).success === false) {
+      const data = (body as any).data;
+      if (data?.statusCode === 401 || data?.error === 'Unauthorized') {
+        throw new Error(
+          'Authentication failed: ' + (data.message || 'Invalid or missing API key')
+          + '. Run "xapi config set apiKey=<key>" to update your key.',
+        );
+      }
+    }
+    return body;
   } finally {
     clearTimeout(timer);
   }

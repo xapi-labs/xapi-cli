@@ -49,8 +49,13 @@ function printTable(rows: Record<string, unknown>[]): void {
 }
 
 export function err(msg: string, detail?: unknown): never {
-  const out: Record<string, unknown> = { error: msg };
-  if (detail !== undefined) out.detail = detail;
-  console.error(JSON.stringify(out));
+  if (process.stderr.isTTY) {
+    console.error(`Error: ${msg}`);
+    if (detail !== undefined) console.error(`  ${detail}`);
+  } else {
+    const out: Record<string, unknown> = { error: msg };
+    if (detail !== undefined) out.detail = detail;
+    console.error(JSON.stringify(out));
+  }
   process.exit(1);
 }

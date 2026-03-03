@@ -54,7 +54,10 @@ describe('balance command', () => {
   it('calls err when apiKey is missing', async () => {
     getConfigSpy.mockReturnValue({ capabilityHost: 'c.xapi.to', apiKey: undefined });
     await expect(balance([], {})).rejects.toThrow('err called');
-    expect(errSpy).toHaveBeenCalledWith('apiKey required. Run: xapi config set apiKey=<key>');
+    expect(errSpy).toHaveBeenCalledWith(
+      'API key not configured',
+      'Run "xapi register" to create an account, or "xapi config set apiKey=<key>" to set an existing key.',
+    );
   });
 
   it('calls err when login fails', async () => {

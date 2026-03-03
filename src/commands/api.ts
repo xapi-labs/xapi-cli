@@ -2,7 +2,7 @@
  * api commands: list, search, categories, get, batch, call
  */
 
-import { getConfig } from '../config.ts';
+import { getConfig, requireApiKey } from '../config.ts';
 import * as client from '../client.ts';
 import { output, err } from '../format.ts';
 
@@ -102,6 +102,7 @@ export async function apiCall(args: string[], flags: Record<string, string>) {
   const id = args[0];
   if (!id) err('usage: xapi api call <id> [--input \'{"key":"val"}\'] [key=val ...]');
   const cfg = getConfig();
+  requireApiKey(cfg);
   let input: Record<string, unknown> = {};
   if (flags.input) {
     try {

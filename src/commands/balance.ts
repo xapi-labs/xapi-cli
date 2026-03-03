@@ -3,13 +3,13 @@
  * Fetches xTokenBalance from GET /auth/me
  */
 
-import { getConfig, XAPI_API_HOST, scheme } from '../config.ts';
+import { getConfig, requireApiKey, XAPI_API_HOST, scheme } from '../config.ts';
 import { loginWithApiKey, request } from '../client.ts';
 import { output, err } from '../format.ts';
 
 export async function balance(args: string[], flags: Record<string, string>) {
   const cfg = getConfig();
-  if (!cfg.apiKey) err('apiKey required. Run: xapi config set apiKey=<key>');
+  requireApiKey(cfg);
 
   let token: string;
   try {

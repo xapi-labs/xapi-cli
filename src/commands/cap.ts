@@ -2,7 +2,7 @@
  * cap commands: list, search, get, call
  */
 
-import { getConfig } from '../config.ts';
+import { getConfig, requireApiKey } from '../config.ts';
 import * as client from '../client.ts';
 import { output, err } from '../format.ts';
 
@@ -74,6 +74,7 @@ export async function capCall(args: string[], flags: Record<string, string>) {
   const id = args[0];
   if (!id) err('usage: xapi cap call <id> [--input \'{"key":"val"}\']');
   const cfg = getConfig();
+  requireApiKey(cfg);
   let input: Record<string, unknown> = {};
   if (flags.input) {
     try {

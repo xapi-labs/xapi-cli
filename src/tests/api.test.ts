@@ -5,6 +5,7 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as client from '../client.ts';
 import * as format from '../format.ts';
+import * as config from '../config.ts';
 import { apiList, apiSearch, apiCategories, apiGet, apiCall } from '../commands/api.ts';
 
 const mockApis = [
@@ -127,6 +128,16 @@ describe('api commands', () => {
   });
 
   describe('apiCall', () => {
+    let cfgSpy: ReturnType<typeof spyOn>;
+
+    beforeEach(() => {
+      cfgSpy = spyOn(config, 'getConfig').mockReturnValue({ capabilityHost: 'c.xapi.to', apiKey: 'sk-test' });
+    });
+
+    afterEach(() => {
+      cfgSpy.mockRestore();
+    });
+
     it('calls client.apiCall with id and empty input', async () => {
       const spy = spyOn(client, 'apiCall').mockResolvedValue({ data: 'ok' });
       await apiCall(['abc-123'], {});
@@ -155,6 +166,15 @@ describe('api commands', () => {
     it('calls err on invalid --input JSON', async () => {
       await expect(apiCall(['abc-123'], { input: '{bad}' })).rejects.toThrow('err called');
       expect(errSpy).toHaveBeenCalledWith('--input must be valid JSON');
+    });
+
+    it('calls err when apiKey is missing', async () => {
+      cfgSpy.mockReturnValue({ capabilityHost: 'c.xapi.to', apiKey: undefined });
+      await expect(apiCall(['abc-123'], {})).rejects.toThrow('err called');
+      expect(errSpy).toHaveBeenCalledWith(
+        'API key not configured',
+        'Run "xapi register" to create an account, or "xapi config set apiKey=<key>" to set an existing key.',
+      );
     });
   });
 });
