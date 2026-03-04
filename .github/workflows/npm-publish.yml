@@ -31,6 +31,8 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org/
       - run: bun install
+      - name: Set version from release tag
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
       - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{secrets.npm_token}}
