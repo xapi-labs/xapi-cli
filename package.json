@@ -1,11 +1,16 @@
 {
   "name": "@xapi-to/xapi",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Agent-friendly CLI for xapi - discover and call capabilities and APIs",
   "type": "module",
   "bin": {
     "xapi": "src/index.ts"
   },
+  "files": [
+    "src",
+    "!src/tests",
+    "README.md"
+  ],
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "XAPI_HOST=localhost:3003 bun run src/index.ts",
