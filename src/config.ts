@@ -44,7 +44,7 @@ export function getConfig(): XapiConfig {
 
 export function requireApiKey(cfg: XapiConfig): void {
   if (!cfg.apiKey) {
-    err('API key not configured', 'Run "xapi register" to create an account, or "xapi config set apiKey=<key>" to set an existing key.');
+    err('API key not configured', 'Run "npx @xapi-to/xapi register" to create an account, or "npx @xapi-to/xapi config set apiKey=<key>" to set an existing key.');
   }
 }
 

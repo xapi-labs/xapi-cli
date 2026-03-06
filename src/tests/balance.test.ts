@@ -56,7 +56,7 @@ describe('balance command', () => {
     await expect(balance([], {})).rejects.toThrow('err called');
     expect(errSpy).toHaveBeenCalledWith(
       'API key not configured',
-      'Run "xapi register" to create an account, or "xapi config set apiKey=<key>" to set an existing key.',
+      'Run "npx @xapi-to/xapi register" to create an account, or "npx @xapi-to/xapi config set apiKey=<key>" to set an existing key.',
     );
   });
 
