@@ -68,7 +68,7 @@ describe('config commands', () => {
 
     beforeEach(() => {
       getConfigSpy = spyOn(config, 'getConfig').mockReturnValue({
-        capabilityHost: 'c.xapi.to',
+        actionHost: 'action.xapi.to',
         apiKey: 'sk-test',
       });
     });
@@ -81,7 +81,7 @@ describe('config commands', () => {
       const spy = spyOn(client, 'healthCheck').mockResolvedValue({});
       await configHealth([], {});
       expect(outputSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ status: 'ok', host: 'c.xapi.to' }),
+        expect.objectContaining({ status: 'ok', host: 'action.xapi.to' }),
         undefined,
       );
       spy.mockRestore();
@@ -92,7 +92,7 @@ describe('config commands', () => {
       const exitSpy = spyOn(process, 'exit').mockImplementation((() => {}) as any);
       await configHealth([], {});
       expect(outputSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ status: 'error', host: 'c.xapi.to', error: 'connection refused' }),
+        expect.objectContaining({ status: 'error', host: 'action.xapi.to', error: 'connection refused' }),
         undefined,
       );
       expect(exitSpy).toHaveBeenCalledWith(1);

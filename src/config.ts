@@ -9,7 +9,7 @@ import { err } from './format.ts';
 import { homedir } from 'os';
 import { join } from 'path';
 
-export const XAPI_CAPABILITY_HOST = 'c.xapi.to'; // capability + API service
+export const XAPI_ACTION_HOST = process.env.XAPI_ACTION_HOST || 'action.xapi.to'; // action service (capabilities + APIs)
 export const XAPI_API_HOST = 'api.xapi.to';      // auth + agent API
 
 /** Returns https:// for remote hosts, http:// for localhost */
@@ -18,7 +18,7 @@ export function scheme(host: string): string {
 }
 
 export interface XapiConfig {
-  capabilityHost: string;
+  actionHost: string;
   apiKey?: string;
 }
 
@@ -37,7 +37,7 @@ function loadFileConfig(): { apiKey?: string } {
 export function getConfig(): XapiConfig {
   const file = loadFileConfig();
   return {
-    capabilityHost: XAPI_CAPABILITY_HOST,
+    actionHost: XAPI_ACTION_HOST,
     apiKey: process.env.XAPI_API_KEY || file.apiKey,
   };
 }
@@ -59,7 +59,7 @@ export function showConfig(): void {
   const cfg = getConfig();
   const file = loadFileConfig();
   console.log(JSON.stringify({
-    capabilityHost: cfg.capabilityHost,
+    actionHost: cfg.actionHost,
     apiKey: cfg.apiKey ? `${cfg.apiKey.slice(0, 8)}...` : undefined,
     source: {
       apiKey: process.env.XAPI_API_KEY ? 'env' : file.apiKey ? 'file' : 'none',

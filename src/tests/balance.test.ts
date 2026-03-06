@@ -17,7 +17,7 @@ describe('balance command', () => {
     outputSpy = spyOn(format, 'output').mockImplementation(() => {});
     errSpy = spyOn(format, 'err').mockImplementation((() => { throw new Error('err called'); }) as any);
     getConfigSpy = spyOn(config, 'getConfig').mockReturnValue({
-      capabilityHost: 'c.xapi.to',
+      actionHost: 'action.xapi.to',
       apiKey: 'sk-test123',
     });
   });
@@ -52,7 +52,7 @@ describe('balance command', () => {
   });
 
   it('calls err when apiKey is missing', async () => {
-    getConfigSpy.mockReturnValue({ capabilityHost: 'c.xapi.to', apiKey: undefined });
+    getConfigSpy.mockReturnValue({ actionHost: 'action.xapi.to', apiKey: undefined });
     await expect(balance([], {})).rejects.toThrow('err called');
     expect(errSpy).toHaveBeenCalledWith(
       'API key not configured',

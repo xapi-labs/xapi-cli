@@ -8,7 +8,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const EXECUTE_TIMEOUT_MS = 60_000;
 
 export interface ClientOptions {
-  capabilityHost: string;
+  actionHost: string;
   apiKey?: string;
 }
 
@@ -48,94 +48,64 @@ function headers(apiKey?: string): Record<string, string> {
   return h;
 }
 
-// ── Capabilities ──────────────────────────────────────────────────────────────
-
-export async function capList(opts: ClientOptions) {
-  return request<{ capabilities: unknown[] }>(
-    `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/caps`,
-    { method: 'GET', headers: headers(opts.apiKey) },
-  );
+function baseUrl(opts: ClientOptions): string {
+  return `${scheme(opts.actionHost)}://${opts.actionHost}`;
 }
 
-export async function capSearch(query: string, opts: ClientOptions) {
-  const url = `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/caps/search?q=${encodeURIComponent(query)}`;
-  return request<{ results?: unknown[]; capabilities?: unknown[] }>(
-    url,
-    { method: 'GET', headers: headers(opts.apiKey) },
-  );
-}
+// ── Actions (unified: capabilities + APIs) ───────────────────────────────────
 
-export async function capGet(id: string, opts: ClientOptions) {
-  return request<unknown>(
-    `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/caps/${encodeURIComponent(id)}`,
-    { method: 'GET', headers: headers(opts.apiKey) },
-  );
-}
-
-export async function capCall(
-  capabilityId: string,
-  input: Record<string, unknown>,
+export async function actionList(
   opts: ClientOptions,
+  params: { page?: number; page_size?: number; category?: string; source?: string; service_id?: string } = {},
 ) {
-  return request<unknown>(
-    `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/caps/execute`,
-    {
-      method: 'POST',
-      headers: headers(opts.apiKey),
-      body: JSON.stringify({ capability_id: capabilityId, input }),
-    },
-    EXECUTE_TIMEOUT_MS,
-  );
-}
-
-// ── APIs ──────────────────────────────────────────────────────────────────────
-
-export async function apiList(
-  opts: ClientOptions,
-  params: { page?: number; page_size?: number; category?: string } = {},
-) {
-  const url = new URL(`${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/apis`);
+  const url = new URL(`${baseUrl(opts)}/v1/actions`);
   if (params.page) url.searchParams.set('page', String(params.page));
   if (params.page_size) url.searchParams.set('page_size', String(params.page_size));
   if (params.category) url.searchParams.set('category', params.category);
-  return request<{ apis: unknown[]; pagination: unknown }>(
+  if (params.source) url.searchParams.set('source', params.source);
+  if (params.service_id) url.searchParams.set('service_id', params.service_id);
+  return request<{ actions: unknown[]; pagination: unknown }>(
     url.toString(),
     { method: 'GET', headers: headers(opts.apiKey) },
   );
 }
 
-export async function apiSearch(
+export async function actionSearch(
   query: string,
   opts: ClientOptions,
-  params: { category?: string; limit?: number } = {},
+  params: { category?: string; source?: string; page?: number; page_size?: number } = {},
 ) {
-  const url = new URL(`${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/apis/search`);
+  const url = new URL(`${baseUrl(opts)}/v1/actions/search`);
   url.searchParams.set('q', query);
   if (params.category) url.searchParams.set('category', params.category);
-  if (params.limit) url.searchParams.set('limit', String(params.limit));
-  return request<{ results: unknown[]; total_matches: number; query: string }>(
+  if (params.source) url.searchParams.set('source', params.source);
+  if (params.page) url.searchParams.set('page', String(params.page));
+  if (params.page_size) url.searchParams.set('page_size', String(params.page_size));
+  return request<{ results: unknown[]; query: string; pagination: unknown }>(
     url.toString(),
     { method: 'GET', headers: headers(opts.apiKey) },
   );
 }
 
-export async function apiCategories(opts: ClientOptions) {
+export async function actionCategories(opts: ClientOptions, params: { source?: string } = {}) {
+  const url = new URL(`${baseUrl(opts)}/v1/actions/categories`);
+  if (params.source) url.searchParams.set('source', params.source);
   return request<{ categories: string[]; total: number }>(
-    `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/apis/categories`,
+    url.toString(),
     { method: 'GET', headers: headers(opts.apiKey) },
   );
 }
 
-export async function apiGet(id: string, opts: ClientOptions) {
+export async function actionGet(id: string, opts: ClientOptions) {
   return request<unknown>(
-    `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/apis/${encodeURIComponent(id)}`,
+    `${baseUrl(opts)}/v1/actions/${encodeURIComponent(id)}`,
     { method: 'GET', headers: headers(opts.apiKey) },
   );
 }
 
-export async function apiBatch(ids: string[], opts: ClientOptions) {
-  return request<{ apis: unknown[] }>(
-    `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/apis/batch`,
+export async function actionBatch(ids: string[], opts: ClientOptions) {
+  return request<{ actions: unknown[]; missing_ids: string[] }>(
+    `${baseUrl(opts)}/v1/actions/batch`,
     {
       method: 'POST',
       headers: headers(opts.apiKey),
@@ -144,25 +114,39 @@ export async function apiBatch(ids: string[], opts: ClientOptions) {
   );
 }
 
-export async function apiCall(
-  apiId: string,
+export async function actionCall(
+  actionId: string,
   input: Record<string, unknown>,
   opts: ClientOptions,
 ) {
   return request<unknown>(
-    `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/apis/execute`,
+    `${baseUrl(opts)}/v1/actions/execute`,
     {
       method: 'POST',
       headers: headers(opts.apiKey),
-      body: JSON.stringify({ api_id: apiId, input }),
+      body: JSON.stringify({ action_id: actionId, input }),
     },
     EXECUTE_TIMEOUT_MS,
   );
 }
 
+export async function actionServices(
+  opts: ClientOptions,
+  params: { page?: number; page_size?: number; category?: string } = {},
+) {
+  const url = new URL(`${baseUrl(opts)}/v1/actions/services`);
+  if (params.page) url.searchParams.set('page', String(params.page));
+  if (params.page_size) url.searchParams.set('page_size', String(params.page_size));
+  if (params.category) url.searchParams.set('category', params.category);
+  return request<{ services: unknown[]; pagination: unknown }>(
+    url.toString(),
+    { method: 'GET', headers: headers(opts.apiKey) },
+  );
+}
+
 export async function healthCheck(opts: ClientOptions) {
   return request<unknown>(
-    `${scheme(opts.capabilityHost)}://${opts.capabilityHost}/v1/caps`,
+    `${baseUrl(opts)}/v1/actions`,
     { method: 'GET', headers: headers(opts.apiKey) },
     5_000,
   );

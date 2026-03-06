@@ -3,16 +3,12 @@
  * xapi CLI - agent-friendly command-line interface for xapi
  *
  * Usage:
- *   xapi cap list
- *   xapi cap search <query>
- *   xapi cap get <id>
- *   xapi cap call <id> [key=val ...] [--input '{"k":"v"}']
- *
- *   xapi api list [--page N] [--page-size N] [--category X]
- *   xapi api search <query> [--category X] [--limit N]
- *   xapi api categories
- *   xapi api get <id> [id2 ...]
- *   xapi api call <id> [key=val ...] [--input '{"k":"v"}']
+ *   xapi list [--source capability|api] [--page N] [--page-size N] [--category X]
+ *   xapi search <query> [--source capability|api] [--category X] [--page N] [--page-size N]
+ *   xapi categories [--source capability|api]
+ *   xapi services [--page N] [--page-size N] [--category X]
+ *   xapi get <id>
+ *   xapi call <id> --input '{"k":"v"}'
  *
  *   xapi config show
  *   xapi config set apiKey=<key>
@@ -23,12 +19,12 @@
  *   --help                       show help
  *
  * Env vars:
- *   XAPI_API_KEY     API key
- *   XAPI_OUTPUT      default output format (json|pretty|table)
+ *   XAPI_API_KEY       API key
+ *   XAPI_ACTION_HOST   Action service host (default: action.xapi.to)
+ *   XAPI_OUTPUT        default output format (json|pretty|table)
  */
 
-import * as capCmds from './commands/cap.ts';
-import * as apiCmds from './commands/api.ts';
+import * as actionCmds from './commands/action.ts';
 import * as cfgCmds from './commands/config.ts';
 import * as regCmds from './commands/register.ts';
 import * as topupCmds from './commands/topup.ts';
@@ -70,29 +66,28 @@ function parseArgs(argv: string[]): ParsedArgs {
 const HELP = `xapi - agent-friendly CLI for xapi
 
 USAGE
-  xapi <group> <command> [args] [flags]
+  xapi <command> [args] [flags]
 
-GROUPS & COMMANDS
-  cap list                          List all capabilities
-  cap search <query>                Search capabilities by keyword
-  cap get <id>                      Get capability schema
-  cap call <id> [key=val ...]       Execute a capability
-    --input '{"key":"val"}'         Pass input as JSON
-
-  api list                          List APIs (paginated)
+COMMANDS
+  list                              List all actions
+    --source capability|api         Filter by source type
     --page N  --page-size N         Pagination
     --category <name>               Filter by category
-  api search <query>                Search APIs by keyword
-    --category <name>  --limit N    Filters
-  api categories                    List all API categories
-  api get <id> [id2 ...]            Get API schema (batch if multiple IDs)
-  api call <id> [key=val ...]       Execute an API
-    --input '{"key":"val"}'         Pass input as JSON
+    --service-id <id>               Filter by service
+  search <query>                    Search actions by keyword
+    --source capability|api         Filter by source type
+    --category <name>               Filter by category
+    --page N  --page-size N         Pagination
+  categories                        List all action categories
+    --source capability|api         Filter by source type
+  services                          List all services
+    --page N  --page-size N         Pagination
+    --category <name>               Filter by category
+  get <id>                          Get action schema
+  call <id> --input '{"key":"val"}'  Execute an action
 
   register                          Create a new user account (apiKey saved automatically)
-
   balance                           Show current account balance
-
   topup [--amount <usd>] [--method stripe|x402]   Generate payment URL
 
   config show                       Show current config
@@ -104,17 +99,19 @@ GLOBAL FLAGS
   --help                            Show this help
 
 ENV VARS
-  XAPI_API_KEY    API key (header: XAPI-Key)
-  XAPI_OUTPUT     Default output format
+  XAPI_API_KEY       API key (header: XAPI-Key)
+  XAPI_ACTION_HOST   Action service host (default: action.xapi.to)
+  XAPI_OUTPUT        Default output format
 
 EXAMPLES
   xapi register
-  xapi cap list --format table
-  xapi cap get twitter.tweet_detail
-  xapi cap call twitter.tweet_detail tweet_id=1234567890
-  xapi api search "token price" --limit 5
-  xapi api get <uuid>
-  xapi api call <uuid> --input '{"query":"BTC"}'
+  xapi list --format table
+  xapi list --source capability
+  xapi search twitter --source api
+  xapi get twitter.tweet_detail
+  xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
+  xapi categories
+  xapi services --format table
   xapi config set apiKey=xapi_abc123
   xapi config health
 `;
@@ -132,57 +129,40 @@ async function main() {
   // inject format from flag into env so format.ts picks it up
   if (flags.format) process.env.XAPI_OUTPUT = flags.format;
 
-  const [group, cmd, ...rest] = positional;
+  const [cmd, ...rest] = positional;
 
-  if (group === 'cap') {
-    switch (cmd) {
-      case 'list':     return capCmds.capList(rest, flags);
-      case 'search':   return capCmds.capSearch(rest, flags);
-      case 'get':      return capCmds.capGet(rest, flags);
-      case 'call':     return capCmds.capCall(rest, flags);
-      default:
-        console.error(JSON.stringify({ error: `unknown cap command: ${cmd}` }));
-        process.exit(1);
+  switch (cmd) {
+    // ── Action commands (top-level) ──
+    case 'list':       return actionCmds.actionList(rest, flags);
+    case 'search':     return actionCmds.actionSearch(rest, flags);
+    case 'categories': return actionCmds.actionCategories(rest, flags);
+    case 'services':   return actionCmds.actionServices(rest, flags);
+    case 'get':        return actionCmds.actionGet(rest, flags);
+    case 'call':       return actionCmds.actionCall(rest, flags);
+
+    // ── Account commands ──
+    case 'register':   return regCmds.register(rest, flags);
+    case 'balance':    return balanceCmds.balance(rest, flags);
+    case 'topup':      return topupCmds.topup(rest, flags);
+
+    // ── Config commands ──
+    case 'config': {
+      const [subCmd, ...subRest] = rest;
+      switch (subCmd) {
+        case 'show':   return cfgCmds.configShow(subRest, flags);
+        case 'set':    return cfgCmds.configSet(subRest, flags);
+        case 'health': return cfgCmds.configHealth(subRest, flags);
+        default:
+          console.error(JSON.stringify({ error: `unknown config command: ${subCmd}` }));
+          process.exit(1);
+      }
+      break;
     }
+
+    default:
+      console.error(JSON.stringify({ error: `unknown command: ${cmd}`, hint: 'run xapi --help' }));
+      process.exit(1);
   }
-
-  if (group === 'api') {
-    switch (cmd) {
-      case 'list':       return apiCmds.apiList(rest, flags);
-      case 'search':     return apiCmds.apiSearch(rest, flags);
-      case 'categories': return apiCmds.apiCategories(rest, flags);
-      case 'get':        return apiCmds.apiGet(rest, flags);
-      case 'call':       return apiCmds.apiCall(rest, flags);
-      default:
-        console.error(JSON.stringify({ error: `unknown api command: ${cmd}` }));
-        process.exit(1);
-    }
-  }
-
-  if (group === 'balance') return balanceCmds.balance(rest, flags);
-
-  if (group === 'topup') {
-    const allArgs = cmd ? [cmd, ...rest] : rest;
-    return topupCmds.topup(allArgs, flags);
-  }
-
-  if (group === 'register') {
-    return regCmds.register(rest, flags);
-  }
-
-  if (group === 'config') {
-    switch (cmd) {
-      case 'show':   return cfgCmds.configShow(rest, flags);
-      case 'set':    return cfgCmds.configSet(rest, flags);
-      case 'health': return cfgCmds.configHealth(rest, flags);
-      default:
-        console.error(JSON.stringify({ error: `unknown config command: ${cmd}` }));
-        process.exit(1);
-    }
-  }
-
-  console.error(JSON.stringify({ error: `unknown group: ${group}`, hint: 'run xapi --help' }));
-  process.exit(1);
 }
 
 main().catch(e => {
