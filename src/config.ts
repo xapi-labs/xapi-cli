@@ -10,7 +10,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 
 export const XAPI_ACTION_HOST = process.env.XAPI_ACTION_HOST || 'action.xapi.to'; // action service (capabilities + APIs)
-export const XAPI_API_HOST = 'api.xapi.to';      // auth + agent API
+export const XAPI_API_HOST = process.env.XAPI_API_HOST || 'api.xapi.to';          // auth + agent API
 
 /** Returns https:// for remote hosts, http:// for localhost */
 export function scheme(host: string): string {

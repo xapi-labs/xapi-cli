@@ -164,3 +164,95 @@ export async function loginWithApiKey(apiKey: string, apiHost: string) {
     },
   );
 }
+
+// ── OAuth ──────────────────────────────────────────────────────────────────────
+
+function jwtHeaders(jwtToken: string): Record<string, string> {
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${jwtToken}` };
+}
+
+export async function listKeys(jwtToken: string, apiHost: string) {
+  return request<Array<{
+    id: string;
+    name: string;
+    keyPreview: string;
+    oauthEnabled: boolean;
+    createdAt: string;
+  }>>(
+    `${scheme(apiHost)}://${apiHost}/api/keys`,
+    { method: 'GET', headers: jwtHeaders(jwtToken) },
+  );
+}
+
+export async function enableOAuthForKey(
+  keyId: string,
+  plaintextKey: string,
+  jwtToken: string,
+  apiHost: string,
+) {
+  return request<{ success: boolean; message: string }>(
+    `${scheme(apiHost)}://${apiHost}/api/keys/${keyId}/enable-oauth`,
+    {
+      method: 'POST',
+      headers: jwtHeaders(jwtToken),
+      body: JSON.stringify({ plaintextKey }),
+    },
+  );
+}
+
+export async function listOAuthProviders(apiHost: string) {
+  return request<Array<{
+    id: string;
+    name: string;
+    type: string;
+    grantType: string;
+    defaultScopes: string;
+  }>>(
+    `${scheme(apiHost)}://${apiHost}/api/oauth/providers`,
+    { method: 'GET', headers: { 'Content-Type': 'application/json' } },
+  );
+}
+
+export async function initiateOAuth(
+  apiKeyId: string,
+  providerId: string,
+  jwtToken: string,
+  apiHost: string,
+) {
+  return request<{ authorizationUrl: string; state: string }>(
+    `${scheme(apiHost)}://${apiHost}/api/oauth/authorize`,
+    {
+      method: 'POST',
+      headers: jwtHeaders(jwtToken),
+      body: JSON.stringify({ apiKeyId, providerId }),
+    },
+  );
+}
+
+export async function listOAuthBindings(jwtToken: string, apiHost: string) {
+  return request<Array<{
+    id: string;
+    apiKeyId: string;
+    providerId: string;
+    providerAccountId: string;
+    providerAccountName: string | null;
+    scopes: string;
+    createdAt: string;
+    updatedAt: string;
+    provider: { id: string; name: string; type: string };
+  }>>(
+    `${scheme(apiHost)}://${apiHost}/api/oauth/bindings`,
+    { method: 'GET', headers: jwtHeaders(jwtToken) },
+  );
+}
+
+export async function deleteOAuthBinding(
+  bindingId: string,
+  jwtToken: string,
+  apiHost: string,
+) {
+  return request<{ success: boolean }>(
+    `${scheme(apiHost)}://${apiHost}/api/oauth/bindings/${bindingId}`,
+    { method: 'DELETE', headers: jwtHeaders(jwtToken) },
+  );
+}

@@ -29,6 +29,7 @@ import * as cfgCmds from './commands/config.ts';
 import * as regCmds from './commands/register.ts';
 import * as topupCmds from './commands/topup.ts';
 import * as balanceCmds from './commands/balance.ts';
+import * as oauthCmds from './commands/oauth.ts';
 
 // ── Argument parser ───────────────────────────────────────────────────────────
 
@@ -86,6 +87,11 @@ COMMANDS
   get <id>                          Get action schema
   call <id> --input '{"key":"val"}'  Execute an action
 
+  oauth bind [--provider twitter]   Bind Twitter OAuth to your API key
+  oauth status                      List current OAuth bindings
+  oauth unbind <binding-id>         Remove an OAuth binding
+  oauth providers                   List available OAuth providers
+
   register                          Create a new user account (apiKey saved automatically)
   balance                           Show current account balance
   topup [--amount <usd>] [--method stripe|x402]   Generate payment URL
@@ -139,6 +145,21 @@ async function main() {
     case 'services':   return actionCmds.actionServices(rest, flags);
     case 'get':        return actionCmds.actionGet(rest, flags);
     case 'call':       return actionCmds.actionCall(rest, flags);
+
+    // ── OAuth commands ──
+    case 'oauth': {
+      const [subCmd, ...subRest] = rest;
+      switch (subCmd) {
+        case 'bind':      return oauthCmds.oauthBind(subRest, flags);
+        case 'status':    return oauthCmds.oauthStatus(subRest, flags);
+        case 'unbind':    return oauthCmds.oauthUnbind(subRest, flags);
+        case 'providers': return oauthCmds.oauthProviders(subRest, flags);
+        default:
+          console.error(JSON.stringify({ error: `unknown oauth command: ${subCmd}`, hint: 'valid commands: bind, status, unbind, providers' }));
+          process.exit(1);
+      }
+      break;
+    }
 
     // ── Account commands ──
     case 'register':   return regCmds.register(rest, flags);
