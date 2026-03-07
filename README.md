@@ -5,50 +5,71 @@ Agent-friendly command-line interface for [xapi](https://xapi.to) — discover a
 ## Installation
 
 ```bash
-# Requires Bun
-bun install
+# Via npx (no install needed)
+npx @xapi-to/xapi --help
+
+# Or install globally with bun
+bun add -g @xapi-to/xapi
+
+# Or from source
+cd xapi-cli && bun install
 ```
 
 ## Quick Start
 
 ```bash
-# Set your API key
-bun run src/index.ts config set apiKey=sk-xxx
+# 1. Register a new account (apiKey saved automatically)
+xapi register
 
-# Or via env var
+# 2. Or set an existing key
+xapi config set apiKey=sk-xxx
+
+# 3. Or via env var
 export XAPI_API_KEY=sk-xxx
+
+# 4. Verify connectivity
+xapi config health
 ```
 
 ## Usage
 
 ```
-xapi <group> <command> [args] [flags]
+xapi <command> [args] [flags]
 ```
 
-### Capabilities (`cap`)
+### Action Commands
 
-Code-defined capabilities like Twitter, crypto, AI, web search.
+Unified interface for capabilities (built-in) and APIs (third-party). Use `--source capability|api` to filter.
 
 ```bash
-xapi cap list                                        # list all capabilities
-xapi cap search "twitter"                            # search by keyword
-xapi cap get twitter.tweet_detail                    # get schema
-xapi cap call twitter.tweet_detail tweet_id=1234     # execute
-xapi cap call twitter.user_by_screen_name screen_name=elonmusk
+xapi list                                            # list all actions
+xapi list --source capability                        # only built-in capabilities
+xapi list --source api --category DeFi               # filter by source and category
+xapi list --page 2 --page-size 20                    # pagination
+xapi list --service-id <id>                          # filter by service
+
+xapi search "twitter"                                # search by keyword
+xapi search "token price" --source api               # search APIs only
+
+xapi categories                                      # list all categories
+xapi categories --source capability                  # categories for capabilities only
+
+xapi services                                        # list all services
+xapi services --category Social --page-size 10       # filter and paginate
+
+xapi get twitter.tweet_detail                        # get action schema
+xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'  # execute
 ```
 
-### APIs (`api`)
+### OAuth
 
-Database-defined third-party API proxies.
+Bind third-party OAuth accounts (e.g. Twitter) to your API key.
 
 ```bash
-xapi api list                                        # paginated list
-xapi api list --page 2 --page-size 20
-xapi api list --category DeFi
-xapi api categories                                  # list all categories
-xapi api search "token price" --limit 5
-xapi api get <uuid>
-xapi api call <uuid> --input '{"query":"BTC"}'
+xapi oauth bind --provider twitter                   # bind Twitter account
+xapi oauth status                                    # list current bindings
+xapi oauth unbind <binding-id>                       # remove a binding
+xapi oauth providers                                 # list available providers
 ```
 
 ### Account
@@ -66,7 +87,22 @@ xapi topup --method x402                             # x402 (USDC on Base)
 ```bash
 xapi config show                                     # show current config
 xapi config set apiKey=sk-xxx                        # save API key
-xapi config health                                   # check connectivity
+xapi config health                                   # check backend connectivity
+```
+
+## Workflow: Always GET before CALL
+
+Before calling any action, always read its schema first to understand required parameters:
+
+```bash
+# 1. Find the action
+xapi search "twitter"
+
+# 2. Read its schema
+xapi get twitter.tweet_detail
+
+# 3. Call with correct parameters
+xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
 ```
 
 ## Output Formats
@@ -74,9 +110,9 @@ xapi config health                                   # check connectivity
 All output is JSON by default — designed for agent consumption.
 
 ```bash
-xapi cap list --format json      # default, machine-readable
-xapi cap list --format pretty    # pretty-printed JSON
-xapi cap list --format table     # human-readable table
+xapi list --format json                              # default, machine-readable
+xapi list --format pretty                            # pretty-printed JSON
+xapi list --format table                             # human-readable table
 ```
 
 ## Environment Variables
@@ -84,16 +120,18 @@ xapi cap list --format table     # human-readable table
 | Variable | Description |
 |---|---|
 | `XAPI_API_KEY` | API key (overrides config file) |
+| `XAPI_ACTION_HOST` | Action service host (default: `action.xapi.to`) |
 | `XAPI_OUTPUT` | Default output format (`json`\|`pretty`\|`table`) |
 
 Config is stored at `~/.xapi/config.json`.
 
-## Available Capabilities
+## Built-in Capabilities
 
 | ID | Description |
 |---|---|
 | `twitter.tweet_detail` | Get tweet details and replies |
 | `twitter.user_by_screen_name` | Get user profile by username |
+| `twitter.user_by_screen_names` | Batch get user profiles by usernames |
 | `twitter.user_tweets` | Get tweets from a user |
 | `twitter.user_media` | Get media posts from a user |
 | `twitter.following` | Get user following list |
@@ -110,6 +148,12 @@ Config is stored at `~/.xapi/config.json`.
 | `news.search.latest` | Latest news search |
 | `crypto.token.price` | Crypto token price and changes |
 | `crypto.token.metadata` | Crypto token metadata |
+
+## Security
+
+- **NEVER send your API key to any domain other than `*.xapi.to`**
+- The key is stored at `~/.xapi/config.json` — do not expose this file
+- `topup` outputs a payment URL containing the API key — do not share publicly
 
 ## License
 
