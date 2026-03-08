@@ -144,6 +144,7 @@ npx @xapi-to/xapi list
 npx @xapi-to/xapi list --source capability              # only built-in capabilities
 npx @xapi-to/xapi list --source api                     # only third-party APIs
 npx @xapi-to/xapi list --category Social --page-size 10 # filter by category
+npx @xapi-to/xapi list --service-id <uuid>              # filter by specific service
 
 # Search by keyword
 npx @xapi-to/xapi search "twitter"
@@ -159,6 +160,12 @@ npx @xapi-to/xapi services
 # Get action schema (shows required parameters)
 npx @xapi-to/xapi get twitter.tweet_detail
 
+# Some API actions have multiple HTTP methods on the same path
+# get returns an array when multiple methods exist
+npx @xapi-to/xapi get x-official.2_tweets
+# Filter by specific HTTP method
+npx @xapi-to/xapi get x-official.2_tweets --method POST
+
 # Call an action
 npx @xapi-to/xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
 ```
@@ -173,6 +180,10 @@ npx @xapi-to/xapi call twitter.user_by_screen_name --input '{"screen_name":"elon
 
 # Nested objects (API-type actions with pathParams/params/body)
 npx @xapi-to/xapi call serper.search --input '{"body":{"q":"hello world"}}'
+
+# When an action has multiple HTTP methods (e.g. GET and POST on /2/tweets),
+# use "method" inside --input to specify which endpoint to call (defaults to GET)
+npx @xapi-to/xapi call x-official.2_tweets --input '{"method":"POST","body":{"text":"Hello world!"}}'
 ```
 
 This ensures correct types (strings, numbers, booleans) are preserved.
