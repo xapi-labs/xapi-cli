@@ -33,7 +33,8 @@ export async function actionList(args: string[], flags: Record<string, string>) 
     if (flags.format === 'table') {
       output(actions.map((a: any) => ({
         id: a.id,
-        title: a.meta?.title ?? '',
+        method: a.method ?? '',
+        displayName: a.displayName ?? '',
         source: a.source ?? '',
         category: a.meta?.category ?? '',
         status: a.status ?? '',
@@ -62,10 +63,12 @@ export async function actionSearch(args: string[], flags: Record<string, string>
     if (flags.format === 'table') {
       output(results.map((a: any) => ({
         id: a.id,
-        title: a.meta?.title ?? '',
+        method: a.method ?? '',
+        displayName: a.displayName ?? '',
         source: a.source ?? '',
         category: a.meta?.category ?? '',
         status: a.status ?? '',
+        cost: a.meta?.cost ?? '',
       })), 'table');
     } else {
       output(res, flags.format as any);
@@ -117,11 +120,19 @@ export async function actionServices(args: string[], flags: Record<string, strin
 
 export async function actionGet(args: string[], flags: Record<string, string>) {
   const id = args[0];
-  if (!id) err('usage: xapi get <id>');
+  if (!id) err('usage: xapi get <id> [--method GET|POST|DELETE|...]');
   const cfg = getConfig();
   try {
     const res = await client.actionGet(id, cfg);
-    output(res, flags.format as any);
+    const actions = Array.isArray(res) ? res : [res];
+    const methodFilter = flags.method?.toUpperCase();
+    const filtered = methodFilter
+      ? actions.filter((a: any) => a.method?.toUpperCase() === methodFilter)
+      : actions;
+    if (filtered.length === 0) {
+      err(`no endpoint found for method "${methodFilter}" in action "${id}"`);
+    }
+    output(filtered.length === 1 ? filtered[0] : filtered, flags.format as any);
   } catch (e: any) {
     err('get failed', e.message);
   }

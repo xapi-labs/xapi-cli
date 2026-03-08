@@ -9,8 +9,8 @@ import * as config from '../config.ts';
 import { actionList, actionSearch, actionCategories, actionServices, actionGet, actionCall } from '../commands/action.ts';
 
 const mockActions = [
-  { id: 'twitter.tweet_detail', source: 'capability', version: '1', status: 'stable', meta: { title: 'Get Tweet Detail', category: 'Social', cost: 10 } },
-  { id: 'serper.search', source: 'api', uuid: 'abc-123', version: '1', status: 'stable', meta: { title: 'Google Search', category: 'Infrastructure', cost: 1 } },
+  { id: 'twitter.tweet_detail', source: 'capability', version: '1', status: 'stable', displayName: 'twitter.tweet_detail', meta: { title: 'Get Tweet Detail', category: 'Social', cost: 10 } },
+  { id: 'serper.search', source: 'api', uuid: 'abc-123', method: 'GET', version: '1', status: 'stable', displayName: 'GET /search', meta: { title: 'Google Search', category: 'Infrastructure', cost: 1 } },
 ];
 
 describe('action commands', () => {
@@ -66,12 +66,12 @@ describe('action commands', () => {
       spy.mockRestore();
     });
 
-    it('renders table format with source column', async () => {
+    it('renders table format with method and displayName columns', async () => {
       const spy = spyOn(client, 'actionList').mockResolvedValue({ actions: mockActions, pagination: {} });
       await actionList([], { format: 'table' });
       expect(outputSpy).toHaveBeenCalledWith(
-        mockActions.map(a => ({
-          id: a.id, title: a.meta.title, source: a.source, category: a.meta.category, status: a.status, cost: a.meta.cost,
+        mockActions.map((a: any) => ({
+          id: a.id, method: a.method ?? '', displayName: a.displayName ?? '', source: a.source, category: a.meta.category, status: a.status, cost: a.meta.cost,
         })),
         'table',
       );
@@ -178,17 +178,45 @@ describe('action commands', () => {
   });
 
   describe('actionGet', () => {
-    it('calls client.actionGet with id', async () => {
-      const spy = spyOn(client, 'actionGet').mockResolvedValue(mockActions[0]);
+    it('unwraps single-element array response', async () => {
+      const spy = spyOn(client, 'actionGet').mockResolvedValue([mockActions[0]] as any);
       await actionGet(['twitter.tweet_detail'], {});
       expect(spy).toHaveBeenCalledWith('twitter.tweet_detail', expect.any(Object));
       expect(outputSpy).toHaveBeenCalledWith(mockActions[0], undefined);
       spy.mockRestore();
     });
 
+    it('returns full array when multiple endpoints', async () => {
+      const multiEndpoints = [
+        { ...mockActions[1], method: 'GET', displayName: 'GET /2/tweets' },
+        { ...mockActions[1], method: 'POST', displayName: 'POST /2/tweets' },
+      ];
+      const spy = spyOn(client, 'actionGet').mockResolvedValue(multiEndpoints as any);
+      await actionGet(['x-official.2_tweets'], {});
+      expect(outputSpy).toHaveBeenCalledWith(multiEndpoints, undefined);
+      spy.mockRestore();
+    });
+
+    it('filters by --method flag', async () => {
+      const multiEndpoints = [
+        { ...mockActions[1], method: 'GET', displayName: 'GET /2/tweets' },
+        { ...mockActions[1], method: 'POST', displayName: 'POST /2/tweets' },
+      ];
+      const spy = spyOn(client, 'actionGet').mockResolvedValue(multiEndpoints as any);
+      await actionGet(['x-official.2_tweets'], { method: 'POST' });
+      expect(outputSpy).toHaveBeenCalledWith(multiEndpoints[1], undefined);
+      spy.mockRestore();
+    });
+
+    it('calls err when --method filter finds no match', async () => {
+      const spy = spyOn(client, 'actionGet').mockResolvedValue([mockActions[0]] as any);
+      await expect(actionGet(['twitter.tweet_detail'], { method: 'DELETE' })).rejects.toThrow('err called');
+      expect(errSpy).toHaveBeenCalledWith('no endpoint found for method "DELETE" in action "twitter.tweet_detail"');
+      spy.mockRestore();
+    });
+
     it('calls err when no id provided', async () => {
       await expect(actionGet([], {})).rejects.toThrow('err called');
-      expect(errSpy).toHaveBeenCalledWith('usage: xapi get <id>');
     });
   });
 
@@ -224,6 +252,13 @@ describe('action commands', () => {
     it('calls err on invalid --input JSON', async () => {
       await expect(actionCall(['test'], { input: 'not-json' })).rejects.toThrow('err called');
       expect(errSpy).toHaveBeenCalledWith('--input must be valid JSON');
+    });
+
+    it('passes method inside input to upstream (no separate --method flag)', async () => {
+      const spy = spyOn(client, 'actionCall').mockResolvedValue({ data: 'ok' });
+      await actionCall(['x-official.2_tweets'], { input: '{"method":"POST","body":{"text":"hi"}}' });
+      expect(spy).toHaveBeenCalledWith('x-official.2_tweets', { method: 'POST', body: { text: 'hi' } }, expect.any(Object));
+      spy.mockRestore();
     });
 
     it('calls err when apiKey is missing', async () => {

@@ -97,7 +97,7 @@ export async function actionCategories(opts: ClientOptions, params: { source?: s
 }
 
 export async function actionGet(id: string, opts: ClientOptions) {
-  return request<unknown>(
+  return request<unknown[]>(
     `${baseUrl(opts)}/v1/actions/${encodeURIComponent(id)}`,
     { method: 'GET', headers: headers(opts.apiKey) },
   );
@@ -146,7 +146,7 @@ export async function actionServices(
 
 export async function healthCheck(opts: ClientOptions) {
   return request<unknown>(
-    `${baseUrl(opts)}/v1/actions`,
+    `${baseUrl(opts)}/health`,
     { method: 'GET', headers: headers(opts.apiKey) },
     5_000,
   );

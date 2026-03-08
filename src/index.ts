@@ -84,7 +84,7 @@ COMMANDS
   services                          List all services
     --page N  --page-size N         Pagination
     --category <name>               Filter by category
-  get <id>                          Get action schema
+  get <id> [--method GET|POST|...]   Get action schema (filter by HTTP method)
   call <id> --input '{"key":"val"}'  Execute an action
 
   oauth bind [--provider twitter]   Bind Twitter OAuth to your API key
