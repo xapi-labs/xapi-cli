@@ -188,6 +188,26 @@ npx @xapi-to/xapi call x-official.2_tweets --input '{"method":"POST","body":{"te
 
 This ensures correct types (strings, numbers, booleans) are preserved.
 
+## OAuth (Twitter Write Access)
+
+Some actions (e.g. posting tweets via `x-official.2_tweets` with POST) require OAuth authorization. Use `oauth` commands to bind your Twitter account to your API key.
+
+```bash
+# List available OAuth providers
+npx @xapi-to/xapi oauth providers
+
+# Bind Twitter OAuth to your API key (opens browser for authorization)
+npx @xapi-to/xapi oauth bind --provider twitter
+
+# Check current OAuth bindings
+npx @xapi-to/xapi oauth status
+
+# Remove an OAuth binding (get binding-id from oauth status)
+npx @xapi-to/xapi oauth unbind <binding-id>
+```
+
+**Agent workflow:** If `call` fails with an OAuth/authorization error, run `oauth status` to check bindings, then `oauth bind` if needed.
+
 ## Account Management
 
 ```bash
