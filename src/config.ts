@@ -4,7 +4,7 @@
  * Reads from env var XAPI_API_KEY or ~/.xapi/config.json
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { err } from './format.ts';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -51,8 +51,8 @@ export function requireApiKey(cfg: XapiConfig): void {
 export function saveConfig(updates: { apiKey?: string }): void {
   const current = loadFileConfig();
   const merged = { ...current, ...updates };
-  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2));
+  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2), { mode: 0o600 });
 }
 
 export function showConfig(): void {
