@@ -35,6 +35,12 @@ export async function request<T>(
           + '. Run "npx @xapi-to/xapi config set apiKey=<key>" to update your key.',
         );
       }
+      if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && data?.message?.includes('OAuth'))) {
+        throw new Error(
+          (data.message || 'OAuth authorization required')
+          + '. Run "xapi oauth bind" to connect your account.',
+        );
+      }
     }
     return body;
   } finally {

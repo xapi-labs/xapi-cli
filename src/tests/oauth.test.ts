@@ -44,7 +44,7 @@ describe('oauth commands', () => {
     outputSpy = spyOn(format, 'output').mockImplementation(() => {});
     errSpy = spyOn(format, 'err').mockImplementation((() => { throw new Error('err called'); }) as any);
     getConfigSpy = spyOn(config, 'getConfig').mockReturnValue({
-      capabilityHost: 'c.xapi.to',
+      actionHost: 'action.xapi.to',
       apiKey: MOCK_API_KEY,
     });
     loginSpy = spyOn(client, 'loginWithApiKey').mockResolvedValue({
@@ -127,7 +127,7 @@ describe('oauth commands', () => {
     });
 
     it('calls err when no API key configured', async () => {
-      getConfigSpy.mockReturnValue({ capabilityHost: 'c.xapi.to', apiKey: undefined });
+      getConfigSpy.mockReturnValue({ actionHost: 'action.xapi.to', apiKey: undefined });
       await expect(oauthBind([], {})).rejects.toThrow();
     });
 
@@ -272,9 +272,9 @@ describe('oauth commands', () => {
         ),
       );
 
-      const { apiCall } = await import('../client.ts');
+      const { actionCall } = await import('../client.ts');
       await expect(
-        apiCall('some-api-id', {}, { capabilityHost: 'c.xapi.to', apiKey: 'sk-test' }),
+        actionCall('some-api-id', {}, { actionHost: 'action.xapi.to', apiKey: 'sk-test' }),
       ).rejects.toThrow('Run "xapi oauth bind"');
 
       fetchSpy.mockRestore();
