@@ -154,8 +154,9 @@ npx @xapi-to/xapi search "token price" --source api
 npx @xapi-to/xapi categories
 npx @xapi-to/xapi categories --source capability
 
-# List all services
+# List all services (supports --category, --page, --page-size)
 npx @xapi-to/xapi services
+npx @xapi-to/xapi services --category Social
 
 # Get action schema (shows required parameters)
 npx @xapi-to/xapi get twitter.tweet_detail
@@ -218,6 +219,26 @@ npx @xapi-to/xapi balance
 npx @xapi-to/xapi topup --method stripe --amount 10
 npx @xapi-to/xapi topup --method x402
 ```
+
+## Available API Services
+
+Beyond built-in capabilities, xapi proxies several third-party API services including:
+
+- **X API v2** (`x-official`) — Official Twitter/X API with 156 endpoints (tweets, users, spaces, lists, DMs, etc.)
+- **Reddit** — Reddit API with 24 endpoints
+- **Ave Cloud Data API** — Crypto data with 19 endpoints
+- **Twitter API** — Alternative Twitter data API with 26 endpoints
+- **OpenRouter API** — Multi-model AI API gateway
+- **Serper API** — Google Search API with 10 endpoints
+
+Use `npx @xapi-to/xapi services --format table` to see the latest list.
+
+## Error Handling
+
+- **Authentication error** → Run `npx @xapi-to/xapi register` or `config set apiKey=<key>`
+- **OAuth Required error** → Run `npx @xapi-to/xapi oauth bind --provider twitter`
+- **Insufficient balance** → Run `npx @xapi-to/xapi topup --method stripe --amount 10`
+- **Unknown action ID** → Use `search` or `list` to find the correct action ID, then `get` to check parameters
 
 ## Tips
 
