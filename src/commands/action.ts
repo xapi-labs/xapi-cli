@@ -151,6 +151,9 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
       err('--input must be valid JSON');
     }
   }
+  if (flags.method) {
+    input = { ...input, method: flags.method.toUpperCase() };
+  }
   try {
     const res = await client.actionCall(id, input, cfg);
     output(res, flags.format as any);

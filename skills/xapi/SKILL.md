@@ -169,6 +169,8 @@ npx @xapi-to/xapi get x-official.2_tweets --method POST
 
 # Call an action
 npx @xapi-to/xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
+# Override HTTP method via --method flag (useful for multi-method endpoints)
+npx @xapi-to/xapi call x-official.2_tweets --method POST --input '{"body":{"text":"Hello!"}}'
 ```
 
 ## Input Format
@@ -183,7 +185,9 @@ npx @xapi-to/xapi call twitter.user_by_screen_name --input '{"screen_name":"elon
 npx @xapi-to/xapi call serper.search --input '{"body":{"q":"hello world"}}'
 
 # When an action has multiple HTTP methods (e.g. GET and POST on /2/tweets),
-# use "method" inside --input to specify which endpoint to call (defaults to GET)
+# use --method flag to specify which endpoint to call (defaults to GET)
+npx @xapi-to/xapi call x-official.2_tweets --method POST --input '{"body":{"text":"Hello world!"}}'
+# Alternatively, "method" inside --input also works (--method flag takes precedence)
 npx @xapi-to/xapi call x-official.2_tweets --input '{"method":"POST","body":{"text":"Hello world!"}}'
 ```
 
