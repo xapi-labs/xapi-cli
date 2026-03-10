@@ -8,3 +8,4 @@ dist/
 .claude/
 .kiro/
 skills-lock.json
+.wrangler/
