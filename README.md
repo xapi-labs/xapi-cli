@@ -1,4 +1,4 @@
-# xapi-cli
+# xapi-to
 
 Agent-friendly command-line interface for [xAPI](https://xapi.to) — discover and call capabilities and APIs from your terminal or AI agent.
 
