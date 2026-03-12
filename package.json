@@ -1,6 +1,6 @@
 {
-  "name": "xapi-cli",
-  "version": "0.1.7",
+  "name": "xapi-to",
+  "version": "0.1.8",
   "description": "Agent-friendly CLI for xapi - discover and call capabilities and APIs",
   "type": "module",
   "bin": {
