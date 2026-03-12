@@ -266,7 +266,7 @@ describe('action commands', () => {
       await expect(actionCall(['test'], {})).rejects.toThrow('err called');
       expect(errSpy).toHaveBeenCalledWith(
         'API key not configured',
-        'Run "npx @xapi-to/xapi register" to create an account, or "npx @xapi-to/xapi config set apiKey=<key>" to set an existing key.',
+        'Run "npx xapi-to register" to create an account, or "npx xapi-to config set apiKey=<key>" to set an existing key.',
       );
     });
   });

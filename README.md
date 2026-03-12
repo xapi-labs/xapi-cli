@@ -6,10 +6,10 @@ Agent-friendly command-line interface for [xAPI](https://xapi.to) — discover a
 
 ```bash
 # Via npx (no install needed)
-npx @xapi-to/xapi --help
+npx xapi-to --help
 
 # Or install globally with bun
-bun add -g @xapi-to/xapi
+bun add -g xapi-to
 
 # Or from source
 cd xapi-cli && bun install

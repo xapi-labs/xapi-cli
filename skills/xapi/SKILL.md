@@ -14,7 +14,7 @@ Use the `xapi` CLI to access real-time external data and services. xapi is an ag
 xapi is available via npx (no install needed):
 
 ```bash
-npx @xapi-to/xapi <command>
+npx xapi-to <command>
 ```
 
 ## Setup
@@ -23,13 +23,13 @@ Before calling any action, you need an API key:
 
 ```bash
 # Register a new account (apiKey is saved automatically)
-npx @xapi-to/xapi register
+npx xapi-to register
 
 # Or set an existing key
-npx @xapi-to/xapi config set apiKey=<your-key>
+npx xapi-to config set apiKey=<your-key>
 
 # Verify connectivity
-npx @xapi-to/xapi config health
+npx xapi-to config health
 ```
 
 The API key is stored at `~/.xapi/config.json`. You can also set it via `XAPI_API_KEY` env var.
@@ -49,14 +49,14 @@ All commands work with both types. Use `--source capability` or `--source api` t
 
 ```bash
 # 1. Find the right action
-npx @xapi-to/xapi search "twitter"
-npx @xapi-to/xapi search "token price" --source api
+npx xapi-to search "twitter"
+npx xapi-to search "token price" --source api
 
 # 2. Read its schema to learn required parameters
-npx @xapi-to/xapi get twitter.tweet_detail
+npx xapi-to get twitter.tweet_detail
 
 # 3. Call with correct parameters
-npx @xapi-to/xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
+npx xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
 ```
 
 ## Built-in Capabilities — Quick Reference
@@ -67,29 +67,29 @@ Always use `--input` with JSON for passing parameters.
 
 ```bash
 # Get user profile
-npx @xapi-to/xapi call twitter.user_by_screen_name --input '{"screen_name":"elonmusk"}'
+npx xapi-to call twitter.user_by_screen_name --input '{"screen_name":"elonmusk"}'
 
 # Get user's tweets
-npx @xapi-to/xapi call twitter.user_tweets --input '{"user_id":"44196397","count":10}'
+npx xapi-to call twitter.user_tweets --input '{"user_id":"44196397","count":10}'
 
 # Get tweet details and replies
-npx @xapi-to/xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
+npx xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
 
 # Get user's media posts
-npx @xapi-to/xapi call twitter.user_media --input '{"user_id":"44196397"}'
+npx xapi-to call twitter.user_media --input '{"user_id":"44196397"}'
 
 # Get followers / following
-npx @xapi-to/xapi call twitter.followers --input '{"user_id":"44196397"}'
-npx @xapi-to/xapi call twitter.following --input '{"user_id":"44196397"}'
+npx xapi-to call twitter.followers --input '{"user_id":"44196397"}'
+npx xapi-to call twitter.following --input '{"user_id":"44196397"}'
 
 # Search tweets
-npx @xapi-to/xapi call twitter.search_timeline --input '{"raw_query":"bitcoin","count":20}'
+npx xapi-to call twitter.search_timeline --input '{"raw_query":"bitcoin","count":20}'
 
 # Get retweeters of a tweet
-npx @xapi-to/xapi call twitter.retweeters --input '{"tweet_id":"1234567890"}'
+npx xapi-to call twitter.retweeters --input '{"tweet_id":"1234567890"}'
 
 # Batch get user profiles by usernames
-npx @xapi-to/xapi call twitter.user_by_screen_names --input '{"screen_names":["elonmusk","GlacierLuo"]}'
+npx xapi-to call twitter.user_by_screen_names --input '{"screen_names":["elonmusk","GlacierLuo"]}'
 ```
 
 Note: Twitter user_id is a numeric ID. To get it, first call `twitter.user_by_screen_name` with the username, then extract `user_id` from the response.
@@ -98,79 +98,79 @@ Note: Twitter user_id is a numeric ID. To get it, first call `twitter.user_by_sc
 
 ```bash
 # Get token price and 24h change
-npx @xapi-to/xapi call crypto.token.price --input '{"token":"BTC","chain":"bsc"}'
+npx xapi-to call crypto.token.price --input '{"token":"BTC","chain":"bsc"}'
 
 # Get token metadata
-npx @xapi-to/xapi call crypto.token.metadata --input '{"token":"ETH","chain":"eth"}'
+npx xapi-to call crypto.token.metadata --input '{"token":"ETH","chain":"eth"}'
 ```
 
 ### Web & News Search
 
 ```bash
 # Web search
-npx @xapi-to/xapi call web.search --input '{"q":"latest AI news"}'
+npx xapi-to call web.search --input '{"q":"latest AI news"}'
 
 # Realtime web search with time filter
-npx @xapi-to/xapi call web.search.realtime --input '{"q":"breaking news","timeRange":"day"}'
+npx xapi-to call web.search.realtime --input '{"q":"breaking news","timeRange":"day"}'
 
 # Latest news
-npx @xapi-to/xapi call news.search.latest --input '{"q":"crypto regulation"}'
+npx xapi-to call news.search.latest --input '{"q":"crypto regulation"}'
 ```
 
 ### AI Text Processing
 
 ```bash
 # Fast chat completion
-npx @xapi-to/xapi call ai.text.chat.fast --input '{"messages":[{"role":"user","content":"Explain quantum computing in one sentence"}]}'
+npx xapi-to call ai.text.chat.fast --input '{"messages":[{"role":"user","content":"Explain quantum computing in one sentence"}]}'
 
 # Reasoning chat (more thorough)
-npx @xapi-to/xapi call ai.text.chat.reasoning --input '{"messages":[{"role":"user","content":"Analyze the pros and cons of microservices"}]}'
+npx xapi-to call ai.text.chat.reasoning --input '{"messages":[{"role":"user","content":"Analyze the pros and cons of microservices"}]}'
 
 # Summarize text
-npx @xapi-to/xapi call ai.text.summarize --input '{"text":"<long text here>"}'
+npx xapi-to call ai.text.summarize --input '{"text":"<long text here>"}'
 
 # Rewrite text
-npx @xapi-to/xapi call ai.text.rewrite --input '{"text":"<text>","mode":"formalize"}'
+npx xapi-to call ai.text.rewrite --input '{"text":"<text>","mode":"formalize"}'
 
 # Generate embeddings
-npx @xapi-to/xapi call ai.embedding.generate --input '{"input":"hello world"}'
+npx xapi-to call ai.embedding.generate --input '{"input":"hello world"}'
 ```
 
 ## Discovering Actions
 
 ```bash
 # List all actions
-npx @xapi-to/xapi list
-npx @xapi-to/xapi list --source capability              # only built-in capabilities
-npx @xapi-to/xapi list --source api                     # only third-party APIs
-npx @xapi-to/xapi list --category Social --page-size 10 # filter by category
-npx @xapi-to/xapi list --service-id <uuid>              # filter by specific service
+npx xapi-to list
+npx xapi-to list --source capability              # only built-in capabilities
+npx xapi-to list --source api                     # only third-party APIs
+npx xapi-to list --category Social --page-size 10 # filter by category
+npx xapi-to list --service-id <uuid>              # filter by specific service
 
 # Search by keyword
-npx @xapi-to/xapi search "twitter"
-npx @xapi-to/xapi search "token price" --source api
+npx xapi-to search "twitter"
+npx xapi-to search "token price" --source api
 
 # List all categories
-npx @xapi-to/xapi categories
-npx @xapi-to/xapi categories --source capability
+npx xapi-to categories
+npx xapi-to categories --source capability
 
 # List all services (supports --category, --page, --page-size)
-npx @xapi-to/xapi services
-npx @xapi-to/xapi services --category Social
+npx xapi-to services
+npx xapi-to services --category Social
 
 # Get action schema (shows required parameters)
-npx @xapi-to/xapi get twitter.tweet_detail
+npx xapi-to get twitter.tweet_detail
 
 # Some API actions have multiple HTTP methods on the same path
 # get returns an array when multiple methods exist
-npx @xapi-to/xapi get x-official.2_tweets
+npx xapi-to get x-official.2_tweets
 # Filter by specific HTTP method
-npx @xapi-to/xapi get x-official.2_tweets --method POST
+npx xapi-to get x-official.2_tweets --method POST
 
 # Call an action
-npx @xapi-to/xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
+npx xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
 # Override HTTP method via --method flag (useful for multi-method endpoints)
-npx @xapi-to/xapi call x-official.2_tweets --method POST --input '{"body":{"text":"Hello!"}}'
+npx xapi-to call x-official.2_tweets --method POST --input '{"body":{"text":"Hello!"}}'
 ```
 
 ## Input Format
@@ -179,16 +179,16 @@ Always use `--input` with a JSON object to pass parameters:
 
 ```bash
 # Simple parameters (capability-type actions)
-npx @xapi-to/xapi call twitter.user_by_screen_name --input '{"screen_name":"elonmusk"}'
+npx xapi-to call twitter.user_by_screen_name --input '{"screen_name":"elonmusk"}'
 
 # Nested objects (API-type actions with pathParams/params/body)
-npx @xapi-to/xapi call serper.search --input '{"body":{"q":"hello world"}}'
+npx xapi-to call serper.search --input '{"body":{"q":"hello world"}}'
 
 # When an action has multiple HTTP methods (e.g. GET and POST on /2/tweets),
 # use --method flag to specify which endpoint to call (defaults to GET)
-npx @xapi-to/xapi call x-official.2_tweets --method POST --input '{"body":{"text":"Hello world!"}}'
+npx xapi-to call x-official.2_tweets --method POST --input '{"body":{"text":"Hello world!"}}'
 # Alternatively, "method" inside --input also works (--method flag takes precedence)
-npx @xapi-to/xapi call x-official.2_tweets --input '{"method":"POST","body":{"text":"Hello world!"}}'
+npx xapi-to call x-official.2_tweets --input '{"method":"POST","body":{"text":"Hello world!"}}'
 ```
 
 This ensures correct types (strings, numbers, booleans) are preserved.
@@ -199,16 +199,16 @@ Some actions (e.g. posting tweets via `x-official.2_tweets` with POST) require O
 
 ```bash
 # List available OAuth providers
-npx @xapi-to/xapi oauth providers
+npx xapi-to oauth providers
 
 # Bind Twitter OAuth to your API key (opens browser for authorization)
-npx @xapi-to/xapi oauth bind --provider twitter
+npx xapi-to oauth bind --provider twitter
 
 # Check current OAuth bindings
-npx @xapi-to/xapi oauth status
+npx xapi-to oauth status
 
 # Remove an OAuth binding (get binding-id from oauth status)
-npx @xapi-to/xapi oauth unbind <binding-id>
+npx xapi-to oauth unbind <binding-id>
 ```
 
 **Agent workflow:** If `call` fails with an OAuth/authorization error, run `oauth status` to check bindings, then `oauth bind` if needed.
@@ -217,11 +217,11 @@ npx @xapi-to/xapi oauth unbind <binding-id>
 
 ```bash
 # Check balance
-npx @xapi-to/xapi balance
+npx xapi-to balance
 
 # Top up account
-npx @xapi-to/xapi topup --method stripe --amount 10
-npx @xapi-to/xapi topup --method x402
+npx xapi-to topup --method stripe --amount 10
+npx xapi-to topup --method x402
 ```
 
 ## Available API Services
@@ -235,20 +235,20 @@ Beyond built-in capabilities, xapi proxies several third-party API services incl
 - **OpenRouter API** — Multi-model AI API gateway
 - **Serper API** — Google Search API with 10 endpoints
 
-Use `npx @xapi-to/xapi services --format table` to see the latest list.
+Use `npx xapi-to services --format table` to see the latest list.
 
 ## Error Handling
 
-- **Authentication error** → Run `npx @xapi-to/xapi register` or `config set apiKey=<key>`
-- **OAuth Required error** → Run `npx @xapi-to/xapi oauth bind --provider twitter`
-- **Insufficient balance** → Run `npx @xapi-to/xapi topup --method stripe --amount 10`
+- **Authentication error** → Run `npx xapi-to register` or `config set apiKey=<key>`
+- **OAuth Required error** → Run `npx xapi-to oauth bind --provider twitter`
+- **Insufficient balance** → Run `npx xapi-to topup --method stripe --amount 10`
 - **Unknown action ID** → Use `search` or `list` to find the correct action ID, then `get` to check parameters
 
 ## Tips
 
 - All output is JSON by default. Use `--format pretty` for readable output or `--format table` for tabular display.
 - For Twitter, always get `user_id` first via `twitter.user_by_screen_name` before calling other Twitter APIs that require it.
-- If you get an authentication error, run `npx @xapi-to/xapi register` to create a new account or check your API key with `npx @xapi-to/xapi config show`.
+- If you get an authentication error, run `npx xapi-to register` to create a new account or check your API key with `npx xapi-to config show`.
 - Use `--page` and `--page-size` for pagination on `list`, `search`, and `services`.
 
 ## Security

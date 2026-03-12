@@ -32,7 +32,7 @@ export async function request<T>(
       if (data?.statusCode === 401 || data?.error === 'Unauthorized') {
         throw new Error(
           'Authentication failed: ' + (data.message || 'Invalid or missing API key')
-          + '. Run "npx @xapi-to/xapi config set apiKey=<key>" to update your key.',
+          + '. Run "npx xapi-to config set apiKey=<key>" to update your key.',
         );
       }
       if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && data?.message?.includes('OAuth'))) {
