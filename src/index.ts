@@ -30,6 +30,7 @@ import * as regCmds from './commands/register.ts';
 import * as topupCmds from './commands/topup.ts';
 import * as balanceCmds from './commands/balance.ts';
 import * as oauthCmds from './commands/oauth.ts';
+const { OAUTH_HELP } = oauthCmds;
 
 // ── Argument parser ───────────────────────────────────────────────────────────
 
@@ -105,7 +106,7 @@ COMMANDS
 
 GLOBAL FLAGS
   --format json|pretty|table        Output format (default: json)
-  --help                            Show this help
+  --help                            Show help (use with a command for details, e.g. xapi get --help)
 
 ENV VARS
   XAPI_API_KEY       API key (header: XAPI-Key)
@@ -133,7 +134,7 @@ EXAMPLES
 async function main() {
   const { positional, flags } = parseArgs(process.argv.slice(2));
 
-  if (flags.help || positional.length === 0) {
+  if (positional.length === 0) {
     console.log(HELP);
     process.exit(0);
   }
@@ -154,6 +155,10 @@ async function main() {
 
     // ── OAuth commands ──
     case 'oauth': {
+      if (flags.help || rest.length === 0) {
+        console.log(OAUTH_HELP);
+        process.exit(0);
+      }
       const [subCmd, ...subRest] = rest;
       switch (subCmd) {
         case 'bind':      return oauthCmds.oauthBind(subRest, flags);

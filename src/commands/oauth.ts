@@ -109,6 +109,32 @@ async function findCurrentKeyRecord(
   return match;
 }
 
+// ── Help text ──────────────────────────────────────────────────────────────────
+
+export const OAUTH_HELP = `xapi oauth - Manage OAuth bindings
+
+USAGE
+  xapi oauth <command> [flags]
+
+COMMANDS
+  bind [--provider <name>]   Bind an OAuth account to your API key
+  status                     List current OAuth bindings
+  unbind <binding-id>        Remove an OAuth binding
+  providers                  List available OAuth providers
+
+FLAGS
+  --provider <name>          OAuth provider (default: twitter)
+  --format json|pretty|table   Output format
+
+EXAMPLES
+  xapi oauth bind
+  xapi oauth bind --provider twitter
+  xapi oauth status
+  xapi oauth status --format pretty
+  xapi oauth unbind abc123
+  xapi oauth providers
+`;
+
 // ── Commands ───────────────────────────────────────────────────────────────────
 
 /**

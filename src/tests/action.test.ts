@@ -376,4 +376,56 @@ describe('action commands', () => {
       expect(errSpy).toHaveBeenCalledWith('--code requires a target language, e.g. --code curl, --code py, --code js');
     });
   });
+
+  describe('subcommand --help', () => {
+    let consoleSpy: ReturnType<typeof spyOn>;
+    let exitSpy: ReturnType<typeof spyOn>;
+
+    beforeEach(() => {
+      consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
+      exitSpy = spyOn(process, 'exit').mockImplementation(() => { throw new Error('process.exit'); }) as any;
+    });
+
+    afterEach(() => {
+      consoleSpy.mockRestore();
+      exitSpy.mockRestore();
+    });
+
+    it('actionList --help prints help and exits', async () => {
+      await expect(actionList([], { help: 'true' })).rejects.toThrow('process.exit');
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('xapi list'));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('--source'));
+      expect(exitSpy).toHaveBeenCalledWith(0);
+    });
+
+    it('actionSearch --help prints help and exits', async () => {
+      await expect(actionSearch([], { help: 'true' })).rejects.toThrow('process.exit');
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('xapi search'));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('--category'));
+      expect(exitSpy).toHaveBeenCalledWith(0);
+    });
+
+    it('actionGet --help prints help and exits', async () => {
+      await expect(actionGet([], { help: 'true' })).rejects.toThrow('process.exit');
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('xapi get'));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('CODE TARGETS'));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('python.httpx'));
+      expect(exitSpy).toHaveBeenCalledWith(0);
+    });
+
+    it('actionCall --help prints help and exits', async () => {
+      await expect(actionCall([], { help: 'true' })).rejects.toThrow('process.exit');
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('xapi call'));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('--input'));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('CODE TARGETS'));
+      expect(exitSpy).toHaveBeenCalledWith(0);
+    });
+
+    it('--help takes priority over missing arguments', async () => {
+      // Even without required args, --help should show help instead of error
+      await expect(actionGet([], { help: 'true' })).rejects.toThrow('process.exit');
+      expect(errSpy).not.toHaveBeenCalled();
+      expect(exitSpy).toHaveBeenCalledWith(0);
+    });
+  });
 });
