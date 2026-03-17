@@ -7,8 +7,8 @@
  *   xapi search <query> [--source capability|api] [--category X] [--page N] [--page-size N]
  *   xapi categories [--source capability|api]
  *   xapi services [--page N] [--page-size N] [--category X]
- *   xapi get <id>
- *   xapi call <id> --input '{"k":"v"}'
+ *   xapi get <id> [--code curl|py|js|ts|go]
+ *   xapi call <id> --input '{"k":"v"}' [--code curl|py|js|ts|go]
  *
  *   xapi config show
  *   xapi config set apiKey=<key>
@@ -85,7 +85,10 @@ COMMANDS
     --page N  --page-size N         Pagination
     --category <name>               Filter by category
   get <id> [--method GET|POST|...]   Get action schema (filter by HTTP method)
+    --code <target>                  Generate code snippet (curl, py, js, ts, go)
   call <id> --input '{"key":"val"}'  Execute an action
+    --code <target>                  Generate code snippet instead of executing
+    Variants: python.requests, python.httpx, javascript.fetch, javascript.axios
 
   oauth bind [--provider twitter]   Bind Twitter OAuth to your API key
   oauth status                      List current OAuth bindings
@@ -115,7 +118,10 @@ EXAMPLES
   xapi list --source capability
   xapi search twitter --source api
   xapi get twitter.tweet_detail
+  xapi get twitter.tweet_detail --code curl
+  xapi get twitter.tweet_detail --code py --format pretty
   xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
+  xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}' --code python
   xapi categories
   xapi services --format table
   xapi config set apiKey=xapi_abc123

@@ -6,9 +6,28 @@
 
 import { getConfig, requireApiKey } from '../config.ts';
 import * as client from '../client.ts';
-import { output, err } from '../format.ts';
+import { output, err, getFormat } from '../format.ts';
+import { generateCode, buildDefaultInput, resolveTarget } from '../codegen.ts';
 
 const VALID_SOURCES = ['capability', 'api'];
+
+/** Validate --code flag: check for bare flag and unknown target (fail fast before I/O) */
+function validateCodeFlag(flags: Record<string, string>): void {
+  if (flags.code === 'true') {
+    err('--code requires a target language, e.g. --code curl, --code py, --code js');
+  }
+  resolveTarget(flags.code);
+}
+
+/** Output code snippet respecting --format */
+function outputCode(result: { lang: string; lib: string; code: string }, flags: Record<string, string>) {
+  const fmt = flags.format || getFormat();
+  if (fmt === 'json') {
+    output({ language: result.lang, library: result.lib, code: result.code }, 'json');
+  } else {
+    console.log(result.code);
+  }
+}
 
 /** Validate and return source filter from --source flag */
 function getSource(flags: Record<string, string>): string | undefined {
@@ -121,6 +140,7 @@ export async function actionServices(args: string[], flags: Record<string, strin
 export async function actionGet(args: string[], flags: Record<string, string>) {
   const id = args[0];
   if (!id) err('usage: xapi get <id> [--method GET|POST|DELETE|...]');
+  if (flags.code) validateCodeFlag(flags);
   const cfg = getConfig();
   try {
     const res = await client.actionGet(id, cfg);
@@ -132,6 +152,20 @@ export async function actionGet(args: string[], flags: Record<string, string>) {
     if (filtered.length === 0) {
       err(`no endpoint found for method "${methodFilter}" in action "${id}"`);
     }
+
+    if (flags.code) {
+      if (filtered.length > 1) {
+        process.stderr.write(
+          `Warning: action "${id}" has ${filtered.length} endpoints; using method "${(filtered[0] as any).method}". Use --method to select a specific one.\n`,
+        );
+      }
+      const action = filtered[0] as any;
+      const input = buildDefaultInput(action.input ?? {});
+      const result = generateCode(flags.code, { actionId: id, input, actionHost: cfg.actionHost });
+      outputCode(result, flags);
+      return;
+    }
+
     output(filtered.length === 1 ? filtered[0] : filtered, flags.format as any);
   } catch (e: any) {
     err('get failed', e.message);
@@ -141,8 +175,8 @@ export async function actionGet(args: string[], flags: Record<string, string>) {
 export async function actionCall(args: string[], flags: Record<string, string>) {
   const id = args[0];
   if (!id) err('usage: xapi call <id> --input \'{"key":"val"}\'');
+  if (flags.code) validateCodeFlag(flags);
   const cfg = getConfig();
-  requireApiKey(cfg);
   let input: Record<string, unknown> = {};
   if (flags.input) {
     try {
@@ -154,6 +188,14 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
   if (flags.method) {
     input = { ...input, method: flags.method.toUpperCase() };
   }
+
+  if (flags.code) {
+    const result = generateCode(flags.code, { actionId: id, input, actionHost: cfg.actionHost });
+    outputCode(result, flags);
+    return;
+  }
+
+  requireApiKey(cfg);
   try {
     const res = await client.actionCall(id, input, cfg);
     output(res, flags.format as any);

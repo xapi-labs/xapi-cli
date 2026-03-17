@@ -218,6 +218,82 @@ describe('action commands', () => {
     it('calls err when no id provided', async () => {
       await expect(actionGet([], {})).rejects.toThrow('err called');
     });
+
+    it('outputs code snippet when --code flag is set', async () => {
+      const mockSchema = {
+        ...mockActions[0],
+        input: {
+          type: 'object',
+          required: ['tweet_id'],
+          properties: {
+            tweet_id: { type: 'string' },
+            with_community: { type: 'boolean', default: true },
+          },
+        },
+      };
+      const spy = spyOn(client, 'actionGet').mockResolvedValue([mockSchema] as any);
+      const consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
+      await actionGet(['twitter.tweet_detail'], { code: 'curl', format: 'pretty' });
+      expect(consoleSpy).toHaveBeenCalled();
+      const output = consoleSpy.mock.calls[0][0] as string;
+      expect(output).toContain('curl -X POST');
+      expect(output).toContain('twitter.tweet_detail');
+      expect(output).toContain('XAPI-Key');
+      spy.mockRestore();
+      consoleSpy.mockRestore();
+    });
+
+    it('outputs JSON-wrapped code when --code with default format', async () => {
+      const mockSchema = {
+        ...mockActions[0],
+        input: { type: 'object', properties: { tweet_id: { type: 'string' } } },
+      };
+      const spy = spyOn(client, 'actionGet').mockResolvedValue([mockSchema] as any);
+      await actionGet(['twitter.tweet_detail'], { code: 'py' });
+      expect(outputSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ language: 'python', library: 'requests', code: expect.any(String) }),
+        'json',
+      );
+      spy.mockRestore();
+    });
+
+    it('calls err when --code has no value (bare flag) without making API call', async () => {
+      const spy = spyOn(client, 'actionGet');
+      await expect(actionGet(['twitter.tweet_detail'], { code: 'true' })).rejects.toThrow('err called');
+      expect(errSpy).toHaveBeenCalledTimes(1);
+      expect(errSpy).toHaveBeenCalledWith(
+        '--code requires a target language, e.g. --code curl, --code py, --code js',
+      );
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    });
+
+    it('warns to stderr when action has multiple endpoints under --code', async () => {
+      const multiActions = [
+        { ...mockActions[0], method: 'GET', input: {} },
+        { ...mockActions[0], method: 'POST', input: {} },
+      ];
+      const spy = spyOn(client, 'actionGet').mockResolvedValue(multiActions as any);
+      const stderrSpy = spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
+      await actionGet(['twitter.tweet_detail'], { code: 'curl', format: 'pretty' });
+      expect(stderrSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Warning: action "twitter.tweet_detail" has 2 endpoints'),
+      );
+      expect(consoleSpy).toHaveBeenCalled();
+      const output = consoleSpy.mock.calls[0][0] as string;
+      expect(output).toContain('curl -X POST');
+      spy.mockRestore();
+      stderrSpy.mockRestore();
+      consoleSpy.mockRestore();
+    });
+
+    it('throws for unknown --code target without making API call', async () => {
+      const spy = spyOn(client, 'actionGet');
+      await expect(actionGet(['test'], { code: 'ruby' })).rejects.toThrow('unknown --code target');
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    });
   });
 
   describe('actionCall', () => {
@@ -268,6 +344,36 @@ describe('action commands', () => {
         'API key not configured',
         'Run "npx xapi-to register" to create an account, or "npx xapi-to config set apiKey=<key>" to set an existing key.',
       );
+    });
+
+    it('outputs code snippet and does not execute when --code flag is set', async () => {
+      const callSpy = spyOn(client, 'actionCall');
+      const consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
+      await actionCall(['twitter.tweet_detail'], { input: '{"tweet_id":"123"}', code: 'py', format: 'pretty' });
+      expect(callSpy).not.toHaveBeenCalled();
+      const output = consoleSpy.mock.calls[0][0] as string;
+      expect(output).toContain('requests.post');
+      expect(output).toContain('"tweet_id": "123"');
+      callSpy.mockRestore();
+      consoleSpy.mockRestore();
+    });
+
+    it('does not require apiKey when --code flag is set', async () => {
+      cfgSpy.mockReturnValue({ actionHost: 'action.xapi.to', apiKey: undefined });
+      const consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
+      await actionCall(['test'], { code: 'curl', format: 'pretty' });
+      expect(consoleSpy).toHaveBeenCalled();
+      expect(errSpy).not.toHaveBeenCalled();
+      consoleSpy.mockRestore();
+    });
+
+    it('throws for unknown --code target', async () => {
+      await expect(actionCall(['test'], { code: 'ruby' })).rejects.toThrow('unknown --code target');
+    });
+
+    it('calls err when --code has no value (bare flag)', async () => {
+      await expect(actionCall(['test'], { code: 'true' })).rejects.toThrow('err called');
+      expect(errSpy).toHaveBeenCalledWith('--code requires a target language, e.g. --code curl, --code py, --code js');
     });
   });
 });
