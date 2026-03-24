@@ -12,7 +12,7 @@
  *
  *   xapi config show
  *   xapi config set apiKey=<key>
- *   xapi config health
+ *   xapi health
  *
  * Global flags:
  *   --format json|pretty|table   output format (default: json)
@@ -100,9 +100,10 @@ COMMANDS
   balance                           Show current account balance
   topup [--amount <usd>] [--method stripe|x402]   Generate payment URL
 
+  health                            Check backend connectivity
+
   config show                       Show current config
   config set apiKey=<key>           Save API key to ~/.xapi/config.json
-  config health                     Check backend connectivity
 
 GLOBAL FLAGS
   --format json|pretty|table        Output format (default: json)
@@ -126,7 +127,7 @@ EXAMPLES
   xapi categories
   xapi services --format table
   xapi config set apiKey=xapi_abc123
-  xapi config health
+  xapi health
 `;
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -176,6 +177,7 @@ async function main() {
     case 'register':   return regCmds.register(rest, flags);
     case 'balance':    return balanceCmds.balance(rest, flags);
     case 'topup':      return topupCmds.topup(rest, flags);
+    case 'health':     return cfgCmds.configHealth(rest, flags);
 
     // ── Config commands ──
     case 'config': {
@@ -183,7 +185,6 @@ async function main() {
       switch (subCmd) {
         case 'show':   return cfgCmds.configShow(subRest, flags);
         case 'set':    return cfgCmds.configSet(subRest, flags);
-        case 'health': return cfgCmds.configHealth(subRest, flags);
         default:
           console.error(JSON.stringify({ error: `unknown config command: ${subCmd}` }));
           process.exit(1);
