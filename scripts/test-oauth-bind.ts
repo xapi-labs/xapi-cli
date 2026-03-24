@@ -7,7 +7,7 @@
  *
  * 环境变量:
  *   XAPI_API_HOST   后端地址 (默认: localhost:3033)
- *   XAPI_API_KEY    使用已有 API Key（不填则自动注册新账号）
+ *   XAPI_KEY    使用已有 API Key（不填则自动注册新账号）
  *   PROVIDER        OAuth provider 名称 (默认: twitter)
  */
 
@@ -40,9 +40,9 @@ async function main() {
   sep();
 
   // 1. API Key
-  let apiKey = process.env.XAPI_API_KEY || '';
+  let apiKey = process.env.XAPI_KEY || '';
   if (!apiKey) {
-    log('未设置 XAPI_API_KEY，正在注册新账号...');
+    log('未设置 XAPI_KEY，正在注册新账号...');
     const res = await fetch(`${BASE_URL}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

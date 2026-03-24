@@ -25,7 +25,7 @@ xapi register
 xapi config set apiKey=sk-xxx
 
 # 3. Or via env var
-export XAPI_API_KEY=sk-xxx
+export XAPI_KEY=sk-xxx
 
 # 4. Verify connectivity
 xapi config health
@@ -119,7 +119,7 @@ xapi list --format table                             # human-readable table
 
 | Variable | Description |
 |---|---|
-| `XAPI_API_KEY` | API key (overrides config file) |
+| `XAPI_KEY` | API key (overrides config file) |
 | `XAPI_ACTION_HOST` | Action service host (default: `action.xapi.to`) |
 | `XAPI_OUTPUT` | Default output format (`json`\|`pretty`\|`table`) |
 

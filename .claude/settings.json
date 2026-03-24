@@ -51,7 +51,8 @@
       "Bash(bun run src/index.ts api search \"openrouter\")",
       "Bash(bun run src/index.ts api call 6a58949e-a3a7-42d8-8dbc-47c5d0517c64 --input '{\"\"body\"\":{\"\"model\"\":\"\"deepseek/deepseek-chat\"\",\"\"messages\"\":[{\"\"role\"\":\"\"user\"\",\"\"content\"\":\"\"Say hi\"\"}],\"\"max_tokens\"\":50}}')",
       "Bash(bun run src/index.ts api call d8379cb9-da4a-4856-baff-5cff3b53ed01 --input '{\"\"body\"\":{\"\"model\"\":\"\"qwen/qwen3-embedding-8b\"\",\"\"input\"\":\"\"hello world\"\"}}')",
-      "Bash(bun test)"
+      "Bash(bun test)",
+      "Bash(bun run:*)"
     ]
   }
 }

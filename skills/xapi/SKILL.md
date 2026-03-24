@@ -2,7 +2,7 @@
 name: xapi
 description: Access real-time external data via the xapi CLI — Twitter/X, Douyin/TikTok, Reddit, Weibo, crypto prices, web/news/image/video/scholar search, AI text processing, and SMS verification. Use when the user mentions xapi, wants to call a third-party API, or asks what external services are available.
 homepage: https://xapi.to
-metadata: {"openclaw":{"emoji":"x","requires":{"anyBins":["npx"]},"primaryEnv":"XAPI_API_KEY"}}
+metadata: {"openclaw":{"emoji":"x","requires":{"anyBins":["npx"]},"primaryEnv":"XAPI_KEY"}}
 ---
 
 # xapi CLI Skill
@@ -32,7 +32,7 @@ npx xapi-to config set apiKey=<your-key>
 npx xapi-to config health
 ```
 
-The API key is stored at `~/.xapi/config.json`. You can also set it via `XAPI_API_KEY` env var.
+The API key is stored at `~/.xapi/config.json`. You can also set it via `XAPI_KEY` env var.
 
 ## Global Flags
 

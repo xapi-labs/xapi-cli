@@ -129,10 +129,10 @@ function genCurl(params: CodegenParams): string {
   const url = baseUrl(params.actionHost);
   const body = jsonBody(params.actionId, params.input);
   return [
-    '# Set XAPI_API_KEY env var or replace with your key',
+    '# Set XAPI_KEY env var or replace with your key',
     `curl -X POST '${shellEscape(url)}' \\`,
     `  -H 'Content-Type: application/json' \\`,
-    `  -H "XAPI-Key: \${XAPI_API_KEY}" \\`,
+    `  -H "XAPI-Key: \${XAPI_KEY}" \\`,
     `  -d '${shellEscape(body)}'`,
   ].join('\n');
 }
@@ -142,7 +142,7 @@ function genPython(lib: 'requests' | 'httpx', params: CodegenParams): string {
   const payload = { action_id: params.actionId, input: params.input };
   return [
     `# pip install ${lib}`,
-    '# Set XAPI_API_KEY env var or replace with your key',
+    '# Set XAPI_KEY env var or replace with your key',
     'import os',
     `import ${lib}`,
     '',
@@ -150,7 +150,7 @@ function genPython(lib: 'requests' | 'httpx', params: CodegenParams): string {
     `    "${url}",`,
     `    headers={`,
     `        "Content-Type": "application/json",`,
-    `        "XAPI-Key": os.environ["XAPI_API_KEY"],`,
+    `        "XAPI-Key": os.environ["XAPI_KEY"],`,
     `    },`,
     `    json=${indent(pythonDict(payload), 4)},`,
     `)`,
@@ -162,12 +162,12 @@ function genJavaScriptFetch(params: CodegenParams): string {
   const url = baseUrl(params.actionHost);
   const body = jsonBody(params.actionId, params.input);
   return [
-    '// Set XAPI_API_KEY env var or replace with your key',
+    '// Set XAPI_KEY env var or replace with your key',
     `const resp = await fetch("${url}", {`,
     `  method: "POST",`,
     `  headers: {`,
     `    "Content-Type": "application/json",`,
-    `    "XAPI-Key": process.env.XAPI_API_KEY,`,
+    `    "XAPI-Key": process.env.XAPI_KEY,`,
     `  },`,
     `  body: JSON.stringify(${indent(body, 2)}),`,
     `});`,
@@ -180,7 +180,7 @@ function genJavaScriptAxios(params: CodegenParams): string {
   const body = jsonBody(params.actionId, params.input);
   return [
     '// npm install axios',
-    '// Set XAPI_API_KEY env var or replace with your key',
+    '// Set XAPI_KEY env var or replace with your key',
     'import axios from "axios";',
     '',
     `const resp = await axios.post(`,
@@ -189,7 +189,7 @@ function genJavaScriptAxios(params: CodegenParams): string {
     `  {`,
     `    headers: {`,
     `      "Content-Type": "application/json",`,
-    `      "XAPI-Key": process.env.XAPI_API_KEY,`,
+    `      "XAPI-Key": process.env.XAPI_KEY,`,
     `    },`,
     `  },`,
     `);`,
@@ -201,12 +201,12 @@ function genTypescriptFetch(params: CodegenParams): string {
   const url = baseUrl(params.actionHost);
   const body = jsonBody(params.actionId, params.input);
   return [
-    '// Set XAPI_API_KEY env var or replace with your key',
+    '// Set XAPI_KEY env var or replace with your key',
     `const resp: Response = await fetch("${url}", {`,
     `  method: "POST",`,
     `  headers: {`,
     `    "Content-Type": "application/json",`,
-    `    "XAPI-Key": process.env.XAPI_API_KEY!,`,
+    `    "XAPI-Key": process.env.XAPI_KEY!,`,
     `  },`,
     `  body: JSON.stringify(${indent(body, 2)}),`,
     `});`,
@@ -220,7 +220,7 @@ function genGo(params: CodegenParams): string {
   const body = jsonBody(params.actionId, params.input);
   const escaped = body.replace(/`/g, '` + "`" + `');
   return [
-    '// Set XAPI_API_KEY env var or replace with your key',
+    '// Set XAPI_KEY env var or replace with your key',
     'package main',
     '',
     'import (',
@@ -238,7 +238,7 @@ function genGo(params: CodegenParams): string {
     '\t\tpanic(err)',
     '\t}',
     '\treq.Header.Set("Content-Type", "application/json")',
-    '\treq.Header.Set("XAPI-Key", os.Getenv("XAPI_API_KEY"))',
+    '\treq.Header.Set("XAPI-Key", os.Getenv("XAPI_KEY"))',
     '',
     '\tresp, err := http.DefaultClient.Do(req)',
     '\tif err != nil {',

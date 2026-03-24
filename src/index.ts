@@ -19,7 +19,7 @@
  *   --help                       show help
  *
  * Env vars:
- *   XAPI_API_KEY       API key
+ *   XAPI_KEY       API key
  *   XAPI_ACTION_HOST   Action service host (default: action.xapi.to)
  *   XAPI_OUTPUT        default output format (json|pretty|table)
  */
@@ -110,7 +110,7 @@ GLOBAL FLAGS
   --help                            Show help (use with a command for details, e.g. xapi get --help)
 
 ENV VARS
-  XAPI_API_KEY       API key (header: XAPI-Key)
+  XAPI_KEY       API key (header: XAPI-Key)
   XAPI_ACTION_HOST   Action service host (default: action.xapi.to)
   XAPI_OUTPUT        Default output format
 

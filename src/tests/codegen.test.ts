@@ -134,7 +134,7 @@ describe('generateCode', () => {
       expect(result.code).toContain('curl -X POST');
       expect(result.code).toContain('https://action.xapi.to/v1/actions/execute');
       expect(result.code).toContain('XAPI-Key');
-      expect(result.code).toContain('XAPI_API_KEY');
+      expect(result.code).toContain('XAPI_KEY');
       expect(result.code).toContain('twitter.tweet_detail');
       expect(result.code).toContain('"tweet_id": "123"');
     });
@@ -156,7 +156,7 @@ describe('generateCode', () => {
       expect(result.lib).toBe('requests');
       expect(result.code).toContain('import requests');
       expect(result.code).toContain('requests.post');
-      expect(result.code).toContain('os.environ["XAPI_API_KEY"]');
+      expect(result.code).toContain('os.environ["XAPI_KEY"]');
       expect(result.code).toContain('XAPI-Key');
       expect(result.code).toContain('twitter.tweet_detail');
     });
@@ -195,7 +195,7 @@ describe('generateCode', () => {
       expect(result.lang).toBe('javascript');
       expect(result.lib).toBe('fetch');
       expect(result.code).toContain('await fetch');
-      expect(result.code).toContain('process.env.XAPI_API_KEY');
+      expect(result.code).toContain('process.env.XAPI_KEY');
       expect(result.code).toContain('XAPI-Key');
       expect(result.code).toContain('twitter.tweet_detail');
     });
@@ -215,7 +215,7 @@ describe('generateCode', () => {
       expect(result.lang).toBe('typescript');
       expect(result.lib).toBe('fetch');
       expect(result.code).toContain('const resp: Response');
-      expect(result.code).toContain('process.env.XAPI_API_KEY!');
+      expect(result.code).toContain('process.env.XAPI_KEY!');
     });
   });
 
@@ -226,7 +226,7 @@ describe('generateCode', () => {
       expect(result.lib).toBe('net/http');
       expect(result.code).toContain('package main');
       expect(result.code).toContain('http.NewRequest');
-      expect(result.code).toContain('os.Getenv("XAPI_API_KEY")');
+      expect(result.code).toContain('os.Getenv("XAPI_KEY")');
       expect(result.code).toContain('XAPI-Key');
     });
 
@@ -265,7 +265,7 @@ describe('generateCode', () => {
   describe('curl header quoting', () => {
     it('uses double quotes for XAPI-Key header to prevent word splitting', () => {
       const result = generateCode('curl', params);
-      expect(result.code).toContain('-H "XAPI-Key: ${XAPI_API_KEY}"');
+      expect(result.code).toContain('-H "XAPI-Key: ${XAPI_KEY}"');
     });
   });
 });

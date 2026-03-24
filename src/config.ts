@@ -1,7 +1,7 @@
 /**
  * Config management
  * Only apiKey is user-configurable. Host is built-in.
- * Reads from env var XAPI_API_KEY or ~/.xapi/config.json
+ * Reads from env var XAPI_KEY or ~/.xapi/config.json
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
@@ -38,7 +38,7 @@ export function getConfig(): XapiConfig {
   const file = loadFileConfig();
   return {
     actionHost: XAPI_ACTION_HOST,
-    apiKey: process.env.XAPI_API_KEY || file.apiKey,
+    apiKey: process.env.XAPI_KEY || process.env.XAPI_API_KEY || file.apiKey,
   };
 }
 
@@ -62,7 +62,7 @@ export function showConfig(): void {
     actionHost: cfg.actionHost,
     apiKey: cfg.apiKey ? `${cfg.apiKey.slice(0, 8)}...` : undefined,
     source: {
-      apiKey: process.env.XAPI_API_KEY ? 'env' : file.apiKey ? 'file' : 'none',
+      apiKey: (process.env.XAPI_KEY || process.env.XAPI_API_KEY) ? 'env' : file.apiKey ? 'file' : 'none',
     },
     configFile: CONFIG_FILE,
   }, null, 2));
