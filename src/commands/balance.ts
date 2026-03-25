@@ -1,6 +1,6 @@
 /**
  * balance command
- * Fetches xTokenBalance from GET /auth/me
+ * Fetches balance from GET /auth/me
  */
 
 import { getConfig, requireApiKey, XAPI_API_HOST, scheme } from '../config.ts';
@@ -20,12 +20,12 @@ export async function balance(args: string[], flags: Record<string, string>) {
   }
 
   try {
-    const me = await request<{ xTokenBalance: string; accountType: string; tier: string }>(
+    const me = await request<{ balance: string; accountType: string; tier: string }>(
       `${scheme(XAPI_API_HOST)}://${XAPI_API_HOST}/api/auth/me`,
       { method: 'GET', headers: { Authorization: `Bearer ${token!}` } },
     );
     output({
-      balance: me.xTokenBalance,
+      balance: me.balance,
       accountType: me.accountType,
       tier: me.tier,
     }, flags.format as any);

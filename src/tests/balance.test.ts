@@ -34,7 +34,7 @@ describe('balance command', () => {
       user: {},
     });
     const requestSpy = spyOn(client, 'request').mockResolvedValue({
-      xTokenBalance: '999.5',
+      balance: '999.5',
       accountType: 'ENTITY',
       tier: 'BASIC',
     });
