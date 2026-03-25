@@ -19,7 +19,7 @@ npx xapi-to <command>
 
 ## Setup
 
-Before calling any action, you need an API key:
+Before calling any API, you need an API key:
 
 ```bash
 # Register a new account (apiKey is saved automatically)
@@ -41,27 +41,27 @@ All commands support:
 - `--format json|pretty|table` — Output format (default: `json`). `pretty` for indented JSON, `table` for tabular display.
 - `--help` — Show command-specific help.
 
-## Two types of actions
+## Two types of APIs
 
-xapi offers two types of actions under a unified interface:
+xapi offers two types of APIs under a unified interface:
 
-1. **Capabilities** (`--source capability`) — Built-in actions with known IDs (Twitter, crypto, AI, web search, news)
-2. **APIs** (`--source api`) — Third-party API proxies, discovered via `list`, `search`, or `services`
+1. **Capabilities** (`--source capability`) — Built-in APIs with known IDs (Twitter, crypto, AI, web search, news)
+2. **Third-party APIs** (`--source api`) — Proxied services, discovered via `list`, `search`, or `services`
 
 All commands work with both types. Use `--source capability` or `--source api` to filter.
 
 ## Usage Workflow
 
-**Critical rule:** Before calling any action, always use `get` to understand the required parameters.
+**Critical rule:** Before calling any API, always use `get` to understand the required parameters.
 
-### Discovering actions
+### Discovering APIs
 
 ```bash
 # Search by keyword
 npx xapi-to search "twitter"
 npx xapi-to search "token price" --source api
 
-# List all actions (supports --source, --category, --page, --page-size)
+# List all APIs (supports --source, --category, --page, --page-size)
 npx xapi-to list
 npx xapi-to list --source capability
 npx xapi-to list --category Social --page-size 10
@@ -70,11 +70,11 @@ npx xapi-to list --category Social --page-size 10
 npx xapi-to categories
 npx xapi-to services --category Social
 
-# Get action schema (shows required parameters)
+# Get API schema (shows required parameters)
 npx xapi-to get crypto.token.price
 ```
 
-### Calling actions
+### Calling APIs
 
 ```bash
 # Always get the schema first, then call
@@ -84,7 +84,7 @@ npx xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
 
 ### Multi-method endpoints
 
-Some API actions have multiple HTTP methods on the same path (e.g. GET and POST on `/2/tweets`). Use `--method` to select which one:
+Some APIs have multiple HTTP methods on the same path (e.g. GET and POST on `/2/tweets`). Use `--method` to select which one:
 
 ```bash
 # get returns an array when multiple methods exist
@@ -95,11 +95,11 @@ npx xapi-to get x-official.2_tweets --method POST
 npx xapi-to call x-official.2_tweets --method POST --input '{"body":{"text":"Hello!"}}'
 ```
 
-## Built-in Capabilities — Quick Reference
+## Built-in APIs — Quick Reference
 
 Always use `--input` with JSON for passing parameters.
 
-### Twitter / X (8 actions)
+### Twitter / X (8 APIs)
 
 ```bash
 # Get user profile
@@ -125,9 +125,9 @@ npx xapi-to call twitter.search_timeline --input '{"raw_query":"bitcoin","count"
 npx xapi-to call twitter.retweeters --input '{"tweet_id":"1234567890"}'
 ```
 
-Note: Twitter user_id is a numeric ID. To get it, first call `twitter.user_by_screen_name` with the username, then extract `user_id` from the response.
+Note: Twitter user_id is a numeric ID. To get it, first call `twitter.user_by_screen_name` with the username, then extract `rest_id` from the response.
 
-### Crypto (2 actions)
+### Crypto (2 APIs)
 
 ```bash
 # Get token price and 24h change
@@ -137,7 +137,7 @@ npx xapi-to call crypto.token.price --input '{"token":"BTC","chain":"bsc"}'
 npx xapi-to call crypto.token.metadata --input '{"token":"ETH","chain":"eth"}'
 ```
 
-### Web Search (9 actions)
+### Web Search (9 APIs)
 
 ```bash
 # General web search
@@ -168,7 +168,7 @@ npx xapi-to call web.search.places --input '{"q":"best ramen in Tokyo"}'
 npx xapi-to call web.search.shopping --input '{"q":"mechanical keyboard"}'
 ```
 
-### AI Text Processing (5 actions)
+### AI Text Processing (5 APIs)
 
 ```bash
 # Fast chat completion
@@ -192,10 +192,10 @@ npx xapi-to call ai.embedding.generate --input '{"input":"hello world"}'
 Always use `--input` with a JSON object to pass parameters:
 
 ```bash
-# Simple parameters (capability-type actions)
+# Simple parameters (built-in capabilities)
 npx xapi-to call web.search --input '{"q":"hello world"}'
 
-# Nested objects (API-type actions with pathParams/params/body)
+# Nested objects (third-party APIs with pathParams/params/body)
 npx xapi-to call serper.search --input '{"body":{"q":"hello world"}}'
 ```
 
@@ -203,7 +203,7 @@ This ensures correct types (strings, numbers, booleans) are preserved.
 
 ## Code Generation (`--code`)
 
-Use `--code <target>` with `get` or `call` to generate ready-to-use code snippets instead of executing the action. This is useful for embedding xapi calls into scripts or applications.
+Use `--code <target>` with `get` or `call` to generate ready-to-use code snippets instead of executing the API call. This is useful for embedding xapi calls into scripts or applications.
 
 Supported targets and aliases:
 
@@ -216,7 +216,7 @@ Supported targets and aliases:
 | `go` | — | net/http | — |
 
 ```bash
-# Generate a curl command from action schema (template with empty values)
+# Generate a curl command from API schema (template with empty values)
 npx xapi-to get crypto.token.price --code curl
 
 # Generate a Python snippet with your input pre-filled
@@ -233,7 +233,7 @@ npx xapi-to get web.search --code ts
 
 ## OAuth (Twitter Write Access)
 
-Some actions (e.g. posting tweets via `x-official.2_tweets` with POST) require OAuth authorization. Use `oauth` commands to bind your Twitter account to your API key.
+Some APIs (e.g. posting tweets via `x-official.2_tweets` with POST) require OAuth authorization. Use `oauth` commands to bind your Twitter account to your API key.
 
 ```bash
 # List available OAuth providers
@@ -274,7 +274,7 @@ Beyond built-in capabilities, xapi proxies several third-party API services incl
 - **Twitter API** (`twitter`) — Alternative Twitter data API with 26 endpoints
 - **Reddit** (`reddit`) — Reddit API with 24 endpoints (posts, comments, subreddits, search)
 - **Weibo** (`weibo-app`) — Weibo API with 20 endpoints (user profiles, feeds, search, trending)
-- **5SIM SMS** (`5sim-sms`) — SMS verification API with 20 endpoints (virtual numbers, activation codes)
+- **5SIM SMS** (`5sim-sms`) — SMS verification with 20 endpoints (virtual numbers, activation codes)
 - **Ave Cloud Data API** (`ave`) — Crypto data with 19 endpoints
 - **Serper API** (`serper`) — Google Search API with 10 endpoints
 - **OpenRouter API** (`openrouter`) — Multi-model AI API gateway with 2 endpoints
@@ -286,11 +286,18 @@ Use `npx xapi-to services --format table` to see the latest list.
 - **Authentication error** → Run `npx xapi-to register` or `config set apiKey=<key>`
 - **OAuth Required error** → Run `npx xapi-to oauth bind --provider twitter`
 - **Insufficient balance** → Run `npx xapi-to topup --method stripe --amount 10`
-- **Unknown action ID** → Use `search` or `list` to find the correct action ID, then `get` to check parameters
+- **Unknown API ID** → Use `search` or `list` to find the correct ID, then `get` to check parameters
 
 ## Tips
 
 - Use `--page` and `--page-size` for pagination on `list`, `search`, and `services`.
+
+## Specialized Guides
+
+When the user's task involves these workflows, read the corresponding guide file for detailed instructions:
+
+- **`guides/twitter.md`** — Twitter/X: read tweets, post tweets, reply, quote, like, retweet, OAuth binding
+- **`guides/sms.md`** — SMS verification: buy virtual phone numbers, receive verification codes, finish/cancel orders (5SIM)
 
 ## Security
 
