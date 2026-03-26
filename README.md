@@ -76,7 +76,7 @@ xapi oauth providers                                 # list available providers
 
 ```bash
 xapi register                                        # create account, saves apiKey automatically
-xapi balance                                         # show xToken balance
+xapi balance                                         # show USD balance
 xapi topup                                           # generate payment URL
 xapi topup --method stripe --amount 10               # stripe, $10
 xapi topup --method x402                             # x402 (USDC on Base)
