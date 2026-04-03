@@ -9,13 +9,17 @@
 import { XAPI_API_HOST, saveConfig, scheme } from '../config.ts';
 import { output, err } from '../format.ts';
 
-async function registerAccount() {
+async function registerAccount(referralCode?: string) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15_000);
   try {
+    const body: Record<string, string> = {};
+    if (referralCode) body.referralCode = referralCode;
+
     const res = await fetch(`${scheme(XAPI_API_HOST)}://${XAPI_API_HOST}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
     if (!res.ok) {
@@ -25,6 +29,7 @@ async function registerAccount() {
     return res.json() as Promise<{
       apiKey: string;
       claimCode: string;
+      referralCode: string;
       claimSessionId: string;
       claimUrl: string;
       tweetTemplate: string;
@@ -37,13 +42,14 @@ async function registerAccount() {
 
 export async function register(args: string[], flags: Record<string, string>) {
   try {
-    const res = await registerAccount();
+    const res = await registerAccount(flags.referral);
 
     // auto-save apiKey
     saveConfig({ apiKey: res.apiKey });
 
     output({
       apiKey: res.apiKey,
+      referralCode: res.referralCode,
       user: res.user,
       claim: {
         code: res.claimCode,

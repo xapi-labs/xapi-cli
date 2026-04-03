@@ -96,7 +96,7 @@ COMMANDS
   oauth unbind <binding-id>         Remove an OAuth binding
   oauth providers                   List available OAuth providers
 
-  register                          Create a new user account (apiKey saved automatically)
+  register [--referral <code>]       Create a new user account (apiKey saved automatically)
   balance                           Show current account balance
   topup [--amount <usd>] [--method stripe|x402]   Generate payment URL
 
