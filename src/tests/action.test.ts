@@ -268,6 +268,29 @@ describe('action commands', () => {
       spy.mockRestore();
     });
 
+    it('includes top-level method and excludes input.method in --code for API actions', async () => {
+      const mockSchema = {
+        ...mockActions[1],
+        method: 'POST',
+        input: {
+          type: 'object',
+          properties: {
+            method: { type: 'string', enum: ['POST'], description: 'HTTP method (fixed: POST)' },
+            body: { type: 'object', properties: { text: { type: 'string' } } },
+          },
+          required: ['method', 'body'],
+        },
+      };
+      const spy = spyOn(client, 'actionGet').mockResolvedValue([mockSchema] as any);
+      const consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
+      await actionGet(['x-official.2_tweets'], { code: 'curl', format: 'pretty' });
+      const output = consoleSpy.mock.calls[0][0] as string;
+      expect(output).toContain('"method": "POST"');
+      expect(output).not.toContain('"method": ""');
+      spy.mockRestore();
+      consoleSpy.mockRestore();
+    });
+
     it('warns to stderr when action has multiple endpoints under --code', async () => {
       const multiActions = [
         { ...mockActions[0], method: 'GET', input: {} },
@@ -310,14 +333,14 @@ describe('action commands', () => {
     it('calls client.actionCall with id and empty input', async () => {
       const spy = spyOn(client, 'actionCall').mockResolvedValue({ data: 'ok' });
       await actionCall(['twitter.tweet_detail'], {});
-      expect(spy).toHaveBeenCalledWith('twitter.tweet_detail', {}, expect.any(Object));
+      expect(spy).toHaveBeenCalledWith('twitter.tweet_detail', {}, expect.any(Object), undefined);
       spy.mockRestore();
     });
 
     it('parses --input JSON flag', async () => {
       const spy = spyOn(client, 'actionCall').mockResolvedValue({ data: 'ok' });
       await actionCall(['twitter.tweet_detail'], { input: '{"tweet_id":"123"}' });
-      expect(spy).toHaveBeenCalledWith('twitter.tweet_detail', { tweet_id: '123' }, expect.any(Object));
+      expect(spy).toHaveBeenCalledWith('twitter.tweet_detail', { tweet_id: '123' }, expect.any(Object), undefined);
       spy.mockRestore();
     });
 
@@ -330,10 +353,17 @@ describe('action commands', () => {
       expect(errSpy).toHaveBeenCalledWith('--input must be valid JSON');
     });
 
-    it('passes method inside input to upstream (no separate --method flag)', async () => {
+    it('extracts method from input and passes as separate param', async () => {
       const spy = spyOn(client, 'actionCall').mockResolvedValue({ data: 'ok' });
       await actionCall(['x-official.2_tweets'], { input: '{"method":"POST","body":{"text":"hi"}}' });
-      expect(spy).toHaveBeenCalledWith('x-official.2_tweets', { method: 'POST', body: { text: 'hi' } }, expect.any(Object));
+      expect(spy).toHaveBeenCalledWith('x-official.2_tweets', { body: { text: 'hi' } }, expect.any(Object), 'POST');
+      spy.mockRestore();
+    });
+
+    it('--method flag takes priority over method in input', async () => {
+      const spy = spyOn(client, 'actionCall').mockResolvedValue({ data: 'ok' });
+      await actionCall(['x-official.2_tweets'], { input: '{"method":"GET","body":{"text":"hi"}}', method: 'POST' });
+      expect(spy).toHaveBeenCalledWith('x-official.2_tweets', { body: { text: 'hi' } }, expect.any(Object), 'POST');
       spy.mockRestore();
     });
 

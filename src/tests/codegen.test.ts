@@ -239,6 +239,17 @@ describe('generateCode', () => {
     });
   });
 
+  it('includes method in payload when provided', () => {
+    const result = generateCode('curl', { ...params, method: 'POST' });
+    expect(result.code).toContain('"method": "POST"');
+    expect(result.code).toContain('"action_id": "twitter.tweet_detail"');
+  });
+
+  it('omits method from payload when not provided', () => {
+    const result = generateCode('curl', params);
+    expect(result.code).not.toContain('"method"');
+  });
+
   it('uses localhost scheme for local hosts', () => {
     const result = generateCode('curl', { ...params, actionHost: 'localhost:3003' });
     expect(result.code).toContain('http://localhost:3003');

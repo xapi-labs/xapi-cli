@@ -124,13 +124,14 @@ export async function actionCall(
   actionId: string,
   input: Record<string, unknown>,
   opts: ClientOptions,
+  httpMethod?: string,
 ) {
   return request<unknown>(
     `${baseUrl(opts)}/v1/actions/execute`,
     {
       method: 'POST',
       headers: headers(opts.apiKey),
-      body: JSON.stringify({ action_id: actionId, input }),
+      body: JSON.stringify({ action_id: actionId, ...(httpMethod ? { method: httpMethod } : {}), input }),
     },
     EXECUTE_TIMEOUT_MS,
   );

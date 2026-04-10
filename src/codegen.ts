@@ -13,6 +13,7 @@ export interface CodegenParams {
   actionId: string;
   input: Record<string, unknown>;
   actionHost: string;
+  method?: string;
 }
 
 interface ResolvedTarget {
@@ -109,8 +110,8 @@ function baseUrl(actionHost: string): string {
   return `${scheme(actionHost)}://${actionHost}/v1/actions/execute`;
 }
 
-function jsonBody(actionId: string, input: Record<string, unknown>): string {
-  return JSON.stringify({ action_id: actionId, input }, null, 2);
+function jsonBody(actionId: string, input: Record<string, unknown>, method?: string): string {
+  return JSON.stringify({ action_id: actionId, ...(method ? { method } : {}), input }, null, 2);
 }
 
 /** Re-indent a multi-line string so continuation lines are aligned */
@@ -127,7 +128,7 @@ function shellEscape(s: string): string {
 
 function genCurl(params: CodegenParams): string {
   const url = baseUrl(params.actionHost);
-  const body = jsonBody(params.actionId, params.input);
+  const body = jsonBody(params.actionId, params.input, params.method);
   return [
     '# Set XAPI_KEY env var or replace with your key',
     `curl -X POST '${shellEscape(url)}' \\`,
@@ -139,7 +140,7 @@ function genCurl(params: CodegenParams): string {
 
 function genPython(lib: 'requests' | 'httpx', params: CodegenParams): string {
   const url = baseUrl(params.actionHost);
-  const payload = { action_id: params.actionId, input: params.input };
+  const payload = { action_id: params.actionId, ...(params.method ? { method: params.method } : {}), input: params.input };
   return [
     `# pip install ${lib}`,
     '# Set XAPI_KEY env var or replace with your key',
@@ -160,7 +161,7 @@ function genPython(lib: 'requests' | 'httpx', params: CodegenParams): string {
 
 function genJavaScriptFetch(params: CodegenParams): string {
   const url = baseUrl(params.actionHost);
-  const body = jsonBody(params.actionId, params.input);
+  const body = jsonBody(params.actionId, params.input, params.method);
   return [
     '// Set XAPI_KEY env var or replace with your key',
     `const resp = await fetch("${url}", {`,
@@ -177,7 +178,7 @@ function genJavaScriptFetch(params: CodegenParams): string {
 
 function genJavaScriptAxios(params: CodegenParams): string {
   const url = baseUrl(params.actionHost);
-  const body = jsonBody(params.actionId, params.input);
+  const body = jsonBody(params.actionId, params.input, params.method);
   return [
     '// npm install axios',
     '// Set XAPI_KEY env var or replace with your key',
@@ -199,7 +200,7 @@ function genJavaScriptAxios(params: CodegenParams): string {
 
 function genTypescriptFetch(params: CodegenParams): string {
   const url = baseUrl(params.actionHost);
-  const body = jsonBody(params.actionId, params.input);
+  const body = jsonBody(params.actionId, params.input, params.method);
   return [
     '// Set XAPI_KEY env var or replace with your key',
     `const resp: Response = await fetch("${url}", {`,
@@ -217,7 +218,7 @@ function genTypescriptFetch(params: CodegenParams): string {
 
 function genGo(params: CodegenParams): string {
   const url = baseUrl(params.actionHost);
-  const body = jsonBody(params.actionId, params.input);
+  const body = jsonBody(params.actionId, params.input, params.method);
   const escaped = body.replace(/`/g, '` + "`" + `');
   return [
     '// Set XAPI_KEY env var or replace with your key',

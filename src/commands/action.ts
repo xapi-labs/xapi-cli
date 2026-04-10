@@ -279,7 +279,9 @@ export async function actionGet(args: string[], flags: Record<string, string>) {
       }
       const action = filtered[0] as any;
       const input = buildDefaultInput(action.input ?? {});
-      const result = generateCode(flags.code, { actionId: id, input, actionHost: cfg.actionHost });
+      // method 已是顶层字段，从 input 中剔除后端注入的 schema method
+      delete input.method;
+      const result = generateCode(flags.code, { actionId: id, input, actionHost: cfg.actionHost, method: action.method });
       outputCode(result, flags);
       return;
     }
@@ -304,19 +306,19 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
       err('--input must be valid JSON');
     }
   }
-  if (flags.method) {
-    input = { ...input, method: flags.method.toUpperCase() };
-  }
+  // method 作为独立参数传递，兼容 input 内的 method
+  const { method: inputMethod, ...cleanInput } = input;
+  const method = flags.method?.toUpperCase() || (inputMethod as string)?.toUpperCase();
 
   if (flags.code) {
-    const result = generateCode(flags.code, { actionId: id, input, actionHost: cfg.actionHost });
+    const result = generateCode(flags.code, { actionId: id, input: cleanInput, actionHost: cfg.actionHost, method });
     outputCode(result, flags);
     return;
   }
 
   requireApiKey(cfg);
   try {
-    const res = await client.actionCall(id, input, cfg);
+    const res = await client.actionCall(id, cleanInput, cfg, method);
     output(res, flags.format as any);
   } catch (e: any) {
     err('call failed', e.message);
