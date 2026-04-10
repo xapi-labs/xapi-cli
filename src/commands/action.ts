@@ -278,10 +278,8 @@ export async function actionGet(args: string[], flags: Record<string, string>) {
         );
       }
       const action = filtered[0] as any;
-      const input = buildDefaultInput(action.input ?? {});
-      // method 已是顶层字段，从 input 中剔除后端注入的 schema method
-      delete input.method;
-      const result = generateCode(flags.code, { actionId: id, input, actionHost: cfg.actionHost, method: action.method });
+      const { method: _schemaMethod, ...cleanCodeInput } = buildDefaultInput(action.input ?? {});
+      const result = generateCode(flags.code, { actionId: id, input: cleanCodeInput, actionHost: cfg.actionHost, method: action.method });
       outputCode(result, flags);
       return;
     }
@@ -305,10 +303,14 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
     } catch {
       err('--input must be valid JSON');
     }
+    if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+      err('--input must be a JSON object');
+    }
   }
   // method 作为独立参数传递，兼容 input 内的 method
   const { method: inputMethod, ...cleanInput } = input;
-  const method = flags.method?.toUpperCase() || (inputMethod as string)?.toUpperCase();
+  const method = flags.method?.toUpperCase()
+    || (typeof inputMethod === 'string' ? inputMethod.toUpperCase() : undefined);
 
   if (flags.code) {
     const result = generateCode(flags.code, { actionId: id, input: cleanInput, actionHost: cfg.actionHost, method });
