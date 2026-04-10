@@ -88,6 +88,7 @@ COMMANDS
   get <id> [--method GET|POST|...]   Get action schema (filter by HTTP method)
     --code <target>                  Generate code snippet (curl, py, js, ts, go)
   call <id> --input '{"key":"val"}'  Execute an action
+    --method GET|POST|...            Override HTTP method
     --code <target>                  Generate code snippet instead of executing
     Variants: python.requests, python.httpx, javascript.fetch, javascript.axios
 

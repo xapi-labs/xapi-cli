@@ -388,6 +388,19 @@ describe('action commands', () => {
       consoleSpy.mockRestore();
     });
 
+    it('--method + --code generates snippet with top-level method', async () => {
+      const callSpy = spyOn(client, 'actionCall');
+      const consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
+      await actionCall(['x-official.2_tweets'], { input: '{"body":{"text":"hi"}}', method: 'POST', code: 'curl', format: 'pretty' });
+      expect(callSpy).not.toHaveBeenCalled();
+      const output = consoleSpy.mock.calls[0][0] as string;
+      expect(output).toContain('"method": "POST"');
+      expect(output).toContain('"action_id": "x-official.2_tweets"');
+      expect(output).toContain('"text": "hi"');
+      callSpy.mockRestore();
+      consoleSpy.mockRestore();
+    });
+
     it('does not require apiKey when --code flag is set', async () => {
       cfgSpy.mockReturnValue({ actionHost: 'action.xapi.to', apiKey: undefined });
       const consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
