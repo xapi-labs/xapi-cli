@@ -22,6 +22,14 @@ npx xapi-to call twitter.user_tweets --input '{"user_id":"44196397","count":10}'
 
 Each tweet includes: `id`, `full_text`, `created_at`, `favorite_count`, `retweet_count`, `reply_count`, `views_count`, `media`, `author`, and `quoted_tweet` if applicable.
 
+### Get a user's tweets and replies
+
+```bash
+npx xapi-to call twitter.user_tweets_and_replies --input '{"user_id":"44196397","count":10}'
+```
+
+Similar to `twitter.user_tweets`, but the results also include the user's replies to other tweets. Each item includes the same fields: `id`, `full_text`, `created_at`, `favorite_count`, `retweet_count`, `reply_count`, `views_count`, `media`, `author`, and `quoted_tweet` if applicable.
+
 ### Get a specific tweet and its replies
 
 ```bash
@@ -137,6 +145,7 @@ npx xapi-to call x-official.2_users_id_retweets --method POST \
 |-----------|--------|-------------|
 | `twitter.user_by_screen_name` | — | Look up user by @handle |
 | `twitter.user_tweets` | — | Get user's recent tweets |
+| `twitter.user_tweets_and_replies` | — | Get user's tweets and replies |
 | `twitter.user_media` | — | Get user's media posts |
 | `twitter.tweet_detail` | — | Get tweet + replies |
 | `twitter.search_timeline` | — | Search tweets |
