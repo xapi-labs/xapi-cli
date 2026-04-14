@@ -296,7 +296,12 @@ Use `npx xapi-to services --format table` to see the latest list.
 
 When the user's task involves these workflows, read the corresponding guide file for detailed instructions:
 
-- **`guides/twitter.md`** — Twitter/X: read tweets, post tweets, reply, quote, like, retweet, OAuth binding
+- **`guides/twitter.md`** — Twitter/X (推特): read tweets, post tweets, reply, quote, like, retweet, OAuth binding
+- **`guides/reddit.md`** — Reddit: user profiles, posts, comments, subreddit feeds, popular/news/games feeds, trending, search
+- **`guides/tiktok.md`** — TikTok: user profiles, videos, comments, search, hashtags, music, live rooms, feed
+- **`guides/douyin.md`** — Douyin (抖音): user profiles, videos, comments, hot search, hashtags, music, video mix/series
+- **`guides/weibo.md`** — Weibo (微博): hot search, content search, user profiles, post details, comments, reposts, media
+- **`guides/google_search.md`** — Google Search: web, realtime, news, image, video, scholar, maps, places, shopping
 - **`guides/sms.md`** — SMS verification: buy virtual phone numbers, receive verification codes, finish/cancel orders (5SIM)
 
 ## Security
