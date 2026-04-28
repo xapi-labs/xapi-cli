@@ -25,8 +25,7 @@ Before calling any API, you need an API key:
 # Register a new account (apiKey is saved automatically)
 npx xapi-to register
 
-# Register with an inviter's referral code (邀请码注册 — establishes the referrer relationship,
-# unlocks +$1 bonus on Twitter claim, and the inviter earns 5% of your future top-ups)
+# Register with an inviter's referral code (establishes the referrer relationship, unlocks +$1 bonus on Twitter claim, and the inviter earns 5% of your future top-ups)
 # please replace xapito to your actual referral code
 npx xapi-to register --referral-code xapito
 npx xapi-to register xapito          # positional shorthand
