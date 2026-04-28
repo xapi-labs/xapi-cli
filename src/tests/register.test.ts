@@ -10,6 +10,7 @@ import { register } from '../commands/register.ts';
 const mockRegisterResponse = {
   apiKey: 'sk-newkey123',
   claimCode: 'CODE123',
+  referralCode: 'CODE123',
   claimSessionId: 'sess-abc',
   claimUrl: 'https://xapi.to/claim?code=CODE123',
   tweetTemplate: 'I just registered @xapi!',
@@ -44,15 +45,17 @@ describe('register command', () => {
     const [url, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(url).toContain('/api/auth/register');
     expect(opts.method).toBe('POST');
+    expect(opts.body).toBe('{}');
     expect(saveConfigSpy).toHaveBeenCalledWith({ apiKey: 'sk-newkey123' });
   });
 
-  it('outputs apiKey, user, claim, and note', async () => {
+  it('outputs apiKey, user, claim, referralCode, and note', async () => {
     await register([], {});
     expect(outputSpy).toHaveBeenCalledWith(
       {
         apiKey: 'sk-newkey123',
         user: mockRegisterResponse.user,
+        referralCode: 'CODE123',
         claim: {
           code: 'CODE123',
           sessionId: 'sess-abc',
@@ -63,6 +66,38 @@ describe('register command', () => {
       },
       undefined,
     );
+  });
+
+  it('forwards --referral-code in request body', async () => {
+    await register([], { 'referral-code': 'a3b8c2' });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(opts.body).toBe(JSON.stringify({ referralCode: 'a3b8c2' }));
+  });
+
+  it('accepts --referralCode camelCase alias', async () => {
+    await register([], { referralCode: 'b4d2e0' });
+    const [, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(opts.body).toBe(JSON.stringify({ referralCode: 'b4d2e0' }));
+  });
+
+  it('accepts referral code as positional argument', async () => {
+    await register(['c1d2e3'], {});
+    const [, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(opts.body).toBe(JSON.stringify({ referralCode: 'c1d2e3' }));
+  });
+
+  it('includes referredBy in output when referral code provided', async () => {
+    await register([], { 'referral-code': 'a3b8c2' });
+    const arg = outputSpy.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg.referredBy).toBe('a3b8c2');
+  });
+
+  it('omits body referralCode when flag value is "true" (no value provided)', async () => {
+    // when user types `--referral-code` without a value, parser stores 'true'
+    await register([], { 'referral-code': 'true' });
+    const [, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(opts.body).toBe('{}');
   });
 
   it('calls err when server returns non-ok response', async () => {

@@ -97,7 +97,8 @@ COMMANDS
   oauth unbind <binding-id>         Remove an OAuth binding
   oauth providers                   List available OAuth providers
 
-  register                          Create a new user account (apiKey saved automatically)
+  register [referral-code]          Create a new user account (apiKey saved automatically)
+    --referral-code <code>          Register with an inviter's referral code (also: --referralCode, or as positional arg)
   balance                           Show current account balance
   topup [--amount <usd>] [--method stripe|x402]   Generate payment URL
 
@@ -117,6 +118,8 @@ ENV VARS
 
 EXAMPLES
   xapi register
+  xapi register --referral-code xapito          # register with an inviter's referral code
+  xapi register xapito                          # positional shorthand
   xapi list --format table
   xapi list --source capability
   xapi search twitter --source api

@@ -21,6 +21,9 @@ cd xapi-cli && bun install
 # 1. Register a new account (apiKey saved automatically)
 xapi register
 
+# 1b. Or register with an inviter's referral code (please replace xapito to your referral code)
+xapi register --referral-code xapito
+
 # 2. Or set an existing key
 xapi config set apiKey=sk-xxx
 
@@ -76,6 +79,8 @@ xapi oauth providers                                 # list available providers
 
 ```bash
 xapi register                                        # create account, saves apiKey automatically
+xapi register --referral-code xapito                 # register with an inviter's referral code (please replace xapito to your referral code)
+xapi register xapito                                 # positional shorthand for --referral-code
 xapi balance                                         # show USD balance
 xapi topup                                           # generate payment URL
 xapi topup --method stripe --amount 10               # stripe, $10

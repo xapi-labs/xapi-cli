@@ -25,6 +25,12 @@ Before calling any API, you need an API key:
 # Register a new account (apiKey is saved automatically)
 npx xapi-to register
 
+# Register with an inviter's referral code (邀请码注册 — establishes the referrer relationship,
+# unlocks +$1 bonus on Twitter claim, and the inviter earns 5% of your future top-ups)
+# please replace xapito to your actual referral code
+npx xapi-to register --referral-code xapito
+npx xapi-to register xapito          # positional shorthand
+
 # Or set an existing key
 npx xapi-to config set apiKey=<your-key>
 
@@ -33,6 +39,8 @@ npx xapi-to config health
 ```
 
 The API key is stored at `~/.xapi/config.json`. You can also set it via `XAPI_KEY` env var.
+
+Referral codes are 6-char lowercase hex (e.g. `a3b8c2`). They're optional; an invalid code is silently ignored and registration still succeeds. After registering, your own `referralCode` is included in the response so you can share it.
 
 ## Global Flags
 
@@ -300,6 +308,7 @@ When the user's task involves these workflows, read the corresponding guide file
 - **`guides/reddit.md`** — Reddit: user profiles, posts, comments, subreddit feeds, popular/news/games feeds, trending, search
 - **`guides/tiktok.md`** — TikTok: user profiles, videos, comments, search, hashtags, music, live rooms, feed
 - **`guides/douyin.md`** — Douyin (抖音): user profiles, videos, comments, hot search, hashtags, music, video mix/series
+- **`guides/xiaohongshu.md`** — 小红书 (Xiaohongshu): user profiles, notes, comments, search, topics, products, creator inspiration
 - **`guides/weibo.md`** — Weibo (微博): hot search, content search, user profiles, post details, comments, reposts, media
 - **`guides/google_search.md`** — Google Search: web, realtime, news, image, video, scholar, maps, places, shopping
 - **`guides/sms.md`** — SMS verification: buy virtual phone numbers, receive verification codes, finish/cancel orders (5SIM)
