@@ -6,6 +6,25 @@ import { getConfig, saveConfig, showConfig } from '../config.ts';
 import { healthCheck } from '../client.ts';
 import { output, err } from '../format.ts';
 
+export const CONFIG_HELP = `xapi config - Manage CLI configuration
+
+USAGE
+  xapi config <command> [flags]
+
+COMMANDS
+  show                       Show current config (host, apiKey path, etc.)
+  set apiKey=<key>           Save API key to ~/.xapi/config.json
+  health                     Check backend connectivity (alias: xapi health)
+
+FLAGS
+  --format json|pretty|table   Output format
+
+EXAMPLES
+  xapi config show
+  xapi config set apiKey=xapi_abc123
+  xapi config health
+`;
+
 export async function configShow(args: string[], flags: Record<string, string>) {
   showConfig();
 }

@@ -12,6 +12,7 @@
  *
  *   xapi config show
  *   xapi config set apiKey=<key>
+ *   xapi config health
  *   xapi health
  *
  * Global flags:
@@ -26,6 +27,7 @@
 
 import * as actionCmds from './commands/action.ts';
 import * as cfgCmds from './commands/config.ts';
+const { CONFIG_HELP } = cfgCmds;
 import * as regCmds from './commands/register.ts';
 import * as topupCmds from './commands/topup.ts';
 import * as balanceCmds from './commands/balance.ts';
@@ -106,6 +108,7 @@ COMMANDS
 
   config show                       Show current config
   config set apiKey=<key>           Save API key to ~/.xapi/config.json
+  config health                     Check backend connectivity (alias: xapi health)
 
 GLOBAL FLAGS
   --format json|pretty|table        Output format (default: json)
@@ -185,12 +188,17 @@ async function main() {
 
     // ── Config commands ──
     case 'config': {
+      if (flags.help || rest.length === 0) {
+        console.log(CONFIG_HELP);
+        process.exit(0);
+      }
       const [subCmd, ...subRest] = rest;
       switch (subCmd) {
         case 'show':   return cfgCmds.configShow(subRest, flags);
         case 'set':    return cfgCmds.configSet(subRest, flags);
+        case 'health': return cfgCmds.configHealth(subRest, flags);
         default:
-          console.error(JSON.stringify({ error: `unknown config command: ${subCmd}` }));
+          console.error(JSON.stringify({ error: `unknown config command: ${subCmd}`, hint: 'valid commands: show, set, health' }));
           process.exit(1);
       }
       break;
