@@ -8,12 +8,14 @@ Agent-friendly command-line interface for [xAPI](https://xapi.to) — discover a
 # Via npx (no install needed)
 npx xapi-to --help
 
-# Or install globally with bun
-bun add -g xapi-to
+# Or install globally with npm
+npm install -g xapi-to
 
 # Or from source
 cd xapi-cli && bun install
 ```
+
+The published CLI runs on Node.js 18+. Bun is only required for local source development and tests.
 
 ## Quick Start
 

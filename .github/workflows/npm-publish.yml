@@ -16,6 +16,7 @@ jobs:
         with:
           bun-version: 1.3.11
       - run: bun install --frozen-lockfile
+      - run: bun run build
       - run: bun test src/tests
 
   publish-npm:
@@ -33,6 +34,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Set version from release tag
         run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+      - run: bun run build
+      - run: npm pack --dry-run
       - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{secrets.npm_token}}

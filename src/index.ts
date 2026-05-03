@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * xapi CLI - agent-friendly command-line interface for xapi
  *
