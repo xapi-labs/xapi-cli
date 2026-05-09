@@ -1,7 +1,7 @@
 /**
  * oauth commands: bind, status, unbind
  *
- * Flow for `xapi oauth bind [--provider twitter]`:
+ * Flow for `xapi-to oauth bind [--provider twitter]`:
  *  1. Login with current API key → get JWT
  *  2. List API keys → find the one matching the current key by prefix
  *  3. Enable OAuth on the key if not already (POST /keys/:id/enable-oauth)
@@ -9,8 +9,8 @@
  *  5. POST /oauth/authorize → get authorizationUrl
  *  6. Open browser (macOS/Linux/Windows) and poll for binding completion
  *
- * `xapi oauth status`: list current OAuth bindings for the API key
- * `xapi oauth unbind <binding-id>`: delete an OAuth binding
+ * `xapi-to oauth status`: list current OAuth bindings for the API key
+ * `xapi-to oauth unbind <binding-id>`: delete an OAuth binding
  */
 
 import { spawnSync } from 'child_process';
@@ -111,10 +111,10 @@ async function findCurrentKeyRecord(
 
 // ── Help text ──────────────────────────────────────────────────────────────────
 
-export const OAUTH_HELP = `xapi oauth - Manage OAuth bindings
+export const OAUTH_HELP = `xapi-to oauth - Manage OAuth bindings
 
 USAGE
-  xapi oauth <command> [flags]
+  xapi-to oauth <command> [flags]
 
 COMMANDS
   bind [--provider <name>]   Bind an OAuth account to your API key
@@ -127,18 +127,18 @@ FLAGS
   --format json|pretty|table   Output format
 
 EXAMPLES
-  xapi oauth bind
-  xapi oauth bind --provider twitter
-  xapi oauth status
-  xapi oauth status --format pretty
-  xapi oauth unbind abc123
-  xapi oauth providers
+  xapi-to oauth bind
+  xapi-to oauth bind --provider twitter
+  xapi-to oauth status
+  xapi-to oauth status --format pretty
+  xapi-to oauth unbind abc123
+  xapi-to oauth providers
 `;
 
 // ── Commands ───────────────────────────────────────────────────────────────────
 
 /**
- * xapi oauth bind [--provider twitter]
+ * xapi-to oauth bind [--provider twitter]
  *
  * Initiates OAuth binding for the current API key.
  * Prints the authorization URL for the user to open in a browser.
@@ -202,7 +202,7 @@ export async function oauthBind(args: string[], flags: Record<string, string>) {
         console.error(`\n  Authorization complete! Bound to @${account}\n`);
         output({ status: 'success', provider: provider.name, account }, flags.format as any);
       } else {
-        err('oauth bind timed out', 'Authorization was not completed within 5 minutes. Run "xapi oauth bind" again.');
+        err('oauth bind timed out', 'Authorization was not completed within 5 minutes. Run "xapi-to oauth bind" again.');
       }
     } else {
       // Non-interactive / agent mode: just output the URL
@@ -219,7 +219,7 @@ export async function oauthBind(args: string[], flags: Record<string, string>) {
 }
 
 /**
- * xapi oauth status
+ * xapi-to oauth status
  *
  * Lists all OAuth bindings for the current account.
  */
@@ -235,7 +235,7 @@ export async function oauthStatus(args: string[], flags: Record<string, string>)
     if (!Array.isArray(bindings) || bindings.length === 0) {
       output({
         status: 'no_bindings',
-        message: 'No OAuth bindings found. Run "xapi oauth bind" to connect an account.',
+        message: 'No OAuth bindings found. Run "xapi-to oauth bind" to connect an account.',
       }, flags.format as any);
       return;
     }
@@ -259,9 +259,9 @@ export async function oauthStatus(args: string[], flags: Record<string, string>)
 }
 
 /**
- * xapi oauth unbind <binding-id>
+ * xapi-to oauth unbind <binding-id>
  *
- * Deletes an OAuth binding. Get the ID from `xapi oauth status`.
+ * Deletes an OAuth binding. Get the ID from `xapi-to oauth status`.
  */
 export async function oauthUnbind(args: string[], flags: Record<string, string>) {
   const cfg = getConfig();
@@ -270,7 +270,7 @@ export async function oauthUnbind(args: string[], flags: Record<string, string>)
 
   const bindingId = args[0];
   if (!bindingId) {
-    err('usage: xapi oauth unbind <binding-id>', 'Get the binding ID from "xapi oauth status"');
+    err('usage: xapi-to oauth unbind <binding-id>', 'Get the binding ID from "xapi-to oauth status"');
   }
 
   try {
@@ -283,7 +283,7 @@ export async function oauthUnbind(args: string[], flags: Record<string, string>)
 }
 
 /**
- * xapi oauth providers
+ * xapi-to oauth providers
  *
  * Lists available OAuth providers.
  */

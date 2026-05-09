@@ -6,9 +6,9 @@
  * Automatically saves apiKey to ~/.xapi/config.json
  *
  * Optional referral code (please replace xapito to the actual referral code):
- *   xapi register --referral-code xapito
- *   xapi register --referralCode xapito     # alias
- *   xapi register xapito                    # positional shorthand
+ *   xapi-to register --referral-code xapito
+ *   xapi-to register --referralCode xapito     # alias
+ *   xapi-to register xapito                    # positional shorthand
  */
 
 import { XAPI_API_HOST, saveConfig, scheme } from '../config.ts';

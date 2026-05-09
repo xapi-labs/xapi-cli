@@ -38,7 +38,7 @@ export async function request<T>(
       if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && data?.message?.includes('OAuth'))) {
         throw new Error(
           (data.message || 'OAuth authorization required')
-          + '. Run "xapi oauth bind" to connect your account.',
+          + '. Run "xapi-to oauth bind" to connect your account.',
         );
       }
     }

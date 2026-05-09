@@ -6,23 +6,23 @@ import { getConfig, saveConfig, showConfig } from '../config.ts';
 import { healthCheck } from '../client.ts';
 import { output, err } from '../format.ts';
 
-export const CONFIG_HELP = `xapi config - Manage CLI configuration
+export const CONFIG_HELP = `xapi-to config - Manage CLI configuration
 
 USAGE
-  xapi config <command> [flags]
+  xapi-to config <command> [flags]
 
 COMMANDS
   show                       Show current config (host, apiKey path, etc.)
   set apiKey=<key>           Save API key to ~/.xapi/config.json
-  health                     Check backend connectivity (alias: xapi health)
+  health                     Check backend connectivity (alias: xapi-to health)
 
 FLAGS
   --format json|pretty|table   Output format
 
 EXAMPLES
-  xapi config show
-  xapi config set apiKey=xapi_abc123
-  xapi config health
+  xapi-to config show
+  xapi-to config set apiKey=xapi_abc123
+  xapi-to config health
 `;
 
 export async function configShow(args: string[], flags: Record<string, string>) {
@@ -30,8 +30,8 @@ export async function configShow(args: string[], flags: Record<string, string>) 
 }
 
 export async function configSet(args: string[], flags: Record<string, string>) {
-  // xapi config set apiKey=xapi_xxx
-  if (args.length === 0) err('usage: xapi config set apiKey=<key>');
+  // xapi-to config set apiKey=xapi_xxx
+  if (args.length === 0) err('usage: xapi-to config set apiKey=<key>');
   const updates: { apiKey?: string } = {};
   for (const arg of args) {
     const eq = arg.indexOf('=');

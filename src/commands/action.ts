@@ -13,10 +13,10 @@ const VALID_SOURCES = ['capability', 'api'];
 
 // ── Subcommand help texts ────────────────────────────────────────────────────
 
-const LIST_HELP = `xapi list - List all actions
+const LIST_HELP = `xapi-to list - List all actions
 
 USAGE
-  xapi list [flags]
+  xapi-to list [flags]
 
 FLAGS
   --source capability|api   Filter by source type
@@ -27,15 +27,15 @@ FLAGS
   --format json|pretty|table  Output format
 
 EXAMPLES
-  xapi list
-  xapi list --source api --format table
-  xapi list --category social --page 2
+  xapi-to list
+  xapi-to list --source api --format table
+  xapi-to list --category social --page 2
 `;
 
-const SEARCH_HELP = `xapi search - Search actions by keyword
+const SEARCH_HELP = `xapi-to search - Search actions by keyword
 
 USAGE
-  xapi search <query> [flags]
+  xapi-to search <query> [flags]
 
 FLAGS
   --source capability|api   Filter by source type
@@ -45,15 +45,15 @@ FLAGS
   --format json|pretty|table  Output format
 
 EXAMPLES
-  xapi search twitter
-  xapi search "tweet detail" --source api
-  xapi search weather --category utility --format table
+  xapi-to search twitter
+  xapi-to search "tweet detail" --source api
+  xapi-to search weather --category utility --format table
 `;
 
-const GET_HELP = `xapi get - Get action schema
+const GET_HELP = `xapi-to get - Get action schema
 
 USAGE
-  xapi get <id> [flags]
+  xapi-to get <id> [flags]
 
 FLAGS
   --method GET|POST|...     Filter by HTTP method
@@ -78,16 +78,16 @@ CODE TARGETS
   go                        Go (net/http)
 
 EXAMPLES
-  xapi get twitter.tweet_detail
-  xapi get twitter.tweet_detail --method POST
-  xapi get twitter.tweet_detail --code curl
-  xapi get twitter.tweet_detail --code python.httpx --format pretty
+  xapi-to get twitter.tweet_detail
+  xapi-to get twitter.tweet_detail --method POST
+  xapi-to get twitter.tweet_detail --code curl
+  xapi-to get twitter.tweet_detail --code python.httpx --format pretty
 `;
 
-const CALL_HELP = `xapi call - Execute an action
+const CALL_HELP = `xapi-to call - Execute an action
 
 USAGE
-  xapi call <id> --input '{"key":"val"}' [flags]
+  xapi-to call <id> --input '{"key":"val"}' [flags]
 
 FLAGS
   --input <json>            Input payload as JSON (required for execution)
@@ -113,9 +113,9 @@ CODE TARGETS
   go                        Go (net/http)
 
 EXAMPLES
-  xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
-  xapi call twitter.tweet_detail --input '{"tweet_id":"123"}' --code py
-  xapi call twitter.tweet_detail --input '{"tweet_id":"123"}' --code curl --format pretty
+  xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
+  xapi-to call twitter.tweet_detail --input '{"tweet_id":"123"}' --code py
+  xapi-to call twitter.tweet_detail --input '{"tweet_id":"123"}' --code curl --format pretty
 `;
 
 /** Print subcommand help and exit if --help flag is set */
@@ -186,7 +186,7 @@ export async function actionList(args: string[], flags: Record<string, string>) 
 export async function actionSearch(args: string[], flags: Record<string, string>) {
   showHelpIfRequested(flags, SEARCH_HELP);
   const query = args[0];
-  if (!query) err('usage: xapi search <query>');
+  if (!query) err('usage: xapi-to search <query>');
   const cfg = getConfig();
   try {
     const res = await client.actionSearch(query, cfg, {
@@ -257,7 +257,7 @@ export async function actionServices(args: string[], flags: Record<string, strin
 export async function actionGet(args: string[], flags: Record<string, string>) {
   showHelpIfRequested(flags, GET_HELP);
   const id = args[0];
-  if (!id) err('usage: xapi get <id> [--method GET|POST|DELETE|...]');
+  if (!id) err('usage: xapi-to get <id> [--method GET|POST|DELETE|...]');
   if (flags.code) validateCodeFlag(flags);
   const cfg = getConfig();
   try {
@@ -293,7 +293,7 @@ export async function actionGet(args: string[], flags: Record<string, string>) {
 export async function actionCall(args: string[], flags: Record<string, string>) {
   showHelpIfRequested(flags, CALL_HELP);
   const id = args[0];
-  if (!id) err('usage: xapi call <id> --input \'{"key":"val"}\'');
+  if (!id) err('usage: xapi-to call <id> --input \'{"key":"val"}\'');
   if (flags.code) validateCodeFlag(flags);
   const cfg = getConfig();
   let input: Record<string, unknown> = {};

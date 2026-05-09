@@ -117,7 +117,7 @@ describe('action commands', () => {
 
     it('calls err when no query provided', async () => {
       await expect(actionSearch([], {})).rejects.toThrow('err called');
-      expect(errSpy).toHaveBeenCalledWith('usage: xapi search <query>');
+      expect(errSpy).toHaveBeenCalledWith('usage: xapi-to search <query>');
     });
 
     it('calls err on failure', async () => {
@@ -436,21 +436,21 @@ describe('action commands', () => {
 
     it('actionList --help prints help and exits', async () => {
       await expect(actionList([], { help: 'true' })).rejects.toThrow('process.exit');
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('xapi list'));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('xapi-to list'));
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('--source'));
       expect(exitSpy).toHaveBeenCalledWith(0);
     });
 
     it('actionSearch --help prints help and exits', async () => {
       await expect(actionSearch([], { help: 'true' })).rejects.toThrow('process.exit');
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('xapi search'));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('xapi-to search'));
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('--category'));
       expect(exitSpy).toHaveBeenCalledWith(0);
     });
 
     it('actionGet --help prints help and exits', async () => {
       await expect(actionGet([], { help: 'true' })).rejects.toThrow('process.exit');
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('xapi get'));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('xapi-to get'));
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('CODE TARGETS'));
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('python.httpx'));
       expect(exitSpy).toHaveBeenCalledWith(0);
@@ -458,7 +458,7 @@ describe('action commands', () => {
 
     it('actionCall --help prints help and exits', async () => {
       await expect(actionCall([], { help: 'true' })).rejects.toThrow('process.exit');
-      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('xapi call'));
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('xapi-to call'));
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('--input'));
       expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('CODE TARGETS'));
       expect(exitSpy).toHaveBeenCalledWith(0);

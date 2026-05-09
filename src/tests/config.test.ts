@@ -45,7 +45,7 @@ describe('config commands', () => {
 
     it('calls err when no args provided', async () => {
       await expect(configSet([], {})).rejects.toThrow('err called');
-      expect(errSpy).toHaveBeenCalledWith('usage: xapi config set apiKey=<key>');
+      expect(errSpy).toHaveBeenCalledWith('usage: xapi-to config set apiKey=<key>');
     });
 
     it('calls err when key is host', async () => {

@@ -215,7 +215,7 @@ describe('oauth commands', () => {
     it('calls err when no binding ID given', async () => {
       await expect(oauthUnbind([], {})).rejects.toThrow('err called');
       expect(errSpy).toHaveBeenCalledWith(
-        'usage: xapi oauth unbind <binding-id>',
+        'usage: xapi-to oauth unbind <binding-id>',
         expect.any(String),
       );
     });
@@ -275,7 +275,7 @@ describe('oauth commands', () => {
       const { actionCall } = await import('../client.ts');
       await expect(
         actionCall('some-api-id', {}, { actionHost: 'action.xapi.to', apiKey: 'sk-test' }),
-      ).rejects.toThrow('Run "xapi oauth bind"');
+      ).rejects.toThrow('Run "xapi-to oauth bind"');
 
       fetchSpy.mockRestore();
     });

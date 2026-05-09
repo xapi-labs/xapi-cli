@@ -3,17 +3,17 @@
  * xapi CLI - agent-friendly command-line interface for xapi
  *
  * Usage:
- *   xapi list [--source capability|api] [--page N] [--page-size N] [--category X]
- *   xapi search <query> [--source capability|api] [--category X] [--page N] [--page-size N]
- *   xapi categories [--source capability|api]
- *   xapi services [--page N] [--page-size N] [--category X]
- *   xapi get <id> [--code curl|py|js|ts|go]
- *   xapi call <id> --input '{"k":"v"}' [--code curl|py|js|ts|go]
+ *   xapi-to list [--source capability|api] [--page N] [--page-size N] [--category X]
+ *   xapi-to search <query> [--source capability|api] [--category X] [--page N] [--page-size N]
+ *   xapi-to categories [--source capability|api]
+ *   xapi-to services [--page N] [--page-size N] [--category X]
+ *   xapi-to get <id> [--code curl|py|js|ts|go]
+ *   xapi-to call <id> --input '{"k":"v"}' [--code curl|py|js|ts|go]
  *
- *   xapi config show
- *   xapi config set apiKey=<key>
- *   xapi config health
- *   xapi health
+ *   xapi-to config show
+ *   xapi-to config set apiKey=<key>
+ *   xapi-to config health
+ *   xapi-to health
  *
  * Global flags:
  *   --format json|pretty|table   output format (default: json)
@@ -67,10 +67,10 @@ function parseArgs(argv: string[]): ParsedArgs {
 
 // ── Help ──────────────────────────────────────────────────────────────────────
 
-const HELP = `xapi - agent-friendly CLI for xapi
+const HELP = `xapi-to - agent-friendly CLI for xapi
 
 USAGE
-  xapi <command> [args] [flags]
+  xapi-to <command> [args] [flags]
 
 COMMANDS
   list                              List all actions
@@ -108,11 +108,11 @@ COMMANDS
 
   config show                       Show current config
   config set apiKey=<key>           Save API key to ~/.xapi/config.json
-  config health                     Check backend connectivity (alias: xapi health)
+  config health                     Check backend connectivity (alias: xapi-to health)
 
 GLOBAL FLAGS
   --format json|pretty|table        Output format (default: json)
-  --help                            Show help (use with a command for details, e.g. xapi get --help)
+  --help                            Show help (use with a command for details, e.g. xapi-to get --help)
 
 ENV VARS
   XAPI_KEY       API key (header: XAPI-Key)
@@ -120,21 +120,21 @@ ENV VARS
   XAPI_OUTPUT        Default output format
 
 EXAMPLES
-  xapi register
-  xapi register --referral-code xapito          # register with an inviter's referral code
-  xapi register xapito                          # positional shorthand
-  xapi list --format table
-  xapi list --source capability
-  xapi search twitter --source api
-  xapi get twitter.tweet_detail
-  xapi get twitter.tweet_detail --code curl
-  xapi get twitter.tweet_detail --code py --format pretty
-  xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
-  xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}' --code python
-  xapi categories
-  xapi services --format table
-  xapi config set apiKey=xapi_abc123
-  xapi health
+  xapi-to register
+  xapi-to register --referral-code xapito          # register with an inviter's referral code
+  xapi-to register xapito                          # positional shorthand
+  xapi-to list --format table
+  xapi-to list --source capability
+  xapi-to search twitter --source api
+  xapi-to get twitter.tweet_detail
+  xapi-to get twitter.tweet_detail --code curl
+  xapi-to get twitter.tweet_detail --code py --format pretty
+  xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
+  xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}' --code python
+  xapi-to categories
+  xapi-to services --format table
+  xapi-to config set apiKey=xapi_abc123
+  xapi-to health
 `;
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -205,7 +205,7 @@ async function main() {
     }
 
     default:
-      console.error(JSON.stringify({ error: `unknown command: ${cmd}`, hint: 'run xapi --help' }));
+      console.error(JSON.stringify({ error: `unknown command: ${cmd}`, hint: 'run xapi-to --help' }));
       process.exit(1);
   }
 }

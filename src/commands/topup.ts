@@ -5,7 +5,7 @@
  * All params are optional.
  *
  * Usage:
- *   xapi topup [--amount <usd>] [--method stripe|x402]
+ *   xapi-to topup [--amount <usd>] [--method stripe|x402]
  */
 
 import { getConfig } from '../config.ts';

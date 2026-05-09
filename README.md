@@ -21,25 +21,25 @@ The published CLI runs on Node.js 18+. Bun is only required for local source dev
 
 ```bash
 # 1. Register a new account (apiKey saved automatically)
-xapi register
+xapi-to register
 
 # 1b. Or register with an inviter's referral code (please replace xapito to your referral code)
-xapi register --referral-code xapito
+xapi-to register --referral-code xapito
 
 # 2. Or set an existing key
-xapi config set apiKey=sk-xxx
+xapi-to config set apiKey=sk-xxx
 
 # 3. Or via env var
 export XAPI_KEY=sk-xxx
 
 # 4. Verify connectivity
-xapi config health
+xapi-to config health
 ```
 
 ## Usage
 
 ```
-xapi <command> [args] [flags]
+xapi-to <command> [args] [flags]
 ```
 
 ### Action Commands
@@ -47,23 +47,23 @@ xapi <command> [args] [flags]
 Unified interface for capabilities (built-in) and APIs (third-party). Use `--source capability|api` to filter.
 
 ```bash
-xapi list                                            # list all actions
-xapi list --source capability                        # only built-in capabilities
-xapi list --source api --category DeFi               # filter by source and category
-xapi list --page 2 --page-size 20                    # pagination
-xapi list --service-id <id>                          # filter by service
+xapi-to list                                            # list all actions
+xapi-to list --source capability                        # only built-in capabilities
+xapi-to list --source api --category DeFi               # filter by source and category
+xapi-to list --page 2 --page-size 20                    # pagination
+xapi-to list --service-id <id>                          # filter by service
 
-xapi search "twitter"                                # search by keyword
-xapi search "token price" --source api               # search APIs only
+xapi-to search "twitter"                                # search by keyword
+xapi-to search "token price" --source api               # search APIs only
 
-xapi categories                                      # list all categories
-xapi categories --source capability                  # categories for capabilities only
+xapi-to categories                                      # list all categories
+xapi-to categories --source capability                  # categories for capabilities only
 
-xapi services                                        # list all services
-xapi services --category Social --page-size 10       # filter and paginate
+xapi-to services                                        # list all services
+xapi-to services --category Social --page-size 10       # filter and paginate
 
-xapi get twitter.tweet_detail                        # get action schema
-xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'  # execute
+xapi-to get twitter.tweet_detail                        # get action schema
+xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'  # execute
 ```
 
 ### OAuth
@@ -71,30 +71,30 @@ xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'  # execute
 Bind third-party OAuth accounts (e.g. Twitter) to your API key.
 
 ```bash
-xapi oauth bind --provider twitter                   # bind Twitter account
-xapi oauth status                                    # list current bindings
-xapi oauth unbind <binding-id>                       # remove a binding
-xapi oauth providers                                 # list available providers
+xapi-to oauth bind --provider twitter                   # bind Twitter account
+xapi-to oauth status                                    # list current bindings
+xapi-to oauth unbind <binding-id>                       # remove a binding
+xapi-to oauth providers                                 # list available providers
 ```
 
 ### Account
 
 ```bash
-xapi register                                        # create account, saves apiKey automatically
-xapi register --referral-code xapito                 # register with an inviter's referral code (please replace xapito to your referral code)
-xapi register xapito                                 # positional shorthand for --referral-code
-xapi balance                                         # show USD balance
-xapi topup                                           # generate payment URL
-xapi topup --method stripe --amount 10               # stripe, $10
-xapi topup --method x402                             # x402 (USDC on Base)
+xapi-to register                                        # create account, saves apiKey automatically
+xapi-to register --referral-code xapito                 # register with an inviter's referral code (please replace xapito to your referral code)
+xapi-to register xapito                                 # positional shorthand for --referral-code
+xapi-to balance                                         # show USD balance
+xapi-to topup                                           # generate payment URL
+xapi-to topup --method stripe --amount 10               # stripe, $10
+xapi-to topup --method x402                             # x402 (USDC on Base)
 ```
 
 ### Config
 
 ```bash
-xapi config show                                     # show current config
-xapi config set apiKey=sk-xxx                        # save API key
-xapi config health                                   # check backend connectivity
+xapi-to config show                                     # show current config
+xapi-to config set apiKey=sk-xxx                        # save API key
+xapi-to config health                                   # check backend connectivity
 ```
 
 ## Workflow: Always GET before CALL
@@ -103,13 +103,13 @@ Before calling any action, always read its schema first to understand required p
 
 ```bash
 # 1. Find the action
-xapi search "twitter"
+xapi-to search "twitter"
 
 # 2. Read its schema
-xapi get twitter.tweet_detail
+xapi-to get twitter.tweet_detail
 
 # 3. Call with correct parameters
-xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
+xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
 ```
 
 ## Output Formats
@@ -117,9 +117,9 @@ xapi call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
 All output is JSON by default — designed for agent consumption.
 
 ```bash
-xapi list --format json                              # default, machine-readable
-xapi list --format pretty                            # pretty-printed JSON
-xapi list --format table                             # human-readable table
+xapi-to list --format json                              # default, machine-readable
+xapi-to list --format pretty                            # pretty-printed JSON
+xapi-to list --format table                             # human-readable table
 ```
 
 ## Environment Variables
