@@ -140,6 +140,7 @@ Config is stored at `~/.xapi/config.json`.
 | `twitter.user_by_screen_name` | Get user profile by username |
 | `twitter.user_by_screen_names` | Batch get user profiles by usernames |
 | `twitter.user_tweets` | Get tweets from a user |
+| `twitter.user_tweets_and_replies` | Get tweets and replies from a user |
 | `twitter.user_media` | Get media posts from a user |
 | `twitter.following` | Get user following list |
 | `twitter.followers` | Get user followers |

@@ -28,7 +28,14 @@ Each tweet includes: `id`, `full_text`, `created_at`, `favorite_count`, `retweet
 npx xapi-to call twitter.user_tweets_and_replies --input '{"user_id":"44196397","count":10}'
 ```
 
-Similar to `twitter.user_tweets`, but the results also include the user's replies to other tweets. Each item includes the same fields: `id`, `full_text`, `created_at`, `favorite_count`, `retweet_count`, `reply_count`, `views_count`, `media`, `author`, and `quoted_tweet` if applicable.
+Similar to `twitter.user_tweets`, but the timeline also includes the user's replies to other tweets and conversation threads they participate in. Each item includes the same fields: `id`, `full_text`, `created_at`, `favorite_count`, `retweet_count`, `reply_count`, `views_count`, `media`, `author`, and `quoted_tweet` if applicable.
+
+**When to choose which:**
+
+- `twitter.user_tweets` — only the user's own posts. Use for content/timeline of original tweets.
+- `twitter.user_tweets_and_replies` — posts plus replies and conversation participants. Use to monitor a user's reply activity or full timeline.
+
+**Filter tip:** because conversation entries can contain tweets from other authors, filter by `author.id === user_id` if you only want the monitored user's content.
 
 ### Get a specific tweet and its replies
 
@@ -135,7 +142,7 @@ npx xapi-to call x-official.2_users_id_retweets --method POST \
 
 ### Monitor and reply
 
-1. Get user tweets: `twitter.user_tweets` → check latest posts
+1. Get user activity: `twitter.user_tweets` (originals only) or `twitter.user_tweets_and_replies` (includes replies) → check latest posts
 2. Get tweet detail: `twitter.tweet_detail` → read the thread
 3. Reply: `x-official.2_tweets` POST with `reply` → respond
 

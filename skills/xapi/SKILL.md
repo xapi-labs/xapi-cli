@@ -106,7 +106,7 @@ npx xapi-to call x-official.2_tweets --method POST --input '{"body":{"text":"Hel
 
 Always use `--input` with JSON for passing parameters.
 
-### Twitter / X (8 APIs)
+### Twitter / X (9 APIs)
 
 ```bash
 # Get user profile
@@ -114,6 +114,9 @@ npx xapi-to call twitter.user_by_screen_name --input '{"screen_name":"elonmusk"}
 
 # Get user's tweets
 npx xapi-to call twitter.user_tweets --input '{"user_id":"44196397","count":10}'
+
+# Get user's tweets and replies (timeline includes replies)
+npx xapi-to call twitter.user_tweets_and_replies --input '{"user_id":"44196397","count":10}'
 
 # Get tweet details and replies
 npx xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
@@ -303,7 +306,7 @@ Use `npx xapi-to services --format table` to see the latest list.
 
 When the user's task involves these workflows, read the corresponding guide file for detailed instructions:
 
-- **`guides/twitter.md`** — Twitter/X (推特): read tweets, post tweets, reply, quote, like, retweet, OAuth binding
+- **`guides/twitter.md`** — Twitter/X (推特): read tweets, tweets + replies timeline, post tweets, reply, quote, like, retweet, OAuth binding
 - **`guides/reddit.md`** — Reddit: user profiles, posts, comments, subreddit feeds, popular/news/games feeds, trending, search
 - **`guides/tiktok.md`** — TikTok: user profiles, videos, comments, search, hashtags, music, live rooms, feed
 - **`guides/douyin.md`** — Douyin (抖音): user profiles, videos, comments, hot search, hashtags, music, video mix/series

@@ -9,3 +9,4 @@ dist/
 .kiro/
 skills-lock.json
 .wrangler/
+skills/.DS_Store
