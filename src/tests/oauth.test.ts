@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as format from '../format.ts';
 import * as config from '../config.ts';
 import * as client from '../client.ts';
-import { oauthBind, oauthStatus, oauthUnbind, oauthProviders } from '../commands/oauth.ts';
+import { oauthBind, oauthStatus, oauthUnbind, oauthProviders, pollForBinding } from '../commands/oauth.ts';
 
 const MOCK_API_KEY = 'sk-abc123xyz456';
 const MOCK_JWT = 'eyJhbGciOiJIUzI1NiJ9.mock.token';
@@ -92,7 +92,7 @@ describe('oauth commands', () => {
       expect(listKeysSpy).toHaveBeenCalledWith(MOCK_JWT, expect.any(String));
       expect(enableOAuthSpy).toHaveBeenCalledWith(MOCK_KEY_ID, MOCK_API_KEY, MOCK_JWT, expect.any(String));
       expect(listProvidersSpy).toHaveBeenCalled();
-      expect(initiateOAuthSpy).toHaveBeenCalledWith(MOCK_KEY_ID, 'prov-1', MOCK_JWT, expect.any(String));
+      expect(initiateOAuthSpy).toHaveBeenCalledWith(MOCK_KEY_ID, 'prov-1', MOCK_JWT, expect.any(String), undefined);
     });
 
     it('skips enableOAuth if already enabled', async () => {
@@ -105,9 +105,59 @@ describe('oauth commands', () => {
       expect(enableOAuthSpy).not.toHaveBeenCalled();
     });
 
+    it('fails when current API key cannot be matched among multiple keys', async () => {
+      listKeysSpy.mockResolvedValue([
+        { id: 'key-other-1', name: 'other 1', keyPreview: 'sk-other****111', oauthEnabled: false },
+        { id: 'key-other-2', name: 'other 2', keyPreview: 'sk-wrong****222', oauthEnabled: false },
+      ] as any);
+
+      await expect(oauthBind([], {})).rejects.toThrow('err called');
+
+      expect(enableOAuthSpy).not.toHaveBeenCalled();
+      expect(initiateOAuthSpy).not.toHaveBeenCalled();
+      expect(errSpy).toHaveBeenCalledWith('oauth bind failed', expect.stringContaining('was not found'));
+    });
+
     it('uses --provider flag to select provider', async () => {
       await oauthBind([], { provider: 'twitter' });
-      expect(initiateOAuthSpy).toHaveBeenCalledWith(MOCK_KEY_ID, 'prov-1', MOCK_JWT, expect.any(String));
+      expect(initiateOAuthSpy).toHaveBeenCalledWith(MOCK_KEY_ID, 'prov-1', MOCK_JWT, expect.any(String), undefined);
+    });
+
+    it('passes --scopes flag to initiate OAuth', async () => {
+      await oauthBind([], { scopes: 'tweet.read users.read' });
+      expect(initiateOAuthSpy).toHaveBeenCalledWith(
+        MOCK_KEY_ID,
+        'prov-1',
+        MOCK_JWT,
+        expect.any(String),
+        'tweet.read users.read',
+      );
+    });
+
+    it('does not enter interactive scope selection when stdin is not a TTY', async () => {
+      const stdoutDesc = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+      const stdinDesc = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+
+      Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
+      Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false });
+
+      try {
+        await oauthBind([], {});
+
+        expect(initiateOAuthSpy).toHaveBeenCalledWith(MOCK_KEY_ID, 'prov-1', MOCK_JWT, expect.any(String), undefined);
+        expect(outputSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            status: 'pending',
+            authorizationUrl: 'https://twitter.com/oauth/authorize?state=abc',
+          }),
+          undefined,
+        );
+      } finally {
+        if (stdoutDesc) Object.defineProperty(process.stdout, 'isTTY', stdoutDesc);
+        else delete (process.stdout as any).isTTY;
+        if (stdinDesc) Object.defineProperty(process.stdin, 'isTTY', stdinDesc);
+        else delete (process.stdin as any).isTTY;
+      }
     });
 
     it('calls err when provider not found', async () => {
@@ -135,6 +185,44 @@ describe('oauth commands', () => {
       loginSpy.mockRejectedValue(new Error('Invalid API key'));
       await expect(oauthBind([], {})).rejects.toThrow('err called');
       expect(errSpy).toHaveBeenCalledWith('oauth bind failed', 'Invalid API key');
+    });
+  });
+
+  describe('pollForBinding', () => {
+    it('ignores existing bindings from before the current authorization', async () => {
+      const listBindingsSpy = spyOn(client, 'listOAuthBindings')
+        .mockResolvedValueOnce([
+          {
+            ...mockBindings[0],
+            id: 'old-binding',
+            providerAccountName: 'olduser',
+            createdAt: '2026-06-02T00:00:00.000Z',
+            updatedAt: '2026-06-02T00:00:00.000Z',
+          },
+        ] as any)
+        .mockResolvedValueOnce([
+          {
+            ...mockBindings[0],
+            id: 'new-binding',
+            providerAccountName: 'newuser',
+            createdAt: '2026-06-03T00:00:01.000Z',
+            updatedAt: '2026-06-03T00:00:01.000Z',
+          },
+        ] as any);
+
+      const binding = await pollForBinding(
+        MOCK_KEY_ID,
+        'prov-1',
+        MOCK_JWT,
+        new Date('2026-06-03T00:00:00.000Z'),
+        new Set(['old-binding']),
+        100,
+        1,
+      );
+
+      expect(binding?.id).toBe('new-binding');
+      expect(binding?.providerAccountName).toBe('newuser');
+      listBindingsSpy.mockRestore();
     });
   });
 
@@ -256,6 +344,18 @@ describe('oauth commands', () => {
   // ── client.ts OAuth error detection ─────────────────────────────────────────
 
   describe('client request() OAuth error detection', () => {
+    it('treats 204 No Content DELETE responses as successful', async () => {
+      const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(null, { status: 204 }),
+      );
+
+      await expect(
+        client.deleteOAuthBinding('bind-uuid-1', MOCK_JWT, 'api.xapi.to'),
+      ).resolves.toEqual({ success: true });
+
+      fetchSpy.mockRestore();
+    });
+
     it('throws with oauth hint when API returns OAuth Required 403', async () => {
       const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
         new Response(

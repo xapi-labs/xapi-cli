@@ -101,6 +101,7 @@ COMMANDS
 
   register [referral-code]          Create a new user account (apiKey saved automatically)
     --referral-code <code>          Register with an inviter's referral code (also: --referralCode, or as positional arg)
+    --force                         Replace an existing saved apiKey
   balance                           Show current account balance
   topup [--amount <usd>] [--method stripe|x402]   Generate payment URL
 

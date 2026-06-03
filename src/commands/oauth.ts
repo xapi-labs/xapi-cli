@@ -45,15 +45,37 @@ function openBrowser(url: string): void {
  * Shows a live countdown in TTY mode.
  * Returns the matched binding or null on timeout.
  */
-async function pollForBinding(
+type OAuthBindingSnapshot = {
+  id: string;
+  apiKeyId: string;
+  providerId: string;
+  providerAccountName: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+function bindingChangedAfter(
+  binding: OAuthBindingSnapshot,
+  startedAtMs: number,
+  existingBindingIds: Set<string>,
+): boolean {
+  const changedAt = Date.parse(binding.updatedAt || binding.createdAt || '');
+  if (!Number.isFinite(changedAt)) return !existingBindingIds.has(binding.id);
+  return changedAt >= startedAtMs;
+}
+
+export async function pollForBinding(
   apiKeyId: string,
   providerId: string,
   jwtToken: string,
+  startedAt: Date,
+  existingBindingIds: Set<string> = new Set(),
   timeoutMs = 5 * 60 * 1000,
   intervalMs = 3000,
-): Promise<{ providerAccountName: string | null } | null> {
+): Promise<OAuthBindingSnapshot | null> {
   const deadline = Date.now() + timeoutMs;
   const isTTY = process.stdout.isTTY;
+  const startedAtMs = startedAt.getTime() - 5000;
 
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, intervalMs));
@@ -61,7 +83,11 @@ async function pollForBinding(
     try {
       const bindings = await listOAuthBindings(jwtToken, XAPI_API_HOST);
       const match = Array.isArray(bindings)
-        ? bindings.find((b) => b.apiKeyId === apiKeyId && b.providerId === providerId)
+        ? bindings.find((b) =>
+            b.apiKeyId === apiKeyId &&
+            b.providerId === providerId &&
+            bindingChangedAfter(b, startedAtMs, existingBindingIds)
+          )
         : null;
       if (match) return match;
     } catch {
@@ -105,8 +131,9 @@ async function findCurrentKeyRecord(
   const prefix = plaintextKey.substring(0, 7);
   const match = keys.find((k) => k.keyPreview.startsWith(prefix));
   if (!match) {
-    // Fallback: use the first key
-    return keys[0];
+    throw new Error(
+      `Current API key (${prefix}...) was not found in your account keys. Run "xapi-to config set apiKey=<key>" with a valid key before binding OAuth.`,
+    );
   }
   return match;
 }
@@ -308,7 +335,11 @@ export async function oauthBind(args: string[], flags: Record<string, string>) {
     // 5. Resolve scopes
     let scopes: string | undefined;
     let headerPrinted = false;
-    const isTTY = process.stdout.isTTY;
+    const isTTY = Boolean(
+      process.stdout.isTTY &&
+      process.stdin.isTTY &&
+      typeof process.stdin.setRawMode === 'function',
+    );
 
     if (flags.scopes) {
       scopes = flags.scopes;
@@ -322,7 +353,24 @@ export async function oauthBind(args: string[], flags: Record<string, string>) {
       }
     }
 
+    const existingBindingIds = new Set<string>();
+    if (isTTY) {
+      try {
+        const existingBindings = await listOAuthBindings(jwtToken, XAPI_API_HOST);
+        if (Array.isArray(existingBindings)) {
+          for (const binding of existingBindings) {
+            if (binding.apiKeyId === keyRecord.id && binding.providerId === provider.id) {
+              existingBindingIds.add(binding.id);
+            }
+          }
+        }
+      } catch {
+        // Polling below still uses authorizationStartedAt to avoid accepting old bindings.
+      }
+    }
+
     // 6. Initiate OAuth authorization
+    const authorizationStartedAt = new Date();
     const result = await initiateOAuth(keyRecord.id, provider.id, jwtToken, XAPI_API_HOST, scopes);
     const { authorizationUrl } = result;
 
@@ -340,7 +388,13 @@ export async function oauthBind(args: string[], flags: Record<string, string>) {
       openBrowser(authorizationUrl);
       console.error('  Waiting for you to complete authorization in the browser...\n');
 
-      const binding = await pollForBinding(keyRecord.id, provider.id, jwtToken);
+      const binding = await pollForBinding(
+        keyRecord.id,
+        provider.id,
+        jwtToken,
+        authorizationStartedAt,
+        existingBindingIds,
+      );
 
       if (process.stdout.isTTY) process.stdout.write('\n');
 

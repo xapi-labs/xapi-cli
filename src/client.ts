@@ -25,7 +25,14 @@ export async function request<T>(
       const text = await res.text();
       throw new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
     }
-    const body = await res.json() as T;
+    if (res.status === 204) {
+      return undefined as T;
+    }
+    const text = await res.text();
+    if (!text.trim()) {
+      return undefined as T;
+    }
+    const body = JSON.parse(text) as T;
     // Detect business-level auth errors (HTTP 200 but unauthorized)
     if (body && typeof body === 'object' && 'success' in body && (body as any).success === false) {
       const data = (body as any).data;
@@ -272,8 +279,9 @@ export async function deleteOAuthBinding(
   jwtToken: string,
   apiHost: string,
 ) {
-  return request<{ success: boolean }>(
+  const result = await request<{ success: boolean } | undefined>(
     `${scheme(apiHost)}://${apiHost}/api/oauth/bindings/${bindingId}`,
     { method: 'DELETE', headers: jwtHeaders(jwtToken) },
   );
+  return result ?? { success: true };
 }

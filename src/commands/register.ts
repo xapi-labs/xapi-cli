@@ -11,7 +11,7 @@
  *   xapi-to register xapito                    # positional shorthand
  */
 
-import { XAPI_API_HOST, saveConfig, scheme } from '../config.ts';
+import { XAPI_API_HOST, getConfig, saveConfig, scheme } from '../config.ts';
 import { output, err } from '../format.ts';
 
 interface RegisterResponse {
@@ -46,6 +46,12 @@ async function registerAccount(referralCode?: string): Promise<RegisterResponse>
 
 export async function register(args: string[], flags: Record<string, string>) {
   try {
+    const cfg = getConfig();
+    const force = flags.force === 'true' || flags.force === '1' || flags.force === 'yes';
+    if (cfg.apiKey && !force) {
+      err('register would overwrite existing apiKey', 'Run "xapi-to register --force" to create a new account and replace the saved key.');
+    }
+
     // 邀请码来源优先级：--referral-code > --referralCode > 第一个位置参数
     const rawReferral =
       flags['referral-code'] ?? flags['referralCode'] ?? args[0];
@@ -69,7 +75,9 @@ export async function register(args: string[], flags: Record<string, string>) {
       },
       tweetTemplate: res.tweetTemplate,
       ...(referralCode ? { referredBy: referralCode } : {}),
-      note: 'apiKey saved to ~/.xapi/config.json',
+      note: force && cfg.apiKey
+        ? 'apiKey replaced in ~/.xapi/config.json'
+        : 'apiKey saved to ~/.xapi/config.json',
     }, flags.format as any);
   } catch (e: any) {
     err('register failed', e.message);

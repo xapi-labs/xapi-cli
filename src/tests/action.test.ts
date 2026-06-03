@@ -78,6 +78,26 @@ describe('action commands', () => {
       spy.mockRestore();
     });
 
+    it('renders table format from XAPI_OUTPUT env', async () => {
+      const previous = process.env.XAPI_OUTPUT;
+      process.env.XAPI_OUTPUT = 'table';
+      const spy = spyOn(client, 'actionList').mockResolvedValue({ actions: mockActions, pagination: {} });
+
+      try {
+        await actionList([], {});
+        expect(outputSpy).toHaveBeenCalledWith(
+          mockActions.map((a: any) => ({
+            id: a.id, method: a.method ?? '', displayName: a.displayName ?? '', source: a.source, category: a.meta.category, status: a.status, cost: a.meta.cost,
+          })),
+          'table',
+        );
+      } finally {
+        if (previous === undefined) delete process.env.XAPI_OUTPUT;
+        else process.env.XAPI_OUTPUT = previous;
+        spy.mockRestore();
+      }
+    });
+
     it('calls err on failure', async () => {
       const spy = spyOn(client, 'actionList').mockRejectedValue(new Error('timeout'));
       await expect(actionList([], {})).rejects.toThrow('err called');
@@ -149,6 +169,21 @@ describe('action commands', () => {
       await actionCategories([], { format: 'table' });
       expect(outputSpy).toHaveBeenCalledWith([{ category: 'Social' }, { category: 'Crypto' }], 'table');
       spy.mockRestore();
+    });
+
+    it('renders table format from XAPI_OUTPUT env', async () => {
+      const previous = process.env.XAPI_OUTPUT;
+      process.env.XAPI_OUTPUT = 'table';
+      const spy = spyOn(client, 'actionCategories').mockResolvedValue({ categories: ['Social', 'Crypto'], total: 2 });
+
+      try {
+        await actionCategories([], {});
+        expect(outputSpy).toHaveBeenCalledWith([{ category: 'Social' }, { category: 'Crypto' }], 'table');
+      } finally {
+        if (previous === undefined) delete process.env.XAPI_OUTPUT;
+        else process.env.XAPI_OUTPUT = previous;
+        spy.mockRestore();
+      }
     });
   });
 

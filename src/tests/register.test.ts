@@ -21,12 +21,14 @@ describe('register command', () => {
   let outputSpy: ReturnType<typeof spyOn>;
   let errSpy: ReturnType<typeof spyOn>;
   let saveConfigSpy: ReturnType<typeof spyOn>;
+  let getConfigSpy: ReturnType<typeof spyOn>;
   let fetchSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     outputSpy = spyOn(format, 'output').mockImplementation(() => {});
     errSpy = spyOn(format, 'err').mockImplementation((() => { throw new Error('err called'); }) as any);
     saveConfigSpy = spyOn(config, 'saveConfig').mockImplementation(() => {});
+    getConfigSpy = spyOn(config, 'getConfig').mockReturnValue({ actionHost: 'action.xapi.to', apiKey: undefined });
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify(mockRegisterResponse), { status: 200 }),
     );
@@ -36,6 +38,7 @@ describe('register command', () => {
     outputSpy.mockRestore();
     errSpy.mockRestore();
     saveConfigSpy.mockRestore();
+    getConfigSpy.mockRestore();
     fetchSpy.mockRestore();
   });
 
@@ -98,6 +101,32 @@ describe('register command', () => {
     await register([], { 'referral-code': 'true' });
     const [, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(opts.body).toBe('{}');
+  });
+
+  it('refuses to overwrite an existing apiKey without --force', async () => {
+    getConfigSpy.mockReturnValue({ actionHost: 'action.xapi.to', apiKey: 'sk-existing' });
+
+    await expect(register([], {})).rejects.toThrow('err called');
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(saveConfigSpy).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalledWith(
+      'register would overwrite existing apiKey',
+      expect.stringContaining('--force'),
+    );
+  });
+
+  it('overwrites an existing apiKey when --force is set', async () => {
+    getConfigSpy.mockReturnValue({ actionHost: 'action.xapi.to', apiKey: 'sk-existing' });
+
+    await register([], { force: 'true' });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(saveConfigSpy).toHaveBeenCalledWith({ apiKey: 'sk-newkey123' });
+    expect(outputSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ note: 'apiKey replaced in ~/.xapi/config.json' }),
+      undefined,
+    );
   });
 
   it('calls err when server returns non-ok response', async () => {

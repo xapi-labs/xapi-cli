@@ -156,6 +156,7 @@ function getSource(flags: Record<string, string>): string | undefined {
 export async function actionList(args: string[], flags: Record<string, string>) {
   showHelpIfRequested(flags, LIST_HELP);
   const cfg = getConfig();
+  const fmt = flags.format || getFormat();
   try {
     const res = await client.actionList(cfg, {
       source: getSource(flags),
@@ -165,7 +166,7 @@ export async function actionList(args: string[], flags: Record<string, string>) 
       service_id: flags['service-id'],
     });
     const actions = (res.actions || []) as any[];
-    if (flags.format === 'table') {
+    if (fmt === 'table') {
       output(actions.map((a: any) => ({
         id: a.id,
         method: a.method ?? '',
@@ -188,6 +189,7 @@ export async function actionSearch(args: string[], flags: Record<string, string>
   const query = args[0];
   if (!query) err('usage: xapi-to search <query>');
   const cfg = getConfig();
+  const fmt = flags.format || getFormat();
   try {
     const res = await client.actionSearch(query, cfg, {
       source: getSource(flags),
@@ -196,7 +198,7 @@ export async function actionSearch(args: string[], flags: Record<string, string>
       page_size: flags['page-size'] ? parseInt(flags['page-size']) : undefined,
     });
     const results = (res.results || []) as any[];
-    if (flags.format === 'table') {
+    if (fmt === 'table') {
       output(results.map((a: any) => ({
         id: a.id,
         method: a.method ?? '',
@@ -216,9 +218,10 @@ export async function actionSearch(args: string[], flags: Record<string, string>
 
 export async function actionCategories(args: string[], flags: Record<string, string>) {
   const cfg = getConfig();
+  const fmt = flags.format || getFormat();
   try {
     const res = await client.actionCategories(cfg, { source: getSource(flags) });
-    if (flags.format === 'table') {
+    if (fmt === 'table') {
       output(res.categories.map(c => ({ category: c })), 'table');
     } else {
       output(res, flags.format as any);
@@ -230,6 +233,7 @@ export async function actionCategories(args: string[], flags: Record<string, str
 
 export async function actionServices(args: string[], flags: Record<string, string>) {
   const cfg = getConfig();
+  const fmt = flags.format || getFormat();
   try {
     const res = await client.actionServices(cfg, {
       page: flags.page ? parseInt(flags.page) : undefined,
@@ -237,7 +241,7 @@ export async function actionServices(args: string[], flags: Record<string, strin
       category: flags.category,
     });
     const services = (res.services || []) as any[];
-    if (flags.format === 'table') {
+    if (fmt === 'table') {
       output(services.map((s: any) => ({
         id: s.id,
         name: s.name ?? '',
