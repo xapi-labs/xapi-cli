@@ -6,8 +6,9 @@
  *  2. List API keys → find the one matching the current key by prefix
  *  3. Enable OAuth on the key if not already (POST /keys/:id/enable-oauth)
  *  4. List OAuth providers → find the requested provider
- *  5. POST /oauth/authorize → get authorizationUrl
- *  6. Open browser (macOS/Linux/Windows) and poll for binding completion
+ *  5. Interactive scope selection (TTY) or --scopes flag
+ *  6. POST /oauth/authorize → get authorizationUrl
+ *  7. Open browser (macOS/Linux/Windows) and poll for binding completion
  *
  * `xapi-to oauth status`: list current OAuth bindings for the API key
  * `xapi-to oauth unbind <binding-id>`: delete an OAuth binding
@@ -24,6 +25,7 @@ import {
   listOAuthBindings,
   deleteOAuthBinding,
 } from '../client.ts';
+import type { OAuthProvider, ScopeDefinition } from '../client.ts';
 import { output, err } from '../format.ts';
 
 /** Try to open a URL in the default browser. Silent on failure. */
@@ -109,6 +111,128 @@ async function findCurrentKeyRecord(
   return match;
 }
 
+/**
+ * Build the scope definitions list. If the provider has scopeDefinitions, use
+ * them directly. Otherwise, synthesize from defaultScopes (each scope becomes
+ * an optional toggle, matching the frontend fallback).
+ */
+function resolveScopeDefs(provider: OAuthProvider): ScopeDefinition[] {
+  if (Array.isArray(provider.scopeDefinitions) && provider.scopeDefinitions.length > 0) {
+    return provider.scopeDefinitions;
+  }
+  const raw = (provider.defaultScopes || '').split(/[\s,]+/).filter(Boolean);
+  return raw.map((s) => ({
+    scope: s,
+    label: s,
+    description: '',
+    required: false,
+    category: '',
+  }));
+}
+
+/**
+ * Interactive scope selection using arrow keys + space.
+ *
+ *   ↑/↓  navigate    space  toggle    a  select all    n  deselect all    enter  confirm
+ *
+ * Required scopes are shown but locked. Optional scopes default to selected.
+ * Uses save/restore cursor position for clean in-place re-rendering.
+ */
+async function selectScopesInteractive(provider: OAuthProvider): Promise<string> {
+  const defs = resolveScopeDefs(provider);
+  if (defs.length === 0) return '';
+
+  const required = defs.filter((d) => d.required);
+  const optional = defs.filter((d) => !d.required);
+  const selected = new Set(defs.map((d) => d.scope));
+
+  if (optional.length === 0) {
+    return required.map((d) => d.scope).join(' ');
+  }
+
+  const out = process.stderr;
+  let cursor = 0;
+  const hint = '  ↑↓ navigate · space toggle · a all · n none · enter confirm';
+
+  const buildFrame = (): string => {
+    const lines: string[] = [];
+    for (const d of required) {
+      const desc = d.description ? ` — ${d.description}` : '';
+      lines.push(`    \x1b[2m[*] ${d.label}${desc} (required)\x1b[0m`);
+    }
+    for (let i = 0; i < optional.length; i++) {
+      const d = optional[i];
+      const ptr = cursor === i ? ' \x1b[36m❯\x1b[0m' : '  ';
+      const chk = selected.has(d.scope) ? '\x1b[32m✔\x1b[0m' : ' ';
+      const desc = d.description ? ` \x1b[2m— ${d.description}\x1b[0m` : '';
+      lines.push(`  ${ptr} [${chk}] ${d.label}${desc}`);
+    }
+    lines.push(`\x1b[2m${hint}\x1b[0m`);
+    return lines.join('\n');
+  };
+
+  // Initial render: print header, save cursor, draw frame
+  out.write('\n  Scopes:\n');
+  out.write('\x1b[s');       // save cursor position
+  out.write('\x1b[?25l');    // hide cursor
+  out.write(buildFrame());
+
+  const redraw = () => {
+    out.write('\x1b[u');     // restore to saved position
+    out.write('\x1b[J');     // clear from cursor to end of screen
+    out.write(buildFrame());
+  };
+
+  return new Promise((resolve) => {
+    const { stdin } = process;
+    const wasRaw = stdin.isRaw;
+    stdin.setRawMode(true);
+    stdin.resume();
+
+    const finish = (result: string) => {
+      stdin.removeListener('data', onData);
+      stdin.setRawMode(wasRaw ?? false);
+      stdin.pause();
+      out.write('\x1b[?25h'); // show cursor
+      out.write('\n');
+      resolve(result);
+    };
+
+    const onData = (buf: Buffer) => {
+      const key = buf.toString();
+
+      if (key === '\r' || key === '\n') {
+        finish(Array.from(selected).join(' '));
+        return;
+      }
+      if (key === '\x03') {
+        finish('');
+        process.exit(130);
+      }
+
+      if (key === '\x1b[A' || key === 'k') {
+        cursor = (cursor - 1 + optional.length) % optional.length;
+      } else if (key === '\x1b[B' || key === 'j') {
+        cursor = (cursor + 1) % optional.length;
+      } else if (key === ' ') {
+        const scope = optional[cursor].scope;
+        if (selected.has(scope)) selected.delete(scope);
+        else selected.add(scope);
+      } else if (key === 'a') {
+        for (const d of optional) selected.add(d.scope);
+      } else if (key === 'n') {
+        for (const d of optional) selected.delete(d.scope);
+      } else {
+        return;
+      }
+
+      redraw();
+    };
+
+    stdin.on('data', onData);
+  });
+}
+
 // ── Help text ──────────────────────────────────────────────────────────────────
 
 export const OAUTH_HELP = `xapi-to oauth - Manage OAuth bindings
@@ -124,11 +248,13 @@ COMMANDS
 
 FLAGS
   --provider <name>          OAuth provider (default: twitter)
+  --scopes <scopes>          Space-separated scopes (skips interactive selection)
   --format json|pretty|table   Output format
 
 EXAMPLES
   xapi-to oauth bind
   xapi-to oauth bind --provider twitter
+  xapi-to oauth bind --scopes "tweet.read users.read"
   xapi-to oauth status
   xapi-to oauth status --format pretty
   xapi-to oauth unbind abc123
@@ -138,10 +264,11 @@ EXAMPLES
 // ── Commands ───────────────────────────────────────────────────────────────────
 
 /**
- * xapi-to oauth bind [--provider twitter]
+ * xapi-to oauth bind [--provider twitter] [--scopes "..."]
  *
  * Initiates OAuth binding for the current API key.
- * Prints the authorization URL for the user to open in a browser.
+ * In TTY mode, shows interactive scope selection then opens the browser.
+ * In non-TTY mode, outputs the authorization URL as JSON.
  */
 export async function oauthBind(args: string[], flags: Record<string, string>) {
   const cfg = getConfig();
@@ -178,16 +305,36 @@ export async function oauthBind(args: string[], flags: Record<string, string>) {
       );
     }
 
-    // 5. Initiate OAuth authorization
-    const result = await initiateOAuth(keyRecord.id, provider.id, jwtToken, XAPI_API_HOST);
-    const { authorizationUrl } = result;
-
+    // 5. Resolve scopes
+    let scopes: string | undefined;
+    let headerPrinted = false;
     const isTTY = process.stdout.isTTY;
+
+    if (flags.scopes) {
+      scopes = flags.scopes;
+    } else if (isTTY) {
+      const defs = resolveScopeDefs(provider);
+      if (defs.length > 0) {
+        console.error(`\n  Provider : ${provider.name}`);
+        console.error(`  API Key  : ${keyRecord.keyPreview}`);
+        headerPrinted = true;
+        scopes = await selectScopesInteractive(provider) || undefined;
+      }
+    }
+
+    // 6. Initiate OAuth authorization
+    const result = await initiateOAuth(keyRecord.id, provider.id, jwtToken, XAPI_API_HOST, scopes);
+    const { authorizationUrl } = result;
 
     if (isTTY) {
       // Interactive mode: open browser + poll
-      console.error(`\n  Provider : ${provider.name}`);
-      console.error(`  API Key  : ${keyRecord.keyPreview}`);
+      if (!headerPrinted) {
+        console.error(`\n  Provider : ${provider.name}`);
+        console.error(`  API Key  : ${keyRecord.keyPreview}`);
+      }
+      if (scopes) {
+        console.error(`  Scopes   : ${scopes}`);
+      }
       console.error(`\n  Authorization URL:\n  ${authorizationUrl}\n`);
       console.error('  Opening browser...');
       openBrowser(authorizationUrl);
@@ -200,7 +347,7 @@ export async function oauthBind(args: string[], flags: Record<string, string>) {
       if (binding) {
         const account = (binding as any).providerAccountName || 'unknown';
         console.error(`\n  Authorization complete! Bound to @${account}\n`);
-        output({ status: 'success', provider: provider.name, account }, flags.format as any);
+        output({ status: 'success', provider: provider.name, account, scopes }, flags.format as any);
       } else {
         err('oauth bind timed out', 'Authorization was not completed within 5 minutes. Run "xapi-to oauth bind" again.');
       }
@@ -211,6 +358,7 @@ export async function oauthBind(args: string[], flags: Record<string, string>) {
         provider: provider.name,
         apiKey: keyRecord.keyPreview,
         authorizationUrl,
+        scopes,
       }, flags.format as any);
     }
   } catch (e: any) {

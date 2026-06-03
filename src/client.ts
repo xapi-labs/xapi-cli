@@ -207,14 +207,25 @@ export async function enableOAuthForKey(
   );
 }
 
+export interface ScopeDefinition {
+  scope: string;
+  label: string;
+  description: string;
+  required: boolean;
+  category: string;
+}
+
+export interface OAuthProvider {
+  id: string;
+  name: string;
+  type: string;
+  grantType: string;
+  defaultScopes: string;
+  scopeDefinitions: ScopeDefinition[] | null;
+}
+
 export async function listOAuthProviders(apiHost: string) {
-  return request<Array<{
-    id: string;
-    name: string;
-    type: string;
-    grantType: string;
-    defaultScopes: string;
-  }>>(
+  return request<OAuthProvider[]>(
     `${scheme(apiHost)}://${apiHost}/api/oauth/providers`,
     { method: 'GET', headers: { 'Content-Type': 'application/json' } },
   );
@@ -225,13 +236,16 @@ export async function initiateOAuth(
   providerId: string,
   jwtToken: string,
   apiHost: string,
+  scopes?: string,
 ) {
+  const body: Record<string, string> = { apiKeyId, providerId };
+  if (scopes) body.scopes = scopes;
   return request<{ authorizationUrl: string; state: string }>(
     `${scheme(apiHost)}://${apiHost}/api/oauth/authorize`,
     {
       method: 'POST',
       headers: jwtHeaders(jwtToken),
-      body: JSON.stringify({ apiKeyId, providerId }),
+      body: JSON.stringify(body),
     },
   );
 }
