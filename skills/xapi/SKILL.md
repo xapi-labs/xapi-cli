@@ -1,6 +1,6 @@
 ---
 name: xapi
-description: Access real-time external data via the xapi CLI — Twitter/X, Douyin/TikTok, Reddit, Weibo, crypto prices, web/news/image/video/scholar search, AI text processing, and SMS verification. Use when the user mentions xapi, wants to call a third-party API, or asks what external services are available.
+description: Access real-time external data via the xapi CLI — Twitter/X, Douyin/TikTok, Reddit, Weibo, on-chain crypto data (price, holders, wallets, DEX, CEX), web/news/image/video/scholar search, AI text/image/video generation, and SMS verification. Use when the user mentions xapi, wants to call a third-party API, or asks what external services are available.
 homepage: https://xapi.to
 metadata: {"openclaw":{"emoji":"x","requires":{"anyBins":["npx"]},"primaryEnv":"XAPI_KEY"}}
 ---
@@ -129,7 +129,7 @@ npx xapi-to call twitter.followers --input '{"user_id":"44196397"}'
 npx xapi-to call twitter.following --input '{"user_id":"44196397"}'
 
 # Search tweets
-npx xapi-to call twitter.search_timeline --input '{"raw_query":"bitcoin","count":20}'
+npx xapi-to call twitter.search --input '{"raw_query":"bitcoin","count":20}'
 
 # Get retweeters of a tweet
 npx xapi-to call twitter.retweeters --input '{"tweet_id":"1234567890"}'
@@ -137,15 +137,59 @@ npx xapi-to call twitter.retweeters --input '{"tweet_id":"1234567890"}'
 
 Note: Twitter user_id is a numeric ID. To get it, first call `twitter.user_by_screen_name` with the username, then extract `rest_id` from the response.
 
-### Crypto (2 APIs)
+Note: All `twitter.*` capabilities accept an optional `provider` — `"x"` (fapi.uk, default) or `"twitter"` (legacy upstream). Responses are normalized to an identical structure across providers, so you normally don't need to set it; pass `"provider":"twitter"` only to force the legacy upstream.
+
+### Crypto (16 APIs)
+
+Two addressing models:
+
+- **On-chain by contract address** (`crypto.token.*`, `crypto.wallet.*`, `crypto.tx.*`, `crypto.dex.*`) — the `token`/`address`/`pair` field is a **contract/wallet address**, plus a `chain`. Supported chains: `eth`, `bsc` (default), `solana`, `base`, `arbitrum`, `polygon`, `optimism`, `avalanche`.
+- **By symbol** (`crypto.cex.*`) — for coins without a contract address (e.g. "how much is BTC?"), use the CEX endpoints with a `symbol`.
 
 ```bash
-# Get token price and 24h change
-npx xapi-to call crypto.token.price --input '{"token":"BTC","chain":"bsc"}'
+# --- Token by contract address ---
 
-# Get token metadata
-npx xapi-to call crypto.token.metadata --input '{"token":"ETH","chain":"eth"}'
+# Price + 24h market data (aggregates multiple providers with fallback)
+npx xapi-to call crypto.token.price --input '{"token":"0x55d398326f99059ff775485246999027b3197955","chain":"bsc"}'
+
+# Full overview: metadata + price + market in one call (preferred over metadata)
+npx xapi-to call crypto.token.overview --input '{"token":"0x55d398326f99059ff775485246999027b3197955","chain":"bsc"}'
+
+# OHLCV candles (interval: 1m/5m/1h/1d…, default 1d)
+npx xapi-to call crypto.token.ohlcv --input '{"token":"0x...","chain":"bsc","interval":"1h","limit":100}'
+
+# Top holders / top traders / security (honeypot, tax, etc.)
+npx xapi-to call crypto.token.holders --input '{"token":"0x...","chain":"bsc"}'
+npx xapi-to call crypto.token.top_traders --input '{"token":"0x...","chain":"bsc"}'
+npx xapi-to call crypto.token.security --input '{"token":"0x...","chain":"bsc"}'
+
+# Trending tokens on a chain
+npx xapi-to call crypto.token.trending --input '{"chain":"bsc","limit":20}'
+
+# Search tokens by name / symbol / address
+npx xapi-to call crypto.token.search --input '{"query":"PEPE"}'
+
+# --- Wallet / transaction / DEX pair ---
+npx xapi-to call crypto.wallet.balance --input '{"address":"0x...","chain":"bsc"}'
+npx xapi-to call crypto.wallet.pnl --input '{"address":"0x...","chain":"bsc"}'
+npx xapi-to call crypto.wallet.history --input '{"address":"0x...","chain":"bsc","limit":50}'
+npx xapi-to call crypto.tx.detail --input '{"txHash":"0x...","chain":"bsc"}'
+npx xapi-to call crypto.dex.pair --input '{"pair":"0x...","chain":"bsc"}'
+
+# --- CEX by symbol (no contract address needed) ---
+
+# Spot price of a coin by symbol
+npx xapi-to call crypto.cex.price --input '{"symbol":"BTC"}'
+
+# CEX OHLCV candles
+npx xapi-to call crypto.cex.ohlcv --input '{"symbol":"BTC","interval":"1d","limit":100}'
+
+# --- News ---
+npx xapi-to call crypto.news --input '{"symbol":"BTC","limit":20}'
 ```
+
+Note: `crypto.token.metadata` is **deprecated** — use `crypto.token.overview` instead (it returns metadata + price + market in one call).
+Note: All `crypto.token.*`/`crypto.wallet.*`/etc. accept an optional `provider` to pin a specific upstream and disable automatic fallback.
 
 ### Web Search (9 APIs)
 
@@ -178,7 +222,7 @@ npx xapi-to call web.search.places --input '{"q":"best ramen in Tokyo"}'
 npx xapi-to call web.search.shopping --input '{"q":"mechanical keyboard"}'
 ```
 
-### AI Text Processing (5 APIs)
+### AI Text Processing (6 APIs)
 
 ```bash
 # Fast chat completion
@@ -186,6 +230,9 @@ npx xapi-to call ai.text.chat.fast --input '{"messages":[{"role":"user","content
 
 # Reasoning chat (more thorough)
 npx xapi-to call ai.text.chat.reasoning --input '{"messages":[{"role":"user","content":"Analyze the pros and cons of microservices"}]}'
+
+# Auto chat — pass a model explicitly, gateway auto-routes to the best upstream with fallback
+npx xapi-to call ai.text.chat.auto --input '{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"Hello"}]}'
 
 # Summarize text
 npx xapi-to call ai.text.summarize --input '{"text":"<long text here>"}'
@@ -196,6 +243,28 @@ npx xapi-to call ai.text.rewrite --input '{"text":"<text>","mode":"formalize"}'
 # Generate embeddings
 npx xapi-to call ai.embedding.generate --input '{"input":"hello world"}'
 ```
+
+### AI Image & Video Generation (2 APIs)
+
+```bash
+# Generate an image from a text prompt (returns image URL/data synchronously)
+npx xapi-to call ai.image.generate --input '{"prompt":"A serene mountain landscape at sunset, digital art","model":"gpt-image-2"}'
+
+# Generate a video from a text prompt (+ optional reference image) — ASYNC
+npx xapi-to call ai.video.generate --input '{"prompt":"A cat playing piano in a jazz bar, cinematic"}'
+```
+
+`ai.video.generate` is **asynchronous**: it returns `{ "task_id": "...", "status": "pending", "poll_url": "..." }`. Poll for the result with the `task.poll` capability (see below).
+
+### Async Tasks (`task.poll`)
+
+Some capabilities (e.g. `ai.video.generate`) run asynchronously and return a `task_id`. Poll until the task reaches a terminal status:
+
+```bash
+npx xapi-to call task.poll --input '{"task_id":"<task_id from the async response>"}'
+```
+
+Status values: `pending` | `processing` | `succeeded` | `failed` | `expired`. When `succeeded`, the result payload is included; when `failed`/`expired`, an error is included. Poll every few seconds until the status is terminal.
 
 ## Input Format
 
@@ -277,19 +346,20 @@ npx xapi-to topup --method x402
 
 ## Available API Services
 
-Beyond built-in capabilities, xapi proxies several third-party API services including:
+Beyond built-in capabilities, xapi proxies **dozens** of third-party API services. This is a small sample — always run `npx xapi-to services --format table` for the full, current catalog and exact endpoint counts:
 
-- **X API v2** (`x-official`) — Official Twitter/X API with 156 endpoints (tweets, users, spaces, lists, DMs, etc.)
-- **Douyin** (`douyin`) — Douyin/TikTok API with 39 endpoints (videos, users, trending, comments)
-- **Twitter API** (`twitter`) — Alternative Twitter data API with 26 endpoints
-- **Reddit** (`reddit`) — Reddit API with 24 endpoints (posts, comments, subreddits, search)
-- **Weibo** (`weibo-app`) — Weibo API with 20 endpoints (user profiles, feeds, search, trending)
-- **5SIM SMS** (`5sim-sms`) — SMS verification with 20 endpoints (virtual numbers, activation codes)
-- **Ave Cloud Data API** (`ave`) — Crypto data with 19 endpoints
-- **Serper API** (`serper`) — Google Search API with 10 endpoints
-- **OpenRouter API** (`openrouter`) — Multi-model AI API gateway with 2 endpoints
+- **X API v2** (`x-official`) — Official Twitter/X API (tweets, users, spaces, lists, DMs, etc.)
+- **Douyin** (`douyin`) — Douyin/TikTok API (videos, users, trending, comments)
+- **Twitter API** (`twitter`) — Alternative Twitter data API
+- **Reddit** (`reddit`) — Reddit API (posts, comments, subreddits, search)
+- **Weibo** (`weibo-app`) — Weibo API (user profiles, feeds, search, trending)
+- **5SIM SMS** (`5sim-sms`) — SMS verification (virtual numbers, activation codes)
+- **Serper API** (`serper`) — Google Search API
+- **OpenRouter API** (`openrouter`) — Multi-model AI gateway (chat, embeddings, audio transcription/speech, video)
 
-Use `npx xapi-to services --format table` to see the latest list.
+The full catalog also spans many other categories — crypto/on-chain data, CEX market data, stocks & macro, social platforms, news, weather, and more. Discover them with `search` / `services`.
+
+> For crypto data, prefer the built-in `crypto.*` capabilities above (they aggregate multiple upstreams with automatic fallback).
 
 ## Error Handling
 
@@ -313,6 +383,8 @@ When the user's task involves these workflows, read the corresponding guide file
 - **`guides/xiaohongshu.md`** — 小红书 (Xiaohongshu): user profiles, notes, comments, search, topics, products, creator inspiration
 - **`guides/weibo.md`** — Weibo (微博): hot search, content search, user profiles, post details, comments, reposts, media
 - **`guides/google_search.md`** — Google Search: web, realtime, news, image, video, scholar, maps, places, shopping
+- **`guides/crypto.md`** — Crypto (加密货币): on-chain token price/overview/holders/security/OHLCV, wallet analytics, DEX pairs, CEX spot prices by symbol, news — covers contract-address vs symbol addressing and multi-chain
+- **`guides/ai.md`** — AI (人工智能): text chat (fast/reasoning/auto), summarize/rewrite, embeddings, image generation, and asynchronous video generation with `task.poll` polling
 - **`guides/sms.md`** — SMS verification: buy virtual phone numbers, receive verification codes, finish/cancel orders (5SIM)
 
 ## Security

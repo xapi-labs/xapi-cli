@@ -2,6 +2,8 @@
 
 Complete guide for Twitter operations via xAPI — reading data, posting tweets, replying, and OAuth setup.
 
+> **Upstream provider:** All `twitter.*` capabilities accept an optional `provider` — `"x"` (fapi.uk, the default) or `"twitter"` (legacy upstream). The response is normalized to an identical structure regardless of provider, so you normally omit it. Pass `"provider":"twitter"` only to force the legacy upstream, e.g. `--input '{"screen_name":"elonmusk","provider":"twitter"}'`.
+
 ## Reading Twitter Data (no OAuth needed)
 
 ### Look up a user by @handle
@@ -46,7 +48,7 @@ npx xapi-to call twitter.tweet_detail --input '{"tweet_id":"2035526376468394305"
 ### Search tweets
 
 ```bash
-npx xapi-to call twitter.search_timeline --input '{"raw_query":"AI agents","count":20}'
+npx xapi-to call twitter.search --input '{"raw_query":"AI agents","count":20}'
 ```
 
 ### Get user's media posts
@@ -155,7 +157,7 @@ npx xapi-to call x-official.2_users_id_retweets --method POST \
 | `twitter.user_tweets_and_replies` | — | Get user's tweets and replies |
 | `twitter.user_media` | — | Get user's media posts |
 | `twitter.tweet_detail` | — | Get tweet + replies |
-| `twitter.search_timeline` | — | Search tweets |
+| `twitter.search` | — | Search tweets |
 | `twitter.followers` | — | Get user's followers |
 | `twitter.following` | — | Get user's following |
 | `twitter.retweeters` | — | Get tweet retweeters |
