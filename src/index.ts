@@ -4,7 +4,7 @@
  *
  * Usage:
  *   xapi-to list [--source capability|api] [--page N] [--page-size N] [--category X]
- *   xapi-to search <query> [--source capability|api] [--category X] [--page N] [--page-size N]
+ *   xapi-to search <query> [--source capability|api] [--category X] [--include-all-versions]
  *   xapi-to categories [--source capability|api]
  *   xapi-to services [--page N] [--page-size N] [--category X]
  *   xapi-to get <id> [--code curl|py|js|ts|go]
@@ -50,7 +50,7 @@ COMMANDS
     --page N  --page-size N         Pagination
     --category <name>               Filter by category
     --service-id <id>               Filter by service
-  search <query>                    Search actions by keyword
+  search <query>                    Search actions by keyword (--all-versions: 含非默认但仍在跑的大版本)
     --source capability|api         Filter by source type
     --category <name>               Filter by category
     --page N  --page-size N         Pagination

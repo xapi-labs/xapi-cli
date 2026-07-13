@@ -272,7 +272,9 @@ export async function actionSearch(args: string[], flags: Record<string, string>
       category: flags.category,
       page: positiveIntegerFlag(flags.page, '--page'),
       page_size: positiveIntegerFlag(flags['page-size'], '--page-size'),
-      include_all_versions: flags['include-all-versions'] === 'true',
+      // Backward-compatible aliases from the original feature branch.
+      include_all_versions: ['include-all-versions', 'all-versions', 'include-history']
+        .some((name) => flags[name] === 'true'),
       sort: requestedSort,
     });
     if (requestedSort && res.sort !== requestedSort) {
