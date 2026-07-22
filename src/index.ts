@@ -32,38 +32,9 @@ import * as regCmds from './commands/register.ts';
 import * as topupCmds from './commands/topup.ts';
 import * as balanceCmds from './commands/balance.ts';
 import * as oauthCmds from './commands/oauth.ts';
+import * as taskCmds from './commands/task.ts';
 const { OAUTH_HELP } = oauthCmds;
-
-// ── Argument parser ───────────────────────────────────────────────────────────
-
-interface ParsedArgs {
-  positional: string[];
-  flags: Record<string, string>;
-}
-
-function parseArgs(argv: string[]): ParsedArgs {
-  const positional: string[] = [];
-  const flags: Record<string, string> = {};
-  let i = 0;
-  while (i < argv.length) {
-    const arg = argv[i];
-    if (arg.startsWith('--')) {
-      const key = arg.slice(2);
-      const next = argv[i + 1];
-      if (next && !next.startsWith('--')) {
-        flags[key] = next;
-        i += 2;
-      } else {
-        flags[key] = 'true';
-        i++;
-      }
-    } else {
-      positional.push(arg);
-      i++;
-    }
-  }
-  return { positional, flags };
-}
+import { parseArgs } from './args.ts';
 
 // ── Help ──────────────────────────────────────────────────────────────────────
 
@@ -93,6 +64,12 @@ COMMANDS
     --method GET|POST|...            Override HTTP method
     --code <target>                  Generate code snippet instead of executing
     Variants: python.requests, python.httpx, javascript.fetch, javascript.axios
+
+  task poll <task_id>                Poll async task once (wraps task.poll)
+  task wait <task_id>                Wait until async task completes
+    --interval <duration>            Poll interval, e.g. 2s (default: 2s)
+    --timeout <duration>             Max wait duration, e.g. 10m
+    --max-attempts <number>          Max poll attempts
 
   oauth bind [--provider twitter]   Bind Twitter OAuth to your API key
   oauth status                      List current OAuth bindings
@@ -132,6 +109,8 @@ EXAMPLES
   xapi-to get twitter.tweet_detail --code py --format pretty
   xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
   xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}' --code python
+  xapi-to task poll 550e8400-e29b-41d4-a716-446655440000
+  xapi-to task wait 550e8400-e29b-41d4-a716-446655440000 --interval 2s --timeout 10m
   xapi-to categories
   xapi-to services --format table
   xapi-to config set apiKey=xapi_abc123
@@ -161,6 +140,21 @@ async function main() {
     case 'services':   return actionCmds.actionServices(rest, flags);
     case 'get':        return actionCmds.actionGet(rest, flags);
     case 'call':       return actionCmds.actionCall(rest, flags);
+    case 'task': {
+      if (rest.length === 0) {
+        console.log(taskCmds.taskHelp());
+        process.exit(0);
+      }
+      const [subCmd, ...subRest] = rest;
+      switch (subCmd) {
+        case 'poll': return taskCmds.taskPoll(subRest, flags);
+        case 'wait': return taskCmds.taskWait(subRest, flags);
+        default:
+          console.error(JSON.stringify({ error: `unknown task command: ${subCmd}`, hint: 'valid commands: poll, wait' }));
+          process.exit(1);
+      }
+      break;
+    }
 
     // ── OAuth commands ──
     case 'oauth': {

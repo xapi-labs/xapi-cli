@@ -20,7 +20,7 @@ describe('output formatting', () => {
 
     expect(consoleSpy.mock.calls[0][0]).toContain('id');
     expect(consoleSpy.mock.calls[0][0]).toContain('provider');
-    expect(consoleSpy.mock.calls.some((call) => String(call[0]).includes('bind-1'))).toBe(true);
+    expect(consoleSpy.mock.calls.some((call: any[]) => String(call[0]).includes('bind-1'))).toBe(true);
   });
 
   it('stringifies nested table values instead of printing [object Object]', () => {
@@ -33,7 +33,7 @@ describe('output formatting', () => {
       },
     ], 'table');
 
-    const printed = consoleSpy.mock.calls.map((call) => String(call[0])).join('\n');
+    const printed = consoleSpy.mock.calls.map((call: any[]) => String(call[0])).join('\n');
     expect(printed).toContain('"tweet.read"');
     expect(printed).not.toContain('[object Object]');
   });

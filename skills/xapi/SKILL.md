@@ -1,6 +1,6 @@
 ---
 name: xapi
-description: Access real-time external data via the xapi CLI — Twitter/X, Douyin/TikTok, Reddit, Weibo, on-chain crypto data (price, holders, wallets, DEX, CEX), web/news/image/video/scholar search, AI text/image/video generation, and SMS verification. Use when the user mentions xapi, wants to call a third-party API, or asks what external services are available.
+description: Access real-time external data via the xapi CLI — Twitter/X, Douyin/TikTok, Reddit, LinkedIn, Weibo, on-chain crypto data (price, holders, wallets, DEX, CEX), web/news/image/video/scholar search, AI text/image/video generation, and SMS verification. Use when the user mentions xapi, wants to call a third-party API, or asks what external services are available.
 homepage: https://xapi.to
 metadata: {"openclaw":{"emoji":"x","requires":{"anyBins":["npx"]},"primaryEnv":"XAPI_KEY"}}
 ---
@@ -352,6 +352,7 @@ Beyond built-in capabilities, xapi proxies **dozens** of third-party API service
 - **Douyin** (`douyin`) — Douyin/TikTok API (videos, users, trending, comments)
 - **Twitter API** (`twitter`) — Alternative Twitter data API
 - **Reddit** (`reddit`) — Reddit API (posts, comments, subreddits, search)
+- **LinkedIn** (`linkedin`) — LinkedIn API (person profiles & career history, company pages, job search)
 - **Weibo** (`weibo-app`) — Weibo API (user profiles, feeds, search, trending)
 - **5SIM SMS** (`5sim-sms`) — SMS verification (virtual numbers, activation codes)
 - **Serper API** (`serper`) — Google Search API
@@ -378,6 +379,7 @@ When the user's task involves these workflows, read the corresponding guide file
 
 - **`guides/twitter.md`** — Twitter/X (推特): read tweets, tweets + replies timeline, post tweets, reply, quote, like, retweet, OAuth binding
 - **`guides/reddit.md`** — Reddit: user profiles, posts, comments, subreddit feeds, popular/news/games feeds, trending, search
+- **`guides/linkedin.md`** — LinkedIn (领英): person profiles & full career history (experience, education, skills, honors, publications), company pages & employees, job search — covers the two-step `username`→`urn` lookup pattern
 - **`guides/tiktok.md`** — TikTok: user profiles, videos, comments, search, hashtags, music, live rooms, feed
 - **`guides/douyin.md`** — Douyin (抖音): user profiles, videos, comments, hot search, hashtags, music, video mix/series
 - **`guides/xiaohongshu.md`** — 小红书 (Xiaohongshu): user profiles, notes, comments, search, topics, products, creator inspiration
