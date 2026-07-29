@@ -139,6 +139,8 @@ Note: Twitter user_id is a numeric ID. To get it, first call `twitter.user_by_sc
 
 Note: All `twitter.*` capabilities accept an optional `provider` — `"x"` (fapi.uk, default) or `"twitter"` (legacy upstream). Responses are normalized to an identical structure across providers, so you normally don't need to set it; pass `"provider":"twitter"` only to force the legacy upstream.
 
+Note: For long-form **X Articles** (tweets whose `full_text` is just a `t.co` link to `x.com/i/article/...`), `twitter.tweet_detail` only returns the title and preview. To read the full article body, call `twitter.graphql_TweetDetail` with a `fieldToggles` parameter — see `guides/twitter.md` § "Read an X Article".
+
 ### Crypto (16 APIs)
 
 Two addressing models:
@@ -377,7 +379,7 @@ The full catalog also spans many other categories — crypto/on-chain data, CEX 
 
 When the user's task involves these workflows, read the corresponding guide file for detailed instructions:
 
-- **`guides/twitter.md`** — Twitter/X (推特): read tweets, tweets + replies timeline, post tweets, reply, quote, like, retweet, OAuth binding
+- **`guides/twitter.md`** — Twitter/X (推特): read tweets, tweets + replies timeline, read long-form X Articles (full body via `fieldToggles`), post tweets, reply, quote, like, retweet, OAuth binding
 - **`guides/reddit.md`** — Reddit: user profiles, posts, comments, subreddit feeds, popular/news/games feeds, trending, search
 - **`guides/linkedin.md`** — LinkedIn (领英): person profiles & full career history (experience, education, skills, honors, publications), company pages & employees, job search — covers the two-step `username`→`urn` lookup pattern
 - **`guides/tiktok.md`** — TikTok: user profiles, videos, comments, search, hashtags, music, live rooms, feed
