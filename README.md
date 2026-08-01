@@ -66,6 +66,16 @@ xapi-to get twitter.tweet_detail                        # get action schema
 xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'  # execute
 ```
 
+### Async Task Commands
+
+Task helpers built on top of the `task.poll` capability.
+
+```bash
+xapi-to task poll 550e8400-e29b-41d4-a716-446655440000                 # poll once
+xapi-to task wait 550e8400-e29b-41d4-a716-446655440000                 # wait until terminal status
+xapi-to task wait 550e8400-e29b-41d4-a716-446655440000 --interval 1s --timeout 10m
+```
+
 ### OAuth
 
 Bind third-party OAuth accounts (e.g. Twitter) to your API key.

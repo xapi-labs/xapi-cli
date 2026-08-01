@@ -11,7 +11,7 @@
  *   xapi-to register xapito                    # positional shorthand
  */
 
-import { XAPI_API_HOST, getConfig, saveConfig, scheme } from '../config.ts';
+import { XAPI_API_HOST, getConfig, saveConfig, scheme, assertAllowedHost } from '../config.ts';
 import { output, err } from '../format.ts';
 
 interface RegisterResponse {
@@ -25,6 +25,7 @@ interface RegisterResponse {
 }
 
 async function registerAccount(referralCode?: string): Promise<RegisterResponse> {
+  assertAllowedHost(XAPI_API_HOST);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15_000);
   try {

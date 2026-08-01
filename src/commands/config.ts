@@ -2,6 +2,7 @@
  * config commands: show, set, health
  */
 
+import { readFileSync } from 'fs';
 import { getConfig, saveConfig, showConfig } from '../config.ts';
 import { healthCheck } from '../client.ts';
 import { output, err } from '../format.ts';
@@ -13,7 +14,7 @@ USAGE
 
 COMMANDS
   show                       Show current config (host, apiKey path, etc.)
-  set apiKey=<key>           Save API key to ~/.xapi/config.json
+  set apiKey=<key>           Save API key to ~/.xapi/config.json (apiKey=- reads from stdin)
   health                     Check backend connectivity (alias: xapi-to health)
 
 FLAGS
@@ -22,6 +23,7 @@ FLAGS
 EXAMPLES
   xapi-to config show
   xapi-to config set apiKey=xapi_abc123
+  echo "$XAPI_KEY" | xapi-to config set apiKey=-   # keeps the key out of shell history
   xapi-to config health
 `;
 
@@ -30,7 +32,7 @@ export async function configShow(args: string[], flags: Record<string, string>) 
 }
 
 export async function configSet(args: string[], flags: Record<string, string>) {
-  // xapi-to config set apiKey=xapi_xxx
+  // xapi-to config set apiKey=xapi_xxx   (or apiKey=- to read the key from stdin)
   if (args.length === 0) err('usage: xapi-to config set apiKey=<key>');
   const updates: { apiKey?: string } = {};
   for (const arg of args) {
@@ -39,7 +41,13 @@ export async function configSet(args: string[], flags: Record<string, string>) {
     const key = arg.slice(0, eq);
     if (key === 'host') err('host is built-in and cannot be configured');
     if (key !== 'apiKey') err(`unknown config key: ${key} (only apiKey is configurable)`);
-    updates.apiKey = arg.slice(eq + 1);
+    let value = arg.slice(eq + 1);
+    if (value === '-') {
+      // Read the key from stdin so it never lands in shell history.
+      value = readFileSync(0, 'utf-8').trim();
+    }
+    if (!value) err('apiKey is empty');
+    updates.apiKey = value;
   }
   saveConfig(updates);
   console.log(JSON.stringify({ ok: true, updated: Object.keys(updates) }));

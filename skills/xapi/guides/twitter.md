@@ -45,6 +45,29 @@ Similar to `twitter.user_tweets`, but the timeline also includes the user's repl
 npx xapi-to call twitter.tweet_detail --input '{"tweet_id":"2035526376468394305"}'
 ```
 
+### Read an X Article (long-form post)
+
+Some tweets are long-form **X Articles**. For these, `twitter.tweet_detail` returns only a `t.co` link as `full_text` (the link resolves to `x.com/i/article/<article_id>`), plus an `article` object with just `title` and `preview_text` — **not** the full body.
+
+To get the full article text, call the raw GraphQL `twitter.graphql_TweetDetail` with an extra `fieldToggles` query parameter:
+
+```bash
+npx xapi-to call twitter.graphql_TweetDetail --input '{
+  "method": "GET",
+  "params": {
+    "variables": "{\"focalTweetId\":\"<tweet_id>\",\"with_rux_injections\":false,\"includePromotedContent\":false,\"withCommunity\":true,\"withQuickPromoteEligibilityTweetFields\":true,\"withBirdwatchNotes\":true,\"withVoice\":true,\"withV2Timeline\":true}",
+    "fieldToggles": "{\"withArticleRichContentState\":true,\"withArticlePlainText\":true}"
+  }
+}'
+```
+
+The full text is in the response at `...tweet_results.result.article.article_results.result.content_state.plain_text` (with `withArticleRichContentState` you also get structured `blocks` for headings/formatting). Use the **tweet_id** from the share URL (`x.com/<user>/status/<tweet_id>` or `x.com/<user>/article/<tweet_id>`) as `focalTweetId`, not the internal article id.
+
+Tips:
+
+- The response is large (~150 KB). Pipe it to a file and extract `plain_text` programmatically rather than dumping it to the terminal.
+- Without the `fieldToggles` parameter, the same call returns only `title`/`preview_text` — this parameter is required for the article body.
+
 ### Search tweets
 
 ```bash

@@ -126,16 +126,15 @@ async function findCurrentKeyRecord(
   if (!Array.isArray(keys) || keys.length === 0) {
     throw new Error('No API keys found for this account');
   }
-  if (keys.length === 1) return keys[0];
-  // Match by prefix: keyPreview starts with the key's prefix
+  // Prefer verifying by prefix: keyPreview starts with the key's prefix.
   const prefix = plaintextKey.substring(0, 7);
   const match = keys.find((k) => k.keyPreview.startsWith(prefix));
-  if (!match) {
-    throw new Error(
-      `Current API key (${prefix}...) was not found in your account keys. Run "xapi-to config set apiKey=<key>" with a valid key before binding OAuth.`,
-    );
-  }
-  return match;
+  if (match) return match;
+  // Fallback: a sole key whose preview format doesn't line up with the prefix scheme.
+  if (keys.length === 1) return keys[0];
+  throw new Error(
+    `Current API key (${prefix}...) was not found in your account keys. Run "xapi-to config set apiKey=<key>" with a valid key before binding OAuth.`,
+  );
 }
 
 /**

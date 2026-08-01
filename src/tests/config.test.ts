@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import * as fs from 'fs';
 import * as client from '../client.ts';
 import * as format from '../format.ts';
 import * as config from '../config.ts';
@@ -54,12 +55,27 @@ describe('config commands', () => {
     });
 
     it('calls err for unknown key', async () => {
-      await expect(configSet(['foo=bar'], )).rejects.toThrow('err called');
+      await expect(configSet(['foo=bar'], {})).rejects.toThrow('err called');
       expect(errSpy).toHaveBeenCalledWith('unknown config key: foo (only apiKey is configurable)');
     });
 
     it('calls err for malformed arg', async () => {
       await expect(configSet(['noequalssign'], {})).rejects.toThrow('err called');
+    });
+
+    it('reads apiKey from stdin when value is "-"', async () => {
+      const saveSpy = spyOn(config, 'saveConfig').mockImplementation(() => {});
+      const readSpy = spyOn(fs, 'readFileSync').mockReturnValue('sk-from-stdin\n' as any);
+      await configSet(['apiKey=-'], {});
+      expect(readSpy).toHaveBeenCalledWith(0, 'utf-8');
+      expect(saveSpy).toHaveBeenCalledWith({ apiKey: 'sk-from-stdin' });
+      saveSpy.mockRestore();
+      readSpy.mockRestore();
+    });
+
+    it('calls err when apiKey is empty', async () => {
+      await expect(configSet(['apiKey='], {})).rejects.toThrow('err called');
+      expect(errSpy).toHaveBeenCalledWith('apiKey is empty');
     });
   });
 
