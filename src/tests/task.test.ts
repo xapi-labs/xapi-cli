@@ -90,16 +90,33 @@ describe('task commands', () => {
     callSpy.mockRestore();
   });
 
-  it('taskWait does not retry the poll under a deadline even when interval < timeout (no backoff overrun)', async () => {
-    // The overrun repro: interval 10ms, timeout 30ms, backend errors immediately.
-    // With retries enabled the backoff (~500ms x2) blew past the 30ms deadline.
-    const callSpy = spyOn(client, 'actionCall').mockRejectedValue(new Error('HTTP 503: busy'));
-    await expect(taskWait(['tid'], { interval: '10ms', timeout: '30ms' })).rejects.toThrow('err called');
-    expect(callSpy).toHaveBeenCalledTimes(1);
-    const [, , , , retries] = callSpy.mock.calls[0];
-    expect(retries).toBe(0);
-    // The 503 arrived within the deadline → reported as a failure, not a timeout.
-    expect(errSpy).toHaveBeenCalledWith('task wait failed', 'HTTP 503: busy');
+  it('taskWait recovers from a transient poll failure within the deadline', async () => {
+    const callSpy = spyOn(client, 'actionCall')
+      .mockRejectedValueOnce(new client.HttpError(503, 'busy'))
+      .mockResolvedValueOnce({ data: { task_id: 'tid', status: 'succeeded' } });
+
+    await taskWait(['tid'], { interval: '1ms', timeout: '1s' });
+
+    expect(callSpy).toHaveBeenCalledTimes(2);
+    for (const call of callSpy.mock.calls) {
+      expect(call[4]).toBe(0); // retries live in the deadline-aware outer loop
+      expect(call[5]).toBeLessThanOrEqual(1000);
+    }
+    expect(outputSpy).toHaveBeenCalledWith({ task_id: 'tid', status: 'succeeded' }, undefined);
+    expect(errSpy).not.toHaveBeenCalled();
+    callSpy.mockRestore();
+  });
+
+  it('taskWait counts transient failures toward max-attempts', async () => {
+    const callSpy = spyOn(client, 'actionCall').mockRejectedValue(new TypeError('fetch failed'));
+
+    await expect(taskWait(['tid'], { interval: '1ms', 'max-attempts': '2' })).rejects.toThrow('err called');
+
+    expect(callSpy).toHaveBeenCalledTimes(2);
+    expect(errSpy).toHaveBeenCalledWith(
+      'task wait exceeded max attempts',
+      expect.stringContaining('max_attempts=2'),
+    );
     callSpy.mockRestore();
   });
 

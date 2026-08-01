@@ -87,6 +87,16 @@ describe('client.request', () => {
       expect(calls).toBe(1);
     });
 
+    it('does NOT mistake an HTTP error body containing network words for a network failure', async () => {
+      let calls = 0;
+      fetchSpy = mockFetch(async () => {
+        calls++;
+        return new Response('invalid network parameter', { status: 400 });
+      });
+      await expect(request('https://action.xapi.to/x', { method: 'GET' }, 5_000, 2)).rejects.toThrow('HTTP 400');
+      expect(calls).toBe(1);
+    });
+
     it('does NOT retry a 500 even when retries are enabled (possible non-idempotent side effect)', async () => {
       let calls = 0;
       fetchSpy = mockFetch(async () => {

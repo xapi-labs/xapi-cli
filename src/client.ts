@@ -20,6 +20,24 @@ export interface ClientOptions {
   apiKey?: string;
 }
 
+export class HttpError extends Error {
+  constructor(
+    public readonly status: number,
+    detail: string,
+    public readonly retryAfterMs?: number,
+  ) {
+    super(`HTTP ${status}: ${detail}`);
+    this.name = 'HttpError';
+  }
+}
+
+export class RequestTimeoutError extends Error {
+  constructor(public readonly timeoutMs: number) {
+    super(`request timed out after ${timeoutMs}ms`);
+    this.name = 'RequestTimeoutError';
+  }
+}
+
 /**
  * Retryable HTTP statuses. Deliberately conservative: 429 (rate limited — the
  * request was rejected, not processed) and 502/503/504 (gateway/availability
@@ -34,8 +52,16 @@ function isRetryableStatus(status: number): boolean {
 /** Connection-level failures worth retrying (DNS/reset/refused). Excludes our own timeouts. */
 function isRetryableNetworkError(e: unknown): boolean {
   if (!(e instanceof Error)) return false;
+  if (e instanceof HttpError || e instanceof RequestTimeoutError) return false;
   if (e.name === 'AbortError') return false;
   return e instanceof TypeError || /network|fetch failed|econn|etimedout|eai_again|socket|dns/i.test(e.message);
+}
+
+/** Whether an idempotent caller may safely try the request again. */
+export function isRetryableRequestError(e: unknown): boolean {
+  if (e instanceof HttpError) return isRetryableStatus(e.status);
+  if (e instanceof RequestTimeoutError) return true;
+  return isRetryableNetworkError(e);
 }
 
 function retryBaseDelayMs(): number {
@@ -91,8 +117,8 @@ export async function request<T>(
         );
       }
       if (!res.ok) {
+        const retryAfterMs = isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined;
         if (isRetryableStatus(res.status) && attempt < retries) {
-          const retryAfterMs = parseRetryAfterMs(res);
           await res.text().catch(() => ''); // drain body so the socket can be reused
           clearTimeout(timer);
           await sleep(backoffDelayMs(attempt, retryAfterMs));
@@ -100,7 +126,7 @@ export async function request<T>(
           continue;
         }
         const text = await res.text();
-        throw new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
+        throw new HttpError(res.status, text.slice(0, 300), retryAfterMs);
       }
       if (res.status === 204) {
         return undefined as T;
@@ -129,7 +155,7 @@ export async function request<T>(
       return body;
     } catch (e) {
       if (timedOut) {
-        throw new Error(`request timed out after ${timeoutMs}ms`);
+        throw new RequestTimeoutError(timeoutMs);
       }
       if (isRetryableNetworkError(e) && attempt < retries) {
         clearTimeout(timer);

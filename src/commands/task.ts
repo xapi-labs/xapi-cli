@@ -172,14 +172,12 @@ export async function taskWait(args: string[], flags: Record<string, string>) {
     }
 
     attempts += 1;
+    let retryDelayMs: number | undefined;
     try {
-      // task.poll is a read (idempotent) → safe to retry transient failures.
-      // But under a deadline we disable retries entirely: request()'s backoff isn't
-      // deadline-aware, so a retry could sleep well past --timeout. We also bound the
-      // in-flight request by the time remaining so a single slow poll can't overrun it.
+      // Keep retries in this outer loop so each real request counts toward
+      // --max-attempts and all retry sleeps can be bounded by --timeout.
       const remaining = deadline !== undefined ? Math.max(1, deadline - Date.now()) : undefined;
-      const pollRetries = deadline !== undefined ? 0 : 2;
-      const res = await client.actionCall('task.poll', { task_id: taskId }, cfg, undefined, pollRetries, remaining);
+      const res = await client.actionCall('task.poll', { task_id: taskId }, cfg, undefined, 0, remaining);
       const payload = extractTaskPayload(res);
       const status = getStatus(payload);
 
@@ -207,7 +205,13 @@ export async function taskWait(args: string[], flags: Record<string, string>) {
           `task_id=${taskId}, elapsed_ms=${Date.now() - startedAt}, timeout_ms=${timeoutMs}`,
         );
       }
-      err('task wait failed', e.message);
+      if (client.isRetryableRequestError(e)) {
+        // Honor Retry-After when supplied; otherwise the normal poll interval is
+        // also the transient-error backoff. The sleep below enforces the deadline.
+        retryDelayMs = e instanceof client.HttpError ? e.retryAfterMs : undefined;
+      } else {
+        err('task wait failed', e.message);
+      }
     }
 
     if (maxAttempts && attempts >= maxAttempts) {
@@ -218,9 +222,10 @@ export async function taskWait(args: string[], flags: Record<string, string>) {
     }
 
     // Sleep no longer than the time remaining before the deadline.
+    const desiredWaitMs = retryDelayMs ?? intervalMs;
     const waitMs = deadline !== undefined
-      ? Math.min(intervalMs, Math.max(0, deadline - Date.now()))
-      : intervalMs;
+      ? Math.min(desiredWaitMs, Math.max(0, deadline - Date.now()))
+      : desiredWaitMs;
     await sleep(waitMs);
   }
 }
