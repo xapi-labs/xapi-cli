@@ -92,6 +92,7 @@ USAGE
 FLAGS
   --input <json>            Input payload as JSON (required for execution)
   --method GET|POST|...     Override HTTP method
+  --output <path>           Save a raw binary response to a new file
   --code <target>           Generate code snippet instead of executing
   --format json|pretty|table  Output format
 
@@ -114,6 +115,7 @@ CODE TARGETS
 
 EXAMPLES
   xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
+  xapi-to call openrouter.audio_speech --input '{"body":{"input":"Hello"}}' --output speech.mp3
   xapi-to call twitter.tweet_detail --input '{"tweet_id":"123"}' --code py
   xapi-to call twitter.tweet_detail --input '{"tweet_id":"123"}' --code curl --format pretty
 `;
@@ -299,6 +301,10 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
   const id = args[0];
   if (!id) err('usage: xapi-to call <id> --input \'{"key":"val"}\'');
   if (flags.code) validateCodeFlag(flags);
+  if (flags.output === 'true') err('--output requires a file path');
+  if (flags.code && flags.output) {
+    err('--output cannot be combined with --code');
+  }
   const cfg = getConfig();
   let input: Record<string, unknown> = {};
   if (flags.input) {
@@ -324,6 +330,27 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
 
   requireApiKey(cfg);
   try {
+    if (flags.output) {
+      const result = await client.actionDownload(
+        id,
+        cleanInput,
+        cfg,
+        flags.output,
+        method,
+      );
+      output(
+        {
+          success: true,
+          output: result.output,
+          bytes: result.bytes,
+          status: result.status,
+          content_type: result.contentType,
+          content_disposition: result.contentDisposition,
+        },
+        flags.format as any,
+      );
+      return;
+    }
     const res = await client.actionCall(id, cleanInput, cfg, method);
     output(res, flags.format as any);
   } catch (e: any) {

@@ -122,6 +122,15 @@ xapi-to get twitter.tweet_detail
 xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
 ```
 
+For APIs that return binary data, use `--output` to request raw bytes and save
+them directly. The CLI refuses to overwrite an existing file.
+
+```bash
+xapi-to call openrouter.audio_speech \
+  --input '{"body":{"input":"Hello","model":"hexgrad/kokoro-82m","voice":"af_bella"}}' \
+  --output speech.mp3
+```
+
 ## Output Formats
 
 All output is JSON by default — designed for agent consumption.

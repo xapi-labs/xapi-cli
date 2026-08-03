@@ -3,6 +3,10 @@
  */
 
 import { scheme, assertAllowedHost } from './config.ts';
+import { open, rm } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const EXECUTE_TIMEOUT_MS = 60_000;
@@ -277,6 +281,110 @@ export async function actionCall(
     Math.min(timeoutMs, EXECUTE_TIMEOUT_MS),
     retries,
   );
+}
+
+export interface ActionDownloadResult {
+  output: string;
+  bytes: number;
+  contentType?: string;
+  contentDisposition?: string;
+  status: number;
+}
+
+/** Execute an action in raw mode and write the response without decoding it. */
+export async function actionDownload(
+  actionId: string,
+  input: Record<string, unknown>,
+  opts: ClientOptions,
+  outputPath: string,
+  httpMethod?: string,
+): Promise<ActionDownloadResult> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, EXECUTE_TIMEOUT_MS);
+  const target = resolve(outputPath);
+  let file: Awaited<ReturnType<typeof open>> | undefined;
+  let complete = false;
+
+  try {
+    try {
+      // Fail before executing a potentially billable/non-idempotent action.
+      // This also lets cleanup safely remove only files created by this call.
+      file = await open(target, 'wx');
+    } catch (error: any) {
+      if (error?.code === 'EEXIST') {
+        throw new Error(`Output file already exists: ${target}`);
+      }
+      throw error;
+    }
+
+    const url = `${baseUrl(opts)}/v1/actions/execute`;
+    assertAllowedHost(url);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: headers(opts.apiKey),
+      body: JSON.stringify({
+        action_id: actionId,
+        ...(httpMethod ? { method: httpMethod } : {}),
+        input,
+        response_mode: 'raw',
+      }),
+      redirect: 'manual',
+      signal: controller.signal,
+    });
+    if (res.status >= 300 && res.status < 400) {
+      throw new Error(
+        `refusing to follow redirect to "${res.headers.get('location') ?? '?'}" `
+          + '(would forward the API key past the host allowlist)',
+      );
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      throw new HttpError(
+        res.status,
+        text.slice(0, 300),
+        isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined,
+      );
+    }
+
+    let bytes = 0;
+    if (res.body) {
+      const source = Readable.fromWeb(res.body as any);
+      const counter = new Transform({
+        transform(chunk, _encoding, callback) {
+          bytes += Buffer.isBuffer(chunk)
+            ? chunk.length
+            : Buffer.byteLength(chunk);
+          callback(null, chunk);
+        },
+      });
+      await pipeline(source, counter, file.createWriteStream());
+    } else {
+      await file.close();
+    }
+    complete = true;
+
+    return {
+      output: target,
+      bytes,
+      contentType: res.headers.get('content-type') || undefined,
+      contentDisposition:
+        res.headers.get('content-disposition') || undefined,
+      status: res.status,
+    };
+  } catch (error) {
+    if (timedOut) throw new RequestTimeoutError(EXECUTE_TIMEOUT_MS);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    if (!complete && file) {
+      await file.close().catch(() => undefined);
+      await rm(target, { force: true }).catch(() => undefined);
+    }
+  }
 }
 
 export async function actionServices(

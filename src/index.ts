@@ -62,6 +62,7 @@ COMMANDS
     --code <target>                  Generate code snippet (curl, py, js, ts, go)
   call <id> --input '{"key":"val"}'  Execute an action
     --method GET|POST|...            Override HTTP method
+    --output <path>                   Save a raw binary response to a new file
     --code <target>                  Generate code snippet instead of executing
     Variants: python.requests, python.httpx, javascript.fetch, javascript.axios
 
@@ -108,6 +109,7 @@ EXAMPLES
   xapi-to get twitter.tweet_detail --code curl
   xapi-to get twitter.tweet_detail --code py --format pretty
   xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
+  xapi-to call openrouter.audio_speech --input '{"body":{"input":"Hello"}}' --output speech.mp3
   xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}' --code python
   xapi-to task poll 550e8400-e29b-41d4-a716-446655440000
   xapi-to task wait 550e8400-e29b-41d4-a716-446655440000 --interval 2s --timeout 10m

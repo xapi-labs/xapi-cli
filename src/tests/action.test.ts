@@ -402,6 +402,60 @@ describe('action commands', () => {
       spy.mockRestore();
     });
 
+    it('downloads raw responses when --output is provided', async () => {
+      const downloadSpy = spyOn(client, 'actionDownload').mockResolvedValue({
+        output: '/tmp/speech.mp3',
+        bytes: 1234,
+        contentType: 'audio/mpeg',
+        status: 200,
+      });
+      const callSpy = spyOn(client, 'actionCall');
+
+      await actionCall(['openrouter.audio_speech'], {
+        input: '{"body":{"input":"Hello"}}',
+        output: '/tmp/speech.mp3',
+      });
+
+      expect(downloadSpy).toHaveBeenCalledWith(
+        'openrouter.audio_speech',
+        { body: { input: 'Hello' } },
+        expect.any(Object),
+        '/tmp/speech.mp3',
+        undefined,
+      );
+      expect(callSpy).not.toHaveBeenCalled();
+      expect(outputSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: true,
+          output: '/tmp/speech.mp3',
+          bytes: 1234,
+          content_type: 'audio/mpeg',
+        }),
+        undefined,
+      );
+      downloadSpy.mockRestore();
+      callSpy.mockRestore();
+    });
+
+    it('rejects a bare --output flag', async () => {
+      await expect(
+        actionCall(['openrouter.audio_speech'], { output: 'true' }),
+      ).rejects.toThrow('err called');
+      expect(errSpy).toHaveBeenCalledWith('--output requires a file path');
+    });
+
+    it('rejects combining --output with --code', async () => {
+      await expect(
+        actionCall(['openrouter.audio_speech'], {
+          output: 'speech.mp3',
+          code: 'curl',
+        }),
+      ).rejects.toThrow('err called');
+      expect(errSpy).toHaveBeenCalledWith(
+        '--output cannot be combined with --code',
+      );
+    });
+
     it('calls err when apiKey is missing', async () => {
       cfgSpy.mockReturnValue({ actionHost: 'action.xapi.to', apiKey: undefined });
       await expect(actionCall(['test'], {})).rejects.toThrow('err called');
