@@ -1,6 +1,6 @@
 ---
 name: xapi
-description: Access real-time external data via the xapi CLI — Twitter/X, Douyin/TikTok, Reddit, LinkedIn, Weibo, on-chain crypto data (price, holders, wallets, DEX, CEX), web/news/image/video/scholar search, AI text/image/video generation, and SMS verification. Use when the user mentions xapi, wants to call a third-party API, or asks what external services are available.
+description: Access real-time external data via the xapi CLI — Twitter/X, Douyin/TikTok, Reddit, LinkedIn, Weibo, on-chain crypto data (price, holders, wallets, DEX, CEX), web/news/image/video/scholar search, AI text/image/video/speech generation and transcription, and SMS verification. Configure the Anthropic/OpenAI-compatible xAPI AI Gateway or the xAPI WebSocket Gateway for realtime voice, streaming ASR/TTS, and provider-native bidirectional sessions. Use when the user mentions xapi, wants to call a third-party API, asks what external services are available, or needs to connect an AI or realtime client to xAPI.
 homepage: https://xapi.to
 metadata: {"openclaw":{"emoji":"x","requires":{"anyBins":["npx"]},"primaryEnv":"XAPI_KEY"}}
 ---
@@ -113,10 +113,10 @@ Always use `--input` with JSON for passing parameters.
 npx xapi-to call twitter.user_by_screen_name --input '{"screen_name":"elonmusk"}'
 
 # Get user's tweets
-npx xapi-to call twitter.user_tweets --input '{"user_id":"44196397","count":10}'
+npx xapi-to call twitter.user_tweets --input '{"user_id":"44196397"}'
 
 # Get user's tweets and replies (timeline includes replies)
-npx xapi-to call twitter.user_tweets_and_replies --input '{"user_id":"44196397","count":10}'
+npx xapi-to call twitter.user_tweets_and_replies --input '{"user_id":"44196397"}'
 
 # Get tweet details and replies
 npx xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
@@ -131,6 +131,9 @@ npx xapi-to call twitter.following --input '{"user_id":"44196397"}'
 # Search tweets
 npx xapi-to call twitter.search --input '{"raw_query":"bitcoin","count":20}'
 
+# Advanced search filters (provider x)
+npx xapi-to call twitter.search --input '{"raw_query":"AI","from":"OpenAI","since":"2026-08-01","min_likes":100,"count":20}'
+
 # Get retweeters of a tweet
 npx xapi-to call twitter.retweeters --input '{"tweet_id":"1234567890"}'
 ```
@@ -139,9 +142,11 @@ Note: Twitter user_id is a numeric ID. To get it, first call `twitter.user_by_sc
 
 Note: All `twitter.*` capabilities accept an optional `provider` — `"x"` (fapi.uk, default) or `"twitter"` (legacy upstream). Responses are normalized to an identical structure across providers, so you normally don't need to set it; pass `"provider":"twitter"` only to force the legacy upstream.
 
-Note: For long-form **X Articles** (tweets whose `full_text` is just a `t.co` link to `x.com/i/article/...`), `twitter.tweet_detail` only returns the title and preview. To read the full article body, call `twitter.graphql_TweetDetail` with a `fieldToggles` parameter — see `guides/twitter.md` § "Read an X Article".
+Note: Timeline, reply, media, follower/following, retweeter, and search responses expose pagination cursors. Pass the previous response's bottom cursor back as `cursor`; see `guides/twitter.md` for the exact response field used by each endpoint.
 
-### Crypto (16 APIs)
+Note: For long-form **X Articles**, `twitter.tweet_detail` automatically returns the full article in `tweet.article`, including `text`, `markdown`, cover image, links, and timestamps. No raw GraphQL call is needed.
+
+### Crypto (17 registered APIs; 16 recommended)
 
 Two addressing models:
 
@@ -162,6 +167,7 @@ npx xapi-to call crypto.token.ohlcv --input '{"token":"0x...","chain":"bsc","int
 
 # Top holders / top traders / security (honeypot, tax, etc.)
 npx xapi-to call crypto.token.holders --input '{"token":"0x...","chain":"bsc"}'
+npx xapi-to call crypto.token.holders --input '{"token":"0x...","chain":"bsc","cursor":"<next_cursor>"}'
 npx xapi-to call crypto.token.top_traders --input '{"token":"0x...","chain":"bsc"}'
 npx xapi-to call crypto.token.security --input '{"token":"0x...","chain":"bsc"}'
 
@@ -192,6 +198,7 @@ npx xapi-to call crypto.news --input '{"symbol":"BTC","limit":20}'
 
 Note: `crypto.token.metadata` is **deprecated** — use `crypto.token.overview` instead (it returns metadata + price + market in one call).
 Note: All `crypto.token.*`/`crypto.wallet.*`/etc. accept an optional `provider` to pin a specific upstream and disable automatic fallback.
+Note: `crypto.token.holders`, `crypto.wallet.balance`, and `crypto.wallet.history` return an opaque `next_cursor` when another page is available. Pass it back unchanged as `cursor`; it pins pagination to the provider that issued it.
 
 ### Web Search (9 APIs)
 
@@ -246,21 +253,53 @@ npx xapi-to call ai.text.rewrite --input '{"text":"<text>","mode":"formalize"}'
 npx xapi-to call ai.embedding.generate --input '{"input":"hello world"}'
 ```
 
-### AI Image & Video Generation (2 APIs)
+### AI Image & Video Generation (2 APIs — asynchronous)
 
 ```bash
-# Generate an image from a text prompt (returns image URL/data synchronously)
+# Submit image generation (returns an async task)
 npx xapi-to call ai.image.generate --input '{"prompt":"A serene mountain landscape at sunset, digital art","model":"gpt-image-2"}'
 
-# Generate a video from a text prompt (+ optional reference image) — ASYNC
+# Submit video generation through OpenRouter (+ optional reference image)
 npx xapi-to call ai.video.generate --input '{"prompt":"A cat playing piano in a jazz bar, cinematic"}'
 ```
 
-`ai.video.generate` is **asynchronous**: it returns `{ "task_id": "...", "status": "pending", "poll_url": "..." }`. Poll for the result with the `task.poll` capability (see below).
+Both capabilities return `{ "task_id": "...", "status": "pending", "poll_url": "..." }`. Poll for the result with the `task.poll` capability (see below). Video generation uses provider `openrouter` and defaults to model `bytedance/seedance-2.0-fast`.
+
+### AI Speech Generation & Transcription (2 APIs)
+
+```bash
+# Text to speech (synchronous; returns a base64-encoded binary envelope)
+npx xapi-to call ai.speech.generate --input '{"text":"Hello world","model":"hexgrad/kokoro-82m","voice":"af_bella","format":"mp3"}'
+
+# Speech to text (audio.data is raw base64 without a data URI prefix)
+npx xapi-to call ai.speech.transcribe --input '{"audio":{"data":"<base64-audio>","format":"wav"},"model":"openai/whisper-large-v3"}'
+```
+
+### AI Gateway — Anthropic/OpenAI-compatible HTTP
+
+Use CLI capabilities for one-off agent calls. Use the public AI Gateway when configuring Claude Code, Anthropic/OpenAI SDKs, or applications that expect standard AI API protocols:
+
+- Anthropic base URL: `https://ai.xapi.to/<strategy>`
+- OpenAI base URL: `https://ai.xapi.to/<strategy>/v1`
+- Strategies: `default`, `cost`, `speed`, `quality`
+- Authentication: use the xAPI key as `x-api-key`, `Authorization: Bearer`, or `XAPI-Key`
+
+Read `guides/ai_gateway.md` before configuring a client. It covers supported endpoints, current strategy behavior, streaming, fallback, routing/billing headers, direct media endpoints, and compatibility limitations.
+
+### WebSocket Gateway — realtime and streaming audio
+
+Use the WebSocket Gateway for persistent, full-duplex sessions such as OpenAI Realtime, streaming ASR, bidirectional TTS, simultaneous interpretation, and podcast generation:
+
+- Unified base: `wss://ai.xapi.to/<endpoint-path>`
+- Current paths include `/v1/realtime`, `/v1/asr`, `/v1/tts`, `/v1/ast`, and `/v1/podcast`
+- Service-specific form: `wss://<service-slug>.p.xapi.to/<endpoint-path>`
+- Server authentication: `XAPI-Key`, `Authorization: Bearer`, or `x-api-key`
+
+Read `guides/ws_gateway.md` before opening a session. It explains path selection, browser-safe authentication, OpenAI Realtime usage, provider-native binary protocols, connection limits, billing, close codes, and reconnect behavior.
 
 ### Async Tasks (`task.poll`)
 
-Some capabilities (e.g. `ai.video.generate`) run asynchronously and return a `task_id`. Poll until the task reaches a terminal status:
+Some capabilities (currently `ai.image.generate` and `ai.video.generate`) run asynchronously and return a `task_id`. Poll until the task reaches a terminal status:
 
 ```bash
 npx xapi-to call task.poll --input '{"task_id":"<task_id from the async response>"}'
@@ -379,7 +418,7 @@ The full catalog also spans many other categories — crypto/on-chain data, CEX 
 
 When the user's task involves these workflows, read the corresponding guide file for detailed instructions:
 
-- **`guides/twitter.md`** — Twitter/X (推特): read tweets, tweets + replies timeline, read long-form X Articles (full body via `fieldToggles`), post tweets, reply, quote, like, retweet, OAuth binding
+- **`guides/twitter.md`** — Twitter/X (推特): read and paginate tweets/replies/media, advanced search, read long-form X Articles directly from `tweet_detail`, post tweets, reply, quote, like, retweet, OAuth binding
 - **`guides/reddit.md`** — Reddit: user profiles, posts, comments, subreddit feeds, popular/news/games feeds, trending, search
 - **`guides/linkedin.md`** — LinkedIn (领英): person profiles & full career history (experience, education, skills, honors, publications), company pages & employees, job search — covers the two-step `username`→`urn` lookup pattern
 - **`guides/tiktok.md`** — TikTok: user profiles, videos, comments, search, hashtags, music, live rooms, feed
@@ -388,7 +427,9 @@ When the user's task involves these workflows, read the corresponding guide file
 - **`guides/weibo.md`** — Weibo (微博): hot search, content search, user profiles, post details, comments, reposts, media
 - **`guides/google_search.md`** — Google Search: web, realtime, news, image, video, scholar, maps, places, shopping
 - **`guides/crypto.md`** — Crypto (加密货币): on-chain token price/overview/holders/security/OHLCV, wallet analytics, DEX pairs, CEX spot prices by symbol, news — covers contract-address vs symbol addressing and multi-chain
-- **`guides/ai.md`** — AI (人工智能): text chat (fast/reasoning/auto), summarize/rewrite, embeddings, image generation, and asynchronous video generation with `task.poll` polling
+- **`guides/ai.md`** — AI (人工智能): text chat (fast/reasoning/auto), summarize/rewrite, embeddings, asynchronous image/video generation with `task.poll`, text-to-speech, and speech-to-text
+- **`guides/ai_gateway.md`** — xAPI AI Gateway: Claude Code and Anthropic/OpenAI SDK setup, model discovery, routing strategies, streaming, fallback, routing/billing headers, direct media endpoints, and known limitations
+- **`guides/ws_gateway.md`** — xAPI WebSocket Gateway: OpenAI Realtime, streaming ASR/TTS, simultaneous interpretation, podcast generation, service/path routing, browser authentication, native binary protocols, limits, billing, close codes, and reconnects
 - **`guides/sms.md`** — SMS verification: buy virtual phone numbers, receive verification codes, finish/cancel orders (5SIM)
 
 ## Security

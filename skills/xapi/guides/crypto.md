@@ -71,6 +71,15 @@ npx xapi-to call crypto.token.security --input '{"token":"0x...","chain":"bsc"}'
 
 Run `crypto.token.security` before treating any token as tradeable — it flags honeypots and abnormal taxes.
 
+`crypto.token.holders` is paginated. When the response contains `data.next_cursor`, pass it back unchanged:
+
+```bash
+npx xapi-to call crypto.token.holders \
+  --input '{"token":"0x...","chain":"bsc","limit":50,"cursor":"<next_cursor>"}'
+```
+
+Moralis supports holder pagination on EVM chains and Birdeye supports it on Solana. The cursor pins the provider that issued it.
+
 ### Trending tokens (chain-level, no address needed)
 
 ```bash
@@ -99,6 +108,8 @@ npx xapi-to call crypto.wallet.history --input '{"address":"0x...","chain":"bsc"
 ```
 
 Typical wallet-analysis flow: `wallet.balance` (what they hold) → `wallet.pnl` (how they're doing) → `wallet.history` (recent activity).
+
+`crypto.wallet.balance` and `crypto.wallet.history` are paginated when served by Moralis. Read `data.next_cursor` and pass it back as `cursor` for the next page. `crypto.wallet.pnl` is not paginated.
 
 ## Transaction & DEX pair
 
@@ -151,8 +162,23 @@ npx xapi-to call crypto.token.security --input '{"token":"0x6982...","chain":"et
 
 For a plain "what's the price of BTC" question with no on-chain requirement, skip all of this and use `crypto.cex.price`.
 
+## Cursor Pagination
+
+Three crypto capabilities expose cursor pagination:
+
+| Capability | Next cursor field | Next request input | Paging providers |
+|---|---|---|---|
+| `crypto.token.holders` | `data.next_cursor` | `cursor` | Moralis (EVM), Birdeye (Solana) |
+| `crypto.wallet.balance` | `data.next_cursor` | `cursor` | Moralis |
+| `crypto.wallet.history` | `data.next_cursor` | `cursor` | Moralis |
+
+The cursor is an opaque `<provider>:<native>` value. Do not parse, edit, or combine it with a different explicit `provider`; pass it back unchanged. A cursor pins requests to its issuing provider, so pagination deliberately does not fall back to a different upstream. Stop when `next_cursor` is null or absent.
+
+`crypto.token.trending` and `crypto.token.top_traders` are top-N list capabilities, not cursor-paginated feeds.
+
 ## Error handling
 
 - **Unsupported chain** → use one of the canonical chain values listed above (or a known alias).
 - **`token`/`address` looks like a symbol** → it must be a contract/wallet address; resolve via `crypto.token.search`, or switch to `crypto.cex.*` for symbol-based pricing.
 - **Empty / partial fields** → different upstream providers return different field sets; pin a `provider` or try `crypto.token.overview` for the most complete payload.
+- **Invalid or mismatched cursor** → pass `next_cursor` back unchanged and do not force a different provider; start again without `cursor` if the original cursor is unavailable.

@@ -19,15 +19,22 @@ Returns `rest_id` (numeric user ID), `name`, `screen_name`, `followers_count`, `
 ### Get a user's recent tweets
 
 ```bash
-npx xapi-to call twitter.user_tweets --input '{"user_id":"44196397","count":10}'
+npx xapi-to call twitter.user_tweets --input '{"user_id":"44196397"}'
 ```
 
 Each tweet includes: `id`, `full_text`, `created_at`, `favorite_count`, `retweet_count`, `reply_count`, `views_count`, `media`, `author`, and `quoted_tweet` if applicable.
 
+Paginate with the previous response's `data.cursors.bottom`:
+
+```bash
+npx xapi-to call twitter.user_tweets \
+  --input '{"user_id":"44196397","cursor":"<cursors.bottom>"}'
+```
+
 ### Get a user's tweets and replies
 
 ```bash
-npx xapi-to call twitter.user_tweets_and_replies --input '{"user_id":"44196397","count":10}'
+npx xapi-to call twitter.user_tweets_and_replies --input '{"user_id":"44196397"}'
 ```
 
 Similar to `twitter.user_tweets`, but the timeline also includes the user's replies to other tweets and conversation threads they participate in. Each item includes the same fields: `id`, `full_text`, `created_at`, `favorite_count`, `retweet_count`, `reply_count`, `views_count`, `media`, `author`, and `quoted_tweet` if applicable.
@@ -39,34 +46,41 @@ Similar to `twitter.user_tweets`, but the timeline also includes the user's repl
 
 **Filter tip:** because conversation entries can contain tweets from other authors, filter by `author.id === user_id` if you only want the monitored user's content.
 
+Pagination uses the same `cursor` → `data.cursors.bottom` pattern as `twitter.user_tweets`.
+
 ### Get a specific tweet and its replies
 
 ```bash
 npx xapi-to call twitter.tweet_detail --input '{"tweet_id":"2035526376468394305"}'
 ```
 
-### Read an X Article (long-form post)
-
-Some tweets are long-form **X Articles**. For these, `twitter.tweet_detail` returns only a `t.co` link as `full_text` (the link resolves to `x.com/i/article/<article_id>`), plus an `article` object with just `title` and `preview_text` — **not** the full body.
-
-To get the full article text, call the raw GraphQL `twitter.graphql_TweetDetail` with an extra `fieldToggles` query parameter:
+To load more replies, pass the previous response's `data.cursors.bottom` as `cursor`:
 
 ```bash
-npx xapi-to call twitter.graphql_TweetDetail --input '{
-  "method": "GET",
-  "params": {
-    "variables": "{\"focalTweetId\":\"<tweet_id>\",\"with_rux_injections\":false,\"includePromotedContent\":false,\"withCommunity\":true,\"withQuickPromoteEligibilityTweetFields\":true,\"withBirdwatchNotes\":true,\"withVoice\":true,\"withV2Timeline\":true}",
-    "fieldToggles": "{\"withArticleRichContentState\":true,\"withArticlePlainText\":true}"
-  }
-}'
+npx xapi-to call twitter.tweet_detail \
+  --input '{"tweet_id":"2035526376468394305","cursor":"<cursors.bottom>"}'
 ```
 
-The full text is in the response at `...tweet_results.result.article.article_results.result.content_state.plain_text` (with `withArticleRichContentState` you also get structured `blocks` for headings/formatting). Use the **tweet_id** from the share URL (`x.com/<user>/status/<tweet_id>` or `x.com/<user>/article/<tweet_id>`) as `focalTweetId`, not the internal article id.
+Paginated pages commonly contain more `replies` but no main tweet, so `data.tweet` may be `null` when `cursor` is present.
 
-Tips:
+### Read an X Article (long-form post)
 
-- The response is large (~150 KB). Pipe it to a file and extract `plain_text` programmatically rather than dumping it to the terminal.
-- Without the `fieldToggles` parameter, the same call returns only `title`/`preview_text` — this parameter is required for the article body.
+Some tweets are long-form **X Articles**. `twitter.tweet_detail` detects them and returns the full normalized article directly in `data.tweet.article`; no raw GraphQL call or `fieldToggles` parameter is needed.
+
+```bash
+npx xapi-to call twitter.tweet_detail --input '{"tweet_id":"<tweet_id>"}'
+```
+
+The normalized `article` object contains:
+
+- `id`, `title`, and `preview_text`
+- `text` — full plain text
+- `markdown` — full text with headings, lists, quotes, code blocks, and inline links preserved
+- `cover_image` — URL and optional dimensions
+- `links` — deduplicated external links in appearance order
+- `first_published_at` and `modified_at` — ISO 8601 timestamps when available
+
+Use the **tweet ID** from the share URL (`x.com/<user>/status/<tweet_id>` or `x.com/<user>/article/<tweet_id>`), not an internal article ID.
 
 ### Search tweets
 
@@ -74,11 +88,32 @@ Tips:
 npx xapi-to call twitter.search --input '{"raw_query":"AI agents","count":20}'
 ```
 
+For `provider: "x"` (the default), structured advanced-search filters are also available:
+
+```bash
+npx xapi-to call twitter.search --input '{
+  "raw_query":"AI",
+  "from":"OpenAI",
+  "mentioning":"AnthropicAI",
+  "phrase":"AI agents",
+  "since":"2026-08-01",
+  "until":"2026-08-05",
+  "min_likes":100,
+  "min_replies":10,
+  "min_retweets":20,
+  "count":20
+}'
+```
+
+Supported structured filters: `from`, `to`, `mentioning`, `phrase`, `any`, `none`, `tag`, `since`, `until`, `min_replies`, `min_likes`, `min_retweets`, and `count`. Dates use `YYYY-MM-DD`; `until` is exclusive. Paginate with `cursor` from `data.cursor_bottom`.
+
 ### Get user's media posts
 
 ```bash
 npx xapi-to call twitter.user_media --input '{"user_id":"44196397"}'
 ```
+
+Paginate with `cursor` from the previous response's `data.cursor_bottom`. Both the default `x` provider and legacy `twitter` provider are supported.
 
 ### Get followers / following
 
@@ -171,16 +206,31 @@ npx xapi-to call x-official.2_users_id_retweets --method POST \
 2. Get tweet detail: `twitter.tweet_detail` → read the thread
 3. Reply: `x-official.2_tweets` POST with `reply` → respond
 
+## Pagination Reference
+
+| Capability | Next cursor field | Next request input |
+|---|---|---|
+| `twitter.user_tweets` | `data.cursors.bottom` | `cursor` |
+| `twitter.user_tweets_and_replies` | `data.cursors.bottom` | `cursor` |
+| `twitter.tweet_detail` replies | `data.cursors.bottom` | `cursor` |
+| `twitter.user_media` | `data.cursor_bottom` | `cursor` |
+| `twitter.search` | `data.cursor_bottom` | `cursor` |
+| `twitter.followers` | `data.cursor_bottom` | `cursor` |
+| `twitter.following` | `data.cursor_bottom` | `cursor` |
+| `twitter.retweeters` | `data.cursor_bottom` | `cursor` |
+
+Omit `cursor` for the first page. Stop when the relevant bottom cursor is absent or empty.
+
 ## API Reference
 
 | API | Method | Description |
 |-----------|--------|-------------|
 | `twitter.user_by_screen_name` | — | Look up user by @handle |
-| `twitter.user_tweets` | — | Get user's recent tweets |
-| `twitter.user_tweets_and_replies` | — | Get user's tweets and replies |
-| `twitter.user_media` | — | Get user's media posts |
-| `twitter.tweet_detail` | — | Get tweet + replies |
-| `twitter.search` | — | Search tweets |
+| `twitter.user_tweets` | — | Get and paginate user's recent tweets |
+| `twitter.user_tweets_and_replies` | — | Get and paginate user's tweets and replies |
+| `twitter.user_media` | — | Get and paginate user's media posts |
+| `twitter.tweet_detail` | — | Get tweet, full X Article content, and paginated replies |
+| `twitter.search` | — | Search tweets with cursor and advanced filters |
 | `twitter.followers` | — | Get user's followers |
 | `twitter.following` | — | Get user's following |
 | `twitter.retweeters` | — | Get tweet retweeters |
