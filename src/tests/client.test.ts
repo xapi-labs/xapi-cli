@@ -77,6 +77,20 @@ describe('client.request', () => {
       expect(calls).toBe(2);
     });
 
+    it('retries its own timeout then succeeds when retries are opted in', async () => {
+      let calls = 0;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(((_url: any, opts: any) => {
+        calls++;
+        if (calls > 1) return Promise.resolve(OK());
+        return new Promise((_resolve, reject) => {
+          opts.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        });
+      }) as any);
+      const res = await request<{ ok: boolean }>('https://action.xapi.to/x', { method: 'GET' }, 5, 2);
+      expect(res).toEqual({ ok: true });
+      expect(calls).toBe(2);
+    });
+
     it('does NOT retry a 400 even when retries are enabled (client error)', async () => {
       let calls = 0;
       fetchSpy = mockFetch(async () => {
@@ -195,6 +209,49 @@ describe('client.request', () => {
         ).toString();
         expect(forwarded).toBe(frame);
       } finally {
+        writeSpy.mockRestore();
+      }
+    });
+
+    it('rejects a successful non-SSE response instead of printing misleading JSON', async () => {
+      fetchSpy = mockFetch(() => new Response('{"ok":true}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+      const writeSpy = spyOn(process.stdout, 'write').mockImplementation(() => true);
+      try {
+        await expect(actionStream('test', {}, { actionHost: 'action.xapi.to', apiKey: 'sk' }))
+          .rejects.toThrow(/expected an SSE response/);
+        expect(writeSpy).not.toHaveBeenCalled();
+      } finally {
+        writeSpy.mockRestore();
+      }
+    });
+
+    it('uses an activity-reset idle timeout rather than a fixed total duration', async () => {
+      const previous = process.env.XAPI_TRANSFER_IDLE_TIMEOUT_MS;
+      process.env.XAPI_TRANSFER_IDLE_TIMEOUT_MS = '20';
+      const encoder = new TextEncoder();
+      fetchSpy = mockFetch(() => new Response(new ReadableStream({
+        start(controller) {
+          let sent = 0;
+          const interval = setInterval(() => {
+            controller.enqueue(encoder.encode(`data: ${sent}\n\n`));
+            sent++;
+            if (sent === 6) {
+              clearInterval(interval);
+              controller.close();
+            }
+          }, 8);
+        },
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+      const writeSpy = spyOn(process.stdout, 'write').mockImplementation(() => true);
+      try {
+        await actionStream('test', {}, { actionHost: 'action.xapi.to', apiKey: 'sk' });
+        expect(writeSpy.mock.calls.length).toBeGreaterThanOrEqual(6);
+      } finally {
+        if (previous === undefined) delete process.env.XAPI_TRANSFER_IDLE_TIMEOUT_MS;
+        else process.env.XAPI_TRANSFER_IDLE_TIMEOUT_MS = previous;
         writeSpy.mockRestore();
       }
     });

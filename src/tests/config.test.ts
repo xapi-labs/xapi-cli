@@ -12,36 +12,56 @@ import { configShow, configSet, configHealth } from '../commands/config.ts';
 describe('config commands', () => {
   let outputSpy: ReturnType<typeof spyOn>;
   let errSpy: ReturnType<typeof spyOn>;
-  let consoleSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     outputSpy = spyOn(format, 'output').mockImplementation(() => {});
     errSpy = spyOn(format, 'err').mockImplementation((() => { throw new Error('err called'); }) as any);
-    consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
   });
 
   afterEach(() => {
     outputSpy.mockRestore();
     errSpy.mockRestore();
-    consoleSpy.mockRestore();
   });
 
   describe('configShow', () => {
-    it('calls showConfig', async () => {
-      const spy = spyOn(config, 'showConfig').mockImplementation(() => {});
+    it('outputs showConfig with the requested format', async () => {
+      const summary = { actionHost: 'action.xapi.to', source: { apiKey: 'none' } };
+      const spy = spyOn(config, 'showConfig').mockReturnValue(summary);
       await configShow([], {});
       expect(spy).toHaveBeenCalledTimes(1);
+      expect(outputSpy).toHaveBeenCalledWith(summary, undefined);
       spy.mockRestore();
     });
   });
 
   describe('configSet', () => {
-    it('saves apiKey and prints ok', async () => {
+    it('saves apiKey and reports that the file key is effective', async () => {
       const spy = spyOn(config, 'saveConfig').mockImplementation(() => {});
+      const sourceSpy = spyOn(config, 'getApiKeySource').mockReturnValue('none');
       await configSet(['apiKey=sk-abc123'], {});
       expect(spy).toHaveBeenCalledWith({ apiKey: 'sk-abc123' });
-      expect(consoleSpy).toHaveBeenCalledWith(JSON.stringify({ ok: true, updated: ['apiKey'] }));
+      expect(outputSpy).toHaveBeenCalledWith({
+        ok: true,
+        updated: ['apiKey'],
+        effective: true,
+        source: 'file',
+      }, undefined);
       spy.mockRestore();
+      sourceSpy.mockRestore();
+    });
+
+    it('warns when XAPI_KEY still overrides the saved file key', async () => {
+      const saveSpy = spyOn(config, 'saveConfig').mockImplementation(() => {});
+      const sourceSpy = spyOn(config, 'getApiKeySource').mockReturnValue('XAPI_KEY');
+      await configSet(['apiKey=sk-abc123'], { format: 'pretty' });
+      expect(outputSpy).toHaveBeenCalledWith(expect.objectContaining({
+        ok: true,
+        effective: false,
+        source: 'XAPI_KEY',
+        warning: expect.stringContaining('overrides'),
+      }), 'pretty');
+      saveSpy.mockRestore();
+      sourceSpy.mockRestore();
     });
 
     it('calls err when no args provided', async () => {

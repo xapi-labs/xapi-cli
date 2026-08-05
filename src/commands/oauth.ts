@@ -3,7 +3,7 @@
  *
  * Flow for `xapi-to oauth bind [--provider twitter]`:
  *  1. Login with current API key → get JWT
- *  2. List API keys → find the one matching the current key by prefix
+ *  2. List API keys → find the one matching the current key preview
  *  3. Enable OAuth on the key if not already (POST /keys/:id/enable-oauth)
  *  4. List OAuth providers → find the requested provider
  *  5. Interactive scope selection (TTY) or --scopes flag
@@ -30,11 +30,14 @@ import { output, err } from '../format.ts';
 
 /** Try to open a URL in the default browser. Silent on failure. */
 function openBrowser(url: string): void {
-  const cmd = process.platform === 'win32' ? 'start'
+  const cmd = process.platform === 'win32' ? 'rundll32.exe'
     : process.platform === 'darwin' ? 'open'
     : 'xdg-open';
+  const args = process.platform === 'win32'
+    ? ['url.dll,FileProtocolHandler', url]
+    : [url];
   try {
-    spawnSync(cmd, [url], { stdio: 'ignore' });
+    spawnSync(cmd, args, { stdio: 'ignore' });
   } catch {
     // ignore — user can open manually
   }
@@ -116,7 +119,7 @@ async function loginAndGetJwt(apiKey: string): Promise<string> {
 
 /**
  * Find the API key record that corresponds to the current plaintext API key.
- * Matches by key prefix (first 7 chars of the plaintext key = keyPrefix).
+ * Matches the exact backend preview (prefix + masked middle + suffix).
  */
 async function findCurrentKeyRecord(
   plaintextKey: string,
@@ -126,12 +129,15 @@ async function findCurrentKeyRecord(
   if (!Array.isArray(keys) || keys.length === 0) {
     throw new Error('No API keys found for this account');
   }
-  // Prefer verifying by prefix: keyPreview starts with the key's prefix.
   const prefix = plaintextKey.substring(0, 7);
-  const match = keys.find((k) => k.keyPreview.startsWith(prefix));
+  const suffix = plaintextKey.slice(-4);
+  const expectedPreview = `${prefix}****${suffix}`;
+  const match = keys.find((k) => k.keyPreview === expectedPreview);
   if (match) return match;
-  // Fallback: a sole key whose preview format doesn't line up with the prefix scheme.
-  if (keys.length === 1) return keys[0];
+  // Preserve compatibility with a sole legacy record that did not use the
+  // prefix****suffix preview format. Never fall back from a mismatched modern
+  // preview, which could enable OAuth on the wrong key.
+  if (keys.length === 1 && !keys[0].keyPreview.includes('****')) return keys[0];
   throw new Error(
     `Current API key (${prefix}...) was not found in your account keys. Run "xapi-to config set apiKey=<key>" with a valid key before binding OAuth.`,
   );
@@ -280,7 +286,8 @@ FLAGS
 EXAMPLES
   xapi-to oauth bind
   xapi-to oauth bind --provider twitter
-  xapi-to oauth bind --scopes "tweet.read users.read"
+  xapi-to oauth providers                    # inspect current default scopes
+  xapi-to oauth bind --scopes "<scope list>"  # override only when needed
   xapi-to oauth status
   xapi-to oauth status --format pretty
   xapi-to oauth unbind abc123
@@ -297,6 +304,12 @@ EXAMPLES
  * In non-TTY mode, outputs the authorization URL as JSON.
  */
 export async function oauthBind(args: string[], flags: Record<string, string>) {
+  if (flags.provider === 'true') {
+    err('--provider requires a provider name, e.g. --provider twitter');
+  }
+  if (flags.scopes === 'true') {
+    err('--scopes requires a space-separated scope list');
+  }
   const cfg = getConfig();
   requireApiKey(cfg);
   const apiKey = cfg.apiKey!;
@@ -372,6 +385,17 @@ export async function oauthBind(args: string[], flags: Record<string, string>) {
     const authorizationStartedAt = new Date();
     const result = await initiateOAuth(keyRecord.id, provider.id, jwtToken, XAPI_API_HOST, scopes);
     const { authorizationUrl } = result;
+    let authorizationTarget: URL;
+    try {
+      authorizationTarget = new URL(authorizationUrl);
+    } catch {
+      throw new Error('OAuth provider returned an invalid authorization URL');
+    }
+    const localHttp = authorizationTarget.protocol === 'http:'
+      && ['localhost', '127.0.0.1', '::1'].includes(authorizationTarget.hostname);
+    if (authorizationTarget.protocol !== 'https:' && !localHttp) {
+      throw new Error(`OAuth provider returned an unsupported authorization URL protocol: ${authorizationTarget.protocol}`);
+    }
 
     if (isTTY) {
       // Interactive mode: open browser + poll

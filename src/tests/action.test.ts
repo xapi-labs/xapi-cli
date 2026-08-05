@@ -66,6 +66,14 @@ describe('action commands', () => {
       spy.mockRestore();
     });
 
+    it('rejects invalid pagination before making an API call', async () => {
+      const spy = spyOn(client, 'actionList');
+      await expect(actionList([], { page: '2oops' })).rejects.toThrow('err called');
+      expect(spy).not.toHaveBeenCalled();
+      expect(errSpy).toHaveBeenCalledWith('--page must be a positive integer');
+      spy.mockRestore();
+    });
+
     it('renders table format with method and displayName columns', async () => {
       const spy = spyOn(client, 'actionList').mockResolvedValue({ actions: mockActions, pagination: {} });
       await actionList([], { format: 'table' });
@@ -263,6 +271,14 @@ describe('action commands', () => {
 
     it('calls err when no id provided', async () => {
       await expect(actionGet([], {})).rejects.toThrow('err called');
+    });
+
+    it('rejects a bare --method before making an API call', async () => {
+      const spy = spyOn(client, 'actionGet');
+      await expect(actionGet(['test'], { method: 'true' })).rejects.toThrow('err called');
+      expect(spy).not.toHaveBeenCalled();
+      expect(errSpy).toHaveBeenCalledWith('--method requires an HTTP method, e.g. --method POST');
+      spy.mockRestore();
     });
 
     it('outputs code snippet when --code flag is set', async () => {

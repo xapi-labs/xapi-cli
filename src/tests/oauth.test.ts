@@ -13,7 +13,7 @@ const MOCK_JWT = 'eyJhbGciOiJIUzI1NiJ9.mock.token';
 const MOCK_KEY_ID = 'key-uuid-1234';
 
 const mockKeys = [
-  { id: MOCK_KEY_ID, name: 'default', keyPreview: 'sk-abc****456', oauthEnabled: false, createdAt: '2026-01-01' },
+  { id: MOCK_KEY_ID, name: 'default', keyPreview: 'sk-abc1****z456', oauthEnabled: false, createdAt: '2026-01-01' },
 ];
 
 const mockProviders = [
@@ -116,6 +116,29 @@ describe('oauth commands', () => {
       expect(enableOAuthSpy).not.toHaveBeenCalled();
       expect(initiateOAuthSpy).not.toHaveBeenCalled();
       expect(errSpy).toHaveBeenCalledWith('oauth bind failed', expect.stringContaining('was not found'));
+    });
+
+    it('uses the key suffix to disambiguate records sharing the same prefix', async () => {
+      listKeysSpy.mockResolvedValue([
+        { id: 'wrong', name: 'wrong', keyPreview: 'sk-abc1****0000', oauthEnabled: false },
+        { ...mockKeys[0], keyPreview: 'sk-abc1****z456' },
+      ] as any);
+      await oauthBind([], {});
+      expect(enableOAuthSpy).toHaveBeenCalledWith(MOCK_KEY_ID, MOCK_API_KEY, MOCK_JWT, expect.any(String));
+    });
+
+    it('does not fall back to a sole mismatched modern key preview', async () => {
+      listKeysSpy.mockResolvedValue([
+        { id: 'wrong', name: 'wrong', keyPreview: 'sk-abc1****0000', oauthEnabled: false },
+      ] as any);
+      await expect(oauthBind([], {})).rejects.toThrow('err called');
+      expect(enableOAuthSpy).not.toHaveBeenCalled();
+    });
+
+    it('rejects a bare --scopes flag before any network request', async () => {
+      await expect(oauthBind([], { scopes: 'true' })).rejects.toThrow('err called');
+      expect(loginSpy).not.toHaveBeenCalled();
+      expect(errSpy).toHaveBeenCalledWith('--scopes requires a space-separated scope list');
     });
 
     it('uses --provider flag to select provider', async () => {

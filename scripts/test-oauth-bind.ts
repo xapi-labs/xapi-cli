@@ -71,7 +71,11 @@ async function main() {
   // 3. Find key record
   const keys = await listKeys(jwt, API_HOST) as any[];
   const prefix = apiKey.substring(0, 7);
-  const keyRecord = keys.find((k: any) => k.keyPreview.startsWith(prefix)) ?? keys[0];
+  const expectedPreview = `${prefix}****${apiKey.slice(-4)}`;
+  const keyRecord = keys.find((k: any) => k.keyPreview === expectedPreview);
+  if (!keyRecord) {
+    throw new Error(`Current API key (${expectedPreview}) was not found in the account key list`);
+  }
   const keyId = keyRecord.id;
   log(`Key ID: ${keyId}`);
 

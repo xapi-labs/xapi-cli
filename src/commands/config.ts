@@ -3,7 +3,7 @@
  */
 
 import { readFileSync } from 'fs';
-import { getConfig, saveConfig, showConfig } from '../config.ts';
+import { getApiKeySource, getConfig, saveConfig, showConfig } from '../config.ts';
 import { healthCheck } from '../client.ts';
 import { output, err } from '../format.ts';
 
@@ -20,6 +20,10 @@ COMMANDS
 FLAGS
   --format json|pretty|table   Output format
 
+ENVIRONMENT OVERRIDES
+  XAPI_KEY takes precedence over XAPI_API_KEY, which takes precedence over the file.
+  Saving a file key does not replace an active environment-variable key.
+
 EXAMPLES
   xapi-to config show
   xapi-to config set apiKey=xapi_abc123
@@ -27,8 +31,14 @@ EXAMPLES
   xapi-to config health
 `;
 
+export const HEALTH_HELP = `xapi-to health - Check backend connectivity
+
+USAGE
+  xapi-to health [--format json|pretty|table]
+`;
+
 export async function configShow(args: string[], flags: Record<string, string>) {
-  showConfig();
+  output(showConfig(), flags.format as any);
 }
 
 export async function configSet(args: string[], flags: Record<string, string>) {
@@ -49,11 +59,27 @@ export async function configSet(args: string[], flags: Record<string, string>) {
     if (!value) err('apiKey is empty');
     updates.apiKey = value;
   }
+  const sourceBeforeSave = getApiKeySource();
   saveConfig(updates);
-  console.log(JSON.stringify({ ok: true, updated: Object.keys(updates) }));
+  const source = sourceBeforeSave === 'XAPI_KEY' || sourceBeforeSave === 'XAPI_API_KEY'
+    ? sourceBeforeSave
+    : 'file';
+  output({
+    ok: true,
+    updated: Object.keys(updates),
+    effective: source === 'file',
+    source,
+    ...(source === 'XAPI_KEY' || source === 'XAPI_API_KEY'
+      ? { warning: `${source} still overrides the saved file key` }
+      : {}),
+  }, flags.format as any);
 }
 
 export async function configHealth(args: string[], flags: Record<string, string>) {
+  if (flags.help) {
+    console.log(HEALTH_HELP);
+    return;
+  }
   const cfg = getConfig();
   const start = Date.now();
   try {

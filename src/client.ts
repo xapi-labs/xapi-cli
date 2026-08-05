@@ -11,6 +11,7 @@ import { pipeline } from 'node:stream/promises';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const EXECUTE_TIMEOUT_MS = 60_000;
+const TRANSFER_IDLE_TIMEOUT_MS = 60_000;
 
 // Retry policy for transient failures (exponential backoff with jitter).
 // request() defaults to 0 retries (fail-safe): retrying a non-idempotent write
@@ -72,6 +73,13 @@ export function isRetryableRequestError(e: unknown): boolean {
 function retryBaseDelayMs(): number {
   const override = Number(process.env.XAPI_RETRY_BASE_MS);
   return Number.isFinite(override) && override > 0 ? override : RETRY_BASE_DELAY_MS;
+}
+
+function transferIdleTimeoutMs(): number {
+  const override = Number(process.env.XAPI_TRANSFER_IDLE_TIMEOUT_MS);
+  return Number.isFinite(override) && override > 0
+    ? override
+    : TRANSFER_IDLE_TIMEOUT_MS;
 }
 
 /** Exponential backoff with half-jitter, honoring a server Retry-After when present. */
@@ -160,7 +168,13 @@ export async function request<T>(
       return body;
     } catch (e) {
       if (timedOut) {
-        throw new RequestTimeoutError(timeoutMs);
+        const timeoutError = new RequestTimeoutError(timeoutMs);
+        if (attempt < retries) {
+          await sleep(backoffDelayMs(attempt));
+          attempt++;
+          continue;
+        }
+        throw timeoutError;
       }
       if (isRetryableNetworkError(e) && attempt < retries) {
         clearTimeout(timer);
@@ -294,10 +308,17 @@ export async function actionStream(
 ): Promise<void> {
   const controller = new AbortController();
   let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, EXECUTE_TIMEOUT_MS);
+  let activeTimeoutMs = EXECUTE_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const resetTimeout = (timeoutMs: number) => {
+    if (timer) clearTimeout(timer);
+    activeTimeoutMs = timeoutMs;
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  };
+  resetTimeout(EXECUTE_TIMEOUT_MS);
   const url = `${baseUrl(opts)}/v1/actions/execute`;
   assertAllowedHost(url);
 
@@ -332,16 +353,27 @@ export async function actionStream(
       );
     }
 
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.toLowerCase().includes('text/event-stream')) {
+      const text = await res.text();
+      throw new Error(
+        `expected an SSE response but received "${contentType || 'unknown'}": ${text.slice(0, 300)}`,
+      );
+    }
+
     if (!res.body) return;
+    const idleTimeoutMs = transferIdleTimeoutMs();
+    resetTimeout(idleTimeoutMs);
     const source = Readable.fromWeb(res.body as any);
     for await (const chunk of source) {
+      resetTimeout(idleTimeoutMs);
       if (!process.stdout.write(chunk)) await once(process.stdout, 'drain');
     }
   } catch (error) {
-    if (timedOut) throw new RequestTimeoutError(EXECUTE_TIMEOUT_MS);
+    if (timedOut) throw new RequestTimeoutError(activeTimeoutMs);
     throw error;
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -363,10 +395,17 @@ export async function actionDownload(
 ): Promise<ActionDownloadResult> {
   const controller = new AbortController();
   let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, EXECUTE_TIMEOUT_MS);
+  let activeTimeoutMs = EXECUTE_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const resetTimeout = (timeoutMs: number) => {
+    if (timer) clearTimeout(timer);
+    activeTimeoutMs = timeoutMs;
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  };
+  resetTimeout(EXECUTE_TIMEOUT_MS);
   const target = resolve(outputPath);
   let file: Awaited<ReturnType<typeof open>> | undefined;
   let complete = false;
@@ -414,9 +453,12 @@ export async function actionDownload(
 
     let bytes = 0;
     if (res.body) {
+      const idleTimeoutMs = transferIdleTimeoutMs();
+      resetTimeout(idleTimeoutMs);
       const source = Readable.fromWeb(res.body as any);
       const counter = new Transform({
         transform(chunk, _encoding, callback) {
+          resetTimeout(idleTimeoutMs);
           bytes += Buffer.isBuffer(chunk)
             ? chunk.length
             : Buffer.byteLength(chunk);
@@ -438,10 +480,10 @@ export async function actionDownload(
       status: res.status,
     };
   } catch (error) {
-    if (timedOut) throw new RequestTimeoutError(EXECUTE_TIMEOUT_MS);
+    if (timedOut) throw new RequestTimeoutError(activeTimeoutMs);
     throw error;
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
     if (!complete && file) {
       await file.close().catch(() => undefined);
       await rm(target, { force: true }).catch(() => undefined);

@@ -94,16 +94,28 @@ export interface XapiConfig {
   apiKey?: string;
 }
 
+export type ApiKeySource = 'XAPI_KEY' | 'XAPI_API_KEY' | 'file' | 'none';
+
 const CONFIG_DIR = join(homedir(), '.xapi');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 
 function loadFileConfig(): { apiKey?: string } {
   if (!existsSync(CONFIG_FILE)) return {};
   try {
-    return JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'));
+    const parsed = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'));
+    if (!parsed || typeof parsed !== 'object') return {};
+    return typeof parsed.apiKey === 'string' && parsed.apiKey.trim()
+      ? { apiKey: parsed.apiKey }
+      : {};
   } catch {
     return {};
   }
+}
+
+export function getApiKeySource(): ApiKeySource {
+  if (process.env.XAPI_KEY) return 'XAPI_KEY';
+  if (process.env.XAPI_API_KEY) return 'XAPI_API_KEY';
+  return loadFileConfig().apiKey ? 'file' : 'none';
 }
 
 export function getConfig(): XapiConfig {
@@ -124,18 +136,21 @@ export function saveConfig(updates: { apiKey?: string }): void {
   const current = loadFileConfig();
   const merged = { ...current, ...updates };
   if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  if (process.platform !== 'win32') chmodSync(CONFIG_DIR, 0o700);
   writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2), { mode: 0o600 });
+  // `mode` only applies when a file is created. Repair permissions as well when
+  // overwriting a config file created by an older CLI version.
+  if (process.platform !== 'win32') chmodSync(CONFIG_FILE, 0o600);
 }
 
-export function showConfig(): void {
+export function showConfig(): Record<string, unknown> {
   const cfg = getConfig();
-  const file = loadFileConfig();
-  console.log(JSON.stringify({
+  return {
     actionHost: cfg.actionHost,
     apiKey: cfg.apiKey ? `${cfg.apiKey.slice(0, 8)}...` : undefined,
     source: {
-      apiKey: (process.env.XAPI_KEY || process.env.XAPI_API_KEY) ? 'env' : file.apiKey ? 'file' : 'none',
+      apiKey: getApiKeySource(),
     },
     configFile: CONFIG_FILE,
-  }, null, 2));
+  };
 }

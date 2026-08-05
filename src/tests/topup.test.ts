@@ -10,9 +10,11 @@ import { topup } from '../commands/topup.ts';
 describe('topup command', () => {
   let outputSpy: ReturnType<typeof spyOn>;
   let getConfigSpy: ReturnType<typeof spyOn>;
+  let errSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     outputSpy = spyOn(format, 'output').mockImplementation(() => {});
+    errSpy = spyOn(format, 'err').mockImplementation((() => { throw new Error('err called'); }) as any);
     getConfigSpy = spyOn(config, 'getConfig').mockReturnValue({
       actionHost: 'action.xapi.to',
       apiKey: 'sk-test123',
@@ -21,6 +23,7 @@ describe('topup command', () => {
 
   afterEach(() => {
     outputSpy.mockRestore();
+    errSpy.mockRestore();
     getConfigSpy.mockRestore();
   });
 
@@ -53,18 +56,21 @@ describe('topup command', () => {
     expect(url.searchParams.get('amount')).toBe('20');
   });
 
-  it('omits amount when value is invalid', async () => {
-    await topup([], { amount: 'abc' });
-    const call = outputSpy.mock.calls[0][0] as { url: string };
-    const url = new URL(call.url);
-    expect(url.searchParams.has('amount')).toBe(false);
+  it('rejects an invalid amount instead of silently ignoring it', async () => {
+    await expect(topup([], { amount: 'abc' })).rejects.toThrow('err called');
+    expect(outputSpy).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalledWith('invalid top-up amount', expect.any(String));
   });
 
-  it('omits amount when value is zero or negative', async () => {
-    await topup([], { amount: '0' });
-    const call = outputSpy.mock.calls[0][0] as { url: string };
-    const url = new URL(call.url);
-    expect(url.searchParams.has('amount')).toBe(false);
+  it('rejects a zero or negative amount', async () => {
+    await expect(topup([], { amount: '0' })).rejects.toThrow('err called');
+    expect(outputSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown payment method', async () => {
+    await expect(topup([], { method: 'wire' })).rejects.toThrow('err called');
+    expect(outputSpy).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalledWith('invalid --method value', expect.any(String));
   });
 
   it('omits apikey when no apiKey in config', async () => {

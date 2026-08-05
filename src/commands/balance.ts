@@ -7,7 +7,17 @@ import { getConfig, requireApiKey, XAPI_API_HOST, scheme } from '../config.ts';
 import { loginWithApiKey, request } from '../client.ts';
 import { output, err } from '../format.ts';
 
+export const BALANCE_HELP = `xapi-to balance - Show the current account balance
+
+USAGE
+  xapi-to balance [--format json|pretty|table]
+`;
+
 export async function balance(args: string[], flags: Record<string, string>) {
+  if (flags.help) {
+    console.log(BALANCE_HELP);
+    return;
+  }
   const cfg = getConfig();
   requireApiKey(cfg);
 

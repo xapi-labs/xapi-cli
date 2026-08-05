@@ -21,12 +21,14 @@ describe('register command', () => {
   let saveConfigSpy: ReturnType<typeof spyOn>;
   let getConfigSpy: ReturnType<typeof spyOn>;
   let fetchSpy: ReturnType<typeof spyOn>;
+  let sourceSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     outputSpy = spyOn(format, 'output').mockImplementation(() => {});
     errSpy = spyOn(format, 'err').mockImplementation((() => { throw new Error('err called'); }) as any);
     saveConfigSpy = spyOn(config, 'saveConfig').mockImplementation(() => {});
     getConfigSpy = spyOn(config, 'getConfig').mockReturnValue({ actionHost: 'action.xapi.to', apiKey: undefined });
+    sourceSpy = spyOn(config, 'getApiKeySource').mockReturnValue('none');
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify(mockRegisterResponse), { status: 200 }),
     );
@@ -38,6 +40,7 @@ describe('register command', () => {
     saveConfigSpy.mockRestore();
     getConfigSpy.mockRestore();
     fetchSpy.mockRestore();
+    sourceSpy.mockRestore();
   });
 
   it('calls register endpoint and saves apiKey', async () => {
@@ -106,17 +109,18 @@ describe('register command', () => {
     expect(opts.body).toBe(JSON.stringify({ referralCode: 'c1d2e3' }));
   });
 
-  it('includes referredBy in output when referral code provided', async () => {
+  it('reports only that a referral code was submitted, not that it was accepted', async () => {
     await register([], { 'referral-code': 'a3b8c2' });
     const arg = outputSpy.mock.calls[0][0] as Record<string, unknown>;
-    expect(arg.referredBy).toBe('a3b8c2');
+    expect(arg.referralCodeProvided).toBe('a3b8c2');
+    expect(arg.referredBy).toBeUndefined();
   });
 
-  it('omits body referralCode when flag value is "true" (no value provided)', async () => {
-    // when user types `--referral-code` without a value, parser stores 'true'
-    await register([], { 'referral-code': 'true' });
-    const [, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(opts.body).toBe('{}');
+  it('rejects a bare --referral-code before creating an account', async () => {
+    await expect(register([], { 'referral-code': 'true' })).rejects.toThrow('err called');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(saveConfigSpy).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalledWith('--referral-code requires a code');
   });
 
   it('refuses to overwrite an existing apiKey without --force', async () => {
@@ -143,6 +147,39 @@ describe('register command', () => {
       expect.objectContaining({ note: 'apiKey replaced in ~/.xapi/config.json' }),
       undefined,
     );
+  });
+
+  it('prints help without creating an account or writing config', async () => {
+    const consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await register([], { help: 'true' });
+      expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('xapi-to register'));
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(saveConfigSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('refuses registration before I/O when an environment key would shadow the result', async () => {
+    sourceSpy.mockReturnValue('XAPI_KEY');
+    getConfigSpy.mockReturnValue({ actionHost: 'action.xapi.to', apiKey: 'sk-env' });
+
+    await expect(register([], { force: 'true' })).rejects.toThrow('err called');
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(saveConfigSpy).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalledWith(
+      'register cannot replace an API key supplied by an environment variable',
+      expect.stringContaining('Unset XAPI_KEY'),
+    );
+  });
+
+  it('does not save a malformed successful response', async () => {
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({ user: { id: 'user-1' } }), { status: 200 }));
+    await expect(register([], {})).rejects.toThrow('err called');
+    expect(saveConfigSpy).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalledWith('register failed', expect.stringContaining('missing apiKey'));
   });
 
   it('calls err when server returns non-ok response', async () => {

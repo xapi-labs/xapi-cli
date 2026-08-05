@@ -66,7 +66,7 @@ COMMANDS
   call <id> --input '{"key":"val"}'  Execute an action
     --method GET|POST|...            Override HTTP method
     --output <path>                   Save a raw binary response to a new file
-    --stream                          Forward SSE frames unchanged
+    --stream                          Forward HTTP SSE frames unchanged
     --code <target>                  Generate code snippet instead of executing
     Variants: python.requests, python.httpx, javascript.fetch, javascript.axios
 
@@ -83,7 +83,7 @@ COMMANDS
 
   register [referral-code]          Create a new user account (apiKey saved automatically)
     --referral-code <code>          Register with an inviter's referral code (also: --referralCode, or as positional arg)
-    --force                         Replace an existing saved apiKey
+    --force                         Replace an existing file-based apiKey
   balance                           Show current account balance
   topup [--amount <usd>] [--method stripe|x402]   Generate payment URL
 
@@ -98,9 +98,12 @@ GLOBAL FLAGS
   --help                            Show help (use with a command for details, e.g. xapi-to get --help)
 
 ENV VARS
-  XAPI_KEY       API key (header: XAPI-Key)
+  XAPI_KEY          API key (highest precedence; header: XAPI-Key)
+  XAPI_API_KEY      Compatible API key alias
   XAPI_ACTION_HOST   Action service host (default: action.xapi.to)
+  XAPI_API_HOST      Auth/account service host (default: api.xapi.to)
   XAPI_OUTPUT        Default output format
+  XAPI_TRANSFER_IDLE_TIMEOUT_MS  SSE/download idle timeout (default: 60000)
 
 EXAMPLES
   xapi-to register
@@ -135,7 +138,16 @@ async function main() {
   }
 
   // inject format from flag into env so format.ts picks it up
-  if (flags.format) process.env.XAPI_OUTPUT = flags.format;
+  if (flags.format) {
+    if (!['json', 'pretty', 'table'].includes(flags.format)) {
+      console.error(JSON.stringify({
+        error: `invalid --format value: ${flags.format}`,
+        hint: 'expected json, pretty, or table',
+      }));
+      process.exit(1);
+    }
+    process.env.XAPI_OUTPUT = flags.format;
+  }
 
   const [cmd, ...rest] = positional;
 

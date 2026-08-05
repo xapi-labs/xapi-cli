@@ -11,7 +11,7 @@
  *   xapi-to register xapito                    # positional shorthand
  */
 
-import { XAPI_API_HOST, getConfig, saveConfig, scheme, assertAllowedHost } from '../config.ts';
+import { XAPI_API_HOST, getApiKeySource, getConfig, saveConfig, scheme, assertAllowedHost } from '../config.ts';
 import { output, err } from '../format.ts';
 
 interface RegisterResponse {
@@ -20,6 +20,32 @@ interface RegisterResponse {
   bindUrl?: string;
   claimUrl?: string;
   user: { id: string; accountType: string };
+}
+
+export const REGISTER_HELP = `xapi-to register - Create a new xAPI account
+
+USAGE
+  xapi-to register [referral-code] [flags]
+
+FLAGS
+  --referral-code <code>    Submit an inviter's referral code
+  --referralCode <code>     Alias for --referral-code
+  --force                   Replace an existing file-based API key
+  --format json|pretty|table  Output format
+
+The API key is saved to ~/.xapi/config.json. If XAPI_KEY or XAPI_API_KEY is set,
+unset it before registering because environment variables override the saved file.
+`;
+
+function validateRegisterResponse(value: unknown): RegisterResponse {
+  const res = value as Partial<RegisterResponse> | null;
+  if (!res || typeof res.apiKey !== 'string' || !res.apiKey.trim()) {
+    throw new Error('invalid register response: missing apiKey');
+  }
+  if (typeof res.referralCode !== 'string' || !res.user || typeof res.user.id !== 'string') {
+    throw new Error('invalid register response: missing account details');
+  }
+  return res as RegisterResponse;
 }
 
 async function registerAccount(referralCode?: string): Promise<RegisterResponse> {
@@ -32,21 +58,36 @@ async function registerAccount(referralCode?: string): Promise<RegisterResponse>
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(referralCode ? { referralCode } : {}),
       signal: controller.signal,
+      redirect: 'manual',
     });
+    if (res.status >= 300 && res.status < 400) {
+      throw new Error(`refusing to follow redirect to "${res.headers.get('location') ?? '?'}"`);
+    }
     if (!res.ok) {
       const text = await res.text();
       throw new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
     }
-    return res.json() as Promise<RegisterResponse>;
+    return validateRegisterResponse(await res.json());
   } finally {
     clearTimeout(timer);
   }
 }
 
 export async function register(args: string[], flags: Record<string, string>) {
+  if (flags.help) {
+    console.log(REGISTER_HELP);
+    return;
+  }
   try {
     const cfg = getConfig();
     const force = flags.force === 'true' || flags.force === '1' || flags.force === 'yes';
+    const source = getApiKeySource();
+    if (source === 'XAPI_KEY' || source === 'XAPI_API_KEY') {
+      err(
+        'register cannot replace an API key supplied by an environment variable',
+        `Unset ${source} first; it would continue to override the newly saved key.`,
+      );
+    }
     if (cfg.apiKey && !force) {
       err('register would overwrite existing apiKey', 'Run "xapi-to register --force" to create a new account and replace the saved key.');
     }
@@ -54,8 +95,11 @@ export async function register(args: string[], flags: Record<string, string>) {
     // 邀请码来源优先级：--referral-code > --referralCode > 第一个位置参数
     const rawReferral =
       flags['referral-code'] ?? flags['referralCode'] ?? args[0];
+    if (rawReferral === 'true') {
+      err('--referral-code requires a code');
+    }
     const referralCode =
-      typeof rawReferral === 'string' && rawReferral !== 'true' && rawReferral.length > 0
+      typeof rawReferral === 'string' && rawReferral.length > 0
         ? rawReferral
         : undefined;
 
@@ -71,7 +115,9 @@ export async function register(args: string[], flags: Record<string, string>) {
       bindUrl,
       // Keep the backend's legacy field visible while clients migrate to bindUrl.
       claimUrl: res.claimUrl || bindUrl,
-      ...(referralCode ? { referredBy: referralCode } : {}),
+      // The backend may accept the registration while ignoring an invalid code,
+      // so only report that the code was submitted, not that a referral exists.
+      ...(referralCode ? { referralCodeProvided: referralCode } : {}),
       note: force && cfg.apiKey
         ? 'apiKey replaced in ~/.xapi/config.json'
         : 'apiKey saved to ~/.xapi/config.json',

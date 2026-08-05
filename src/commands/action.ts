@@ -52,6 +52,28 @@ EXAMPLES
   xapi-to search twitter --include-all-versions
 `;
 
+const CATEGORIES_HELP = `xapi-to categories - List action categories
+
+USAGE
+  xapi-to categories [flags]
+
+FLAGS
+  --source capability|api   Filter by source type
+  --format json|pretty|table  Output format
+`;
+
+const SERVICES_HELP = `xapi-to services - List services
+
+USAGE
+  xapi-to services [flags]
+
+FLAGS
+  --category <name>         Filter by category
+  --page N                  Page number
+  --page-size N             Results per page
+  --format json|pretty|table  Output format
+`;
+
 const GET_BATCH_HELP = `xapi-to get-batch - Get multiple action schemas
 
 USAGE
@@ -107,7 +129,7 @@ FLAGS
   --input <json>            Input payload as JSON (required for execution)
   --method GET|POST|...     Override HTTP method
   --output <path>           Save a raw binary response to a new file
-  --stream                  Forward the action's SSE response unchanged
+  --stream                  Forward the action's HTTP SSE response unchanged
   --code <target>           Generate code snippet instead of executing
   --format json|pretty|table  Output format
 
@@ -171,6 +193,22 @@ function getSource(flags: Record<string, string>): string | undefined {
   return flags.source;
 }
 
+function positiveIntegerFlag(value: string | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (!/^\d+$/.test(value) || Number(value) < 1) {
+    err(`${name} must be a positive integer`);
+  }
+  return Number(value);
+}
+
+function httpMethodFlag(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'true' || !/^[A-Za-z]+$/.test(value)) {
+    err('--method requires an HTTP method, e.g. --method POST');
+  }
+  return value.toUpperCase();
+}
+
 export async function actionList(args: string[], flags: Record<string, string>) {
   showHelpIfRequested(flags, LIST_HELP);
   const cfg = getConfig();
@@ -178,8 +216,8 @@ export async function actionList(args: string[], flags: Record<string, string>) 
   try {
     const res = await client.actionList(cfg, {
       source: getSource(flags),
-      page: flags.page ? parseInt(flags.page) : undefined,
-      page_size: flags['page-size'] ? parseInt(flags['page-size']) : undefined,
+      page: positiveIntegerFlag(flags.page, '--page'),
+      page_size: positiveIntegerFlag(flags['page-size'], '--page-size'),
       category: flags.category,
       service_id: flags['service-id'],
     });
@@ -212,8 +250,8 @@ export async function actionSearch(args: string[], flags: Record<string, string>
     const res = await client.actionSearch(query, cfg, {
       source: getSource(flags),
       category: flags.category,
-      page: flags.page ? parseInt(flags.page) : undefined,
-      page_size: flags['page-size'] ? parseInt(flags['page-size']) : undefined,
+      page: positiveIntegerFlag(flags.page, '--page'),
+      page_size: positiveIntegerFlag(flags['page-size'], '--page-size'),
       include_all_versions: flags['include-all-versions'] === 'true',
     });
     const results = (res.results || []) as any[];
@@ -236,6 +274,7 @@ export async function actionSearch(args: string[], flags: Record<string, string>
 }
 
 export async function actionCategories(args: string[], flags: Record<string, string>) {
+  showHelpIfRequested(flags, CATEGORIES_HELP);
   const cfg = getConfig();
   const fmt = flags.format || getFormat();
   try {
@@ -251,12 +290,13 @@ export async function actionCategories(args: string[], flags: Record<string, str
 }
 
 export async function actionServices(args: string[], flags: Record<string, string>) {
+  showHelpIfRequested(flags, SERVICES_HELP);
   const cfg = getConfig();
   const fmt = flags.format || getFormat();
   try {
     const res = await client.actionServices(cfg, {
-      page: flags.page ? parseInt(flags.page) : undefined,
-      page_size: flags['page-size'] ? parseInt(flags['page-size']) : undefined,
+      page: positiveIntegerFlag(flags.page, '--page'),
+      page_size: positiveIntegerFlag(flags['page-size'], '--page-size'),
       category: flags.category,
     });
     const services = (res.services || []) as any[];
@@ -282,11 +322,11 @@ export async function actionGet(args: string[], flags: Record<string, string>) {
   const id = args[0];
   if (!id) err('usage: xapi-to get <id> [--method GET|POST|DELETE|...]');
   if (flags.code) validateCodeFlag(flags);
+  const methodFilter = httpMethodFlag(flags.method);
   const cfg = getConfig();
   try {
     const res = await client.actionGet(id, cfg);
     const actions = Array.isArray(res) ? res : [res];
-    const methodFilter = flags.method?.toUpperCase();
     const filtered = methodFilter
       ? actions.filter((a: any) => a.method?.toUpperCase() === methodFilter)
       : actions;
@@ -352,7 +392,7 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
   }
   // method 作为独立参数传递，兼容 input 内的 method
   const { method: inputMethod, ...cleanInput } = input;
-  const method = flags.method?.toUpperCase()
+  const method = httpMethodFlag(flags.method)
     || (typeof inputMethod === 'string' ? inputMethod.toUpperCase() : undefined);
 
   if (flags.code) {
