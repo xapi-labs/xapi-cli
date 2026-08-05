@@ -6,7 +6,7 @@ All AI endpoints are **built-in capabilities** (`--source capability`). Pass par
 
 This guide covers CLI capabilities. For Claude Code, Anthropic/OpenAI SDKs, streaming HTTP APIs, and Gateway routing, read `guides/ai_gateway.md`. For full-duplex OpenAI Realtime or provider-native streaming ASR/TTS, read `guides/ws_gateway.md`.
 
-## Text (synchronous)
+## Text (synchronous or SSE streaming)
 
 ### Chat completions
 
@@ -26,6 +26,7 @@ npx xapi-to call ai.text.chat.auto \
 
 - `messages` follows the standard `[{role, content}]` chat format. `fast` and `reasoning` accept `system` | `user` | `assistant`; `auto` documents `user` | `assistant`.
 - **When to choose which:** `fast` for quick/cheap replies, `reasoning` for multi-step analysis, `auto` when you want to specify a particular model and let the gateway pick the healthiest provider that serves it (defaults to `deepseek-v4-pro` if `model` is omitted).
+- Add `--stream` to `ai.text.chat.fast`, `ai.text.chat.reasoning`, `ai.text.chat.auto`, `ai.text.summarize`, or `ai.text.rewrite` to forward the backend SSE frames unchanged. Do not combine it with `--output` or `--code`.
 
 ### Summarize & rewrite
 
@@ -60,7 +61,7 @@ npx xapi-to call ai.image.generate \
   - ⚠️ Picking e.g. `dall-e-3` without also setting `provider: "skyimage"` will fail — the default `gpt88` provider only serves `gpt-image-2`.
 - `n` (optional) — number of images (default `1`); `size` (optional, e.g. `1024x1024`).
 - Other optional controls include `aspect_ratio`, `quality`, `background`, `moderation`, `style`, `image` (reference-image array), and `user`. Support depends on the selected model.
-- Returns an async task handle, not the image itself. Poll it with `task.poll` as described below.
+- Returns an async task handle, not the image itself. Wait for it with `task wait` as described below.
 
 ## Video generation (ASYNCHRONOUS — poll for the result)
 
@@ -90,24 +91,26 @@ The response is a **202-style async task**:
 { "task_id": "…", "status": "pending", "poll_url": "…", "expires_at": "…" }
 ```
 
-### Step 2: Poll until terminal
+### Step 2: Wait until terminal
 
 ```bash
-npx xapi-to call task.poll --input '{"task_id":"<task_id from step 1>"}'
+npx xapi-to task wait <task_id-from-step-1> --interval 2s --timeout 10m
 ```
 
 Status values: `pending` | `processing` | `succeeded` | `failed` | `expired`.
 
-- Poll every few seconds until the status is **terminal** (`succeeded` / `failed` / `expired`).
+- `task wait` polls every few seconds until the status is **terminal** (`succeeded` / `failed` / `expired`).
 - On `succeeded`, the result payload (video URL/data) is included.
-- On `failed` / `expired`, an error is included.
+- On `failed` / `expired`, the error payload is printed and the command exits nonzero.
 
-**Agent polling loop (pseudocode):**
+Use `npx xapi-to task poll <task_id>` for one status read when another scheduler controls the loop. Add `--max-attempts <n>` when an attempt bound is more useful than a time bound. Duration values accept `ms`, `s`, `m`, and `h`.
+
+**Agent-controlled polling loop (pseudocode):**
 
 ```
 submit → get task_id
 loop:
-  result = task.poll(task_id)
+  result = run("npx xapi-to task poll " + task_id)
   if result.status in {succeeded, failed, expired}: break
   wait a few seconds
 handle result

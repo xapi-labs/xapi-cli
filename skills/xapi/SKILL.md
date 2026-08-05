@@ -1,7 +1,6 @@
 ---
 name: xapi
 description: Access real-time external data via the xapi CLI — Twitter/X, Douyin/TikTok, Reddit, LinkedIn, Weibo, on-chain crypto data (price, holders, wallets, DEX, CEX), web/news/image/video/scholar search, AI text/image/video/speech generation and transcription, and SMS verification. Configure the Anthropic/OpenAI-compatible xAPI AI Gateway or the xAPI WebSocket Gateway for realtime voice, streaming ASR/TTS, and provider-native bidirectional sessions. Use when the user mentions xapi, wants to call a third-party API, asks what external services are available, or needs to connect an AI or realtime client to xAPI.
-homepage: https://xapi.to
 metadata: {"openclaw":{"emoji":"x","requires":{"anyBins":["npx"]},"primaryEnv":"XAPI_KEY"}}
 ---
 
@@ -25,6 +24,9 @@ Before calling any API, you need an API key:
 # Register a new account (apiKey is saved automatically)
 npx xapi-to register
 
+# Replace an already-saved key only when intentionally creating a new account
+npx xapi-to register --force
+
 # Register with an inviter's referral code (establishes the referrer relationship, unlocks +$1 bonus on Twitter claim, and the inviter earns 5% of your future top-ups)
 # please replace xapito to your actual referral code
 npx xapi-to register --referral-code xapito
@@ -37,7 +39,7 @@ npx xapi-to config set apiKey=<your-key>
 npx xapi-to config health
 ```
 
-The API key is stored at `~/.xapi/config.json`. You can also set it via `XAPI_KEY` env var.
+The API key is stored at `~/.xapi/config.json`. You can also set it via `XAPI_KEY` env var. Registration returns `bindUrl` (and legacy alias `claimUrl`); open that private URL to bind Twitter OAuth and upgrade the virtual account. It contains the API key, so never log or share it. Account upgrade is separate from provider authorization through `xapi-to oauth bind`. The optional $1 promotion is completed afterward in the xAPI Console by publishing its current tweet template and submitting that tweet's URL for verification.
 
 Referral codes are 6-char lowercase hex (e.g. `a3b8c2`). They're optional; an invalid code is silently ignored and registration still succeeds. After registering, your own `referralCode` is included in the response so you can share it.
 
@@ -67,11 +69,13 @@ All commands work with both types. Use `--source capability` or `--source api` t
 # Search by keyword
 npx xapi-to search "twitter"
 npx xapi-to search "token price" --source api
+npx xapi-to search "twitter" --include-all-versions  # include active non-default majors
 
-# List all APIs (supports --source, --category, --page, --page-size)
+# List all APIs (supports --source, --category, --service-id, --page, --page-size)
 npx xapi-to list
 npx xapi-to list --source capability
 npx xapi-to list --category Social --page-size 10
+npx xapi-to list --service-id <service-id>
 
 # Browse categories and services
 npx xapi-to categories
@@ -79,6 +83,7 @@ npx xapi-to services --category Social
 
 # Get API schema (shows required parameters)
 npx xapi-to get crypto.token.price
+npx xapi-to get-batch twitter.tweet_detail crypto.token.price
 ```
 
 ### Calling APIs
@@ -87,6 +92,24 @@ npx xapi-to get crypto.token.price
 # Always get the schema first, then call
 npx xapi-to get twitter.tweet_detail
 npx xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
+```
+
+For a database-registered third-party API that returns binary data, save the untouched response to a new file with `--output`. The CLI refuses to overwrite an existing path, and `--output` cannot be combined with `--code`:
+
+```bash
+npx xapi-to call openrouter.audio_speech \
+  --input '{"body":{"input":"Hello","model":"hexgrad/kokoro-82m","voice":"af_bella"}}' \
+  --output speech.mp3
+```
+
+Raw download is not available for built-in capabilities. For example, `ai.speech.generate` continues to return its documented JSON/base64 envelope.
+
+For an action whose schema supports streaming, pass `--stream` to forward its SSE frames unchanged. Streaming cannot be combined with `--output` or `--code`, and arbitrary calls are not automatically retried:
+
+```bash
+npx xapi-to call ai.text.chat.fast \
+  --input '{"messages":[{"role":"user","content":"Hello"}]}' \
+  --stream
 ```
 
 ### Multi-method endpoints
@@ -263,7 +286,7 @@ npx xapi-to call ai.image.generate --input '{"prompt":"A serene mountain landsca
 npx xapi-to call ai.video.generate --input '{"prompt":"A cat playing piano in a jazz bar, cinematic"}'
 ```
 
-Both capabilities return `{ "task_id": "...", "status": "pending", "poll_url": "..." }`. Poll for the result with the `task.poll` capability (see below). Video generation uses provider `openrouter` and defaults to model `bytedance/seedance-2.0-fast`.
+Both capabilities return `{ "task_id": "...", "status": "pending", "poll_url": "..." }`. Wait for the result with `xapi-to task wait` (see below). Video generation uses provider `openrouter` and defaults to model `bytedance/seedance-2.0-fast`.
 
 ### AI Speech Generation & Transcription (2 APIs)
 
@@ -297,15 +320,18 @@ Use the WebSocket Gateway for persistent, full-duplex sessions such as OpenAI Re
 
 Read `guides/ws_gateway.md` before opening a session. It explains path selection, browser-safe authentication, OpenAI Realtime usage, provider-native binary protocols, connection limits, billing, close codes, and reconnect behavior.
 
-### Async Tasks (`task.poll`)
+### Async Tasks
 
-Some capabilities (currently `ai.image.generate` and `ai.video.generate`) run asynchronously and return a `task_id`. Poll until the task reaches a terminal status:
+Some capabilities (currently `ai.image.generate` and `ai.video.generate`) run asynchronously and return a `task_id`. Prefer `task wait` to poll until a terminal status:
 
 ```bash
-npx xapi-to call task.poll --input '{"task_id":"<task_id from the async response>"}'
+npx xapi-to task wait <task_id> --interval 2s --timeout 10m
+
+# Poll exactly once when the caller manages scheduling itself
+npx xapi-to task poll <task_id>
 ```
 
-Status values: `pending` | `processing` | `succeeded` | `failed` | `expired`. When `succeeded`, the result payload is included; when `failed`/`expired`, an error is included. Poll every few seconds until the status is terminal.
+`task wait` also accepts `--max-attempts`; duration flags support `ms`, `s`, `m`, and `h`. Status values are `pending` | `processing` | `succeeded` | `failed` | `expired`. It prints the terminal payload and exits nonzero for `failed` or `expired`.
 
 ## Input Format
 
@@ -362,6 +388,9 @@ npx xapi-to oauth providers
 # Bind Twitter OAuth to your API key (opens browser for authorization)
 npx xapi-to oauth bind --provider twitter
 
+# Request explicit scopes and skip interactive scope selection
+npx xapi-to oauth bind --provider twitter --scopes "tweet.read users.read"
+
 # Check current OAuth bindings
 npx xapi-to oauth status
 
@@ -369,7 +398,7 @@ npx xapi-to oauth status
 npx xapi-to oauth unbind <binding-id>
 ```
 
-**Agent workflow:** If `call` fails with an OAuth/authorization error, run `oauth status` to check bindings, then `oauth bind` if needed.
+In an interactive terminal, `oauth bind` can prompt for scopes, opens the browser, and waits up to five minutes. In non-interactive/agent mode it returns `status: "pending"` and `authorizationUrl`; present that URL to the user, then check `oauth status`. If `call` fails with an OAuth/authorization error, inspect `oauth status` before starting a new binding.
 
 ## Account Management
 
@@ -410,6 +439,8 @@ The full catalog also spans many other categories — crypto/on-chain data, CEX 
 - **Insufficient balance** → Run `npx xapi-to topup --method stripe --amount 10`
 - **Unknown API ID** → Use `search` or `list` to find the correct ID, then `get` to check parameters
 
+The CLI retries idempotent metadata reads and `task poll` for transient timeouts, network failures, `408`, `429`, and `502`–`504`. It does not automatically retry arbitrary `call` actions because the upstream may already have completed a write; confirm the result before manually retrying posts, payments, or other mutations.
+
 ## Tips
 
 - Use `--page` and `--page-size` for pagination on `list`, `search`, and `services`.
@@ -427,7 +458,7 @@ When the user's task involves these workflows, read the corresponding guide file
 - **`guides/weibo.md`** — Weibo (微博): hot search, content search, user profiles, post details, comments, reposts, media
 - **`guides/google_search.md`** — Google Search: web, realtime, news, image, video, scholar, maps, places, shopping
 - **`guides/crypto.md`** — Crypto (加密货币): on-chain token price/overview/holders/security/OHLCV, wallet analytics, DEX pairs, CEX spot prices by symbol, news — covers contract-address vs symbol addressing and multi-chain
-- **`guides/ai.md`** — AI (人工智能): text chat (fast/reasoning/auto), summarize/rewrite, embeddings, asynchronous image/video generation with `task.poll`, text-to-speech, and speech-to-text
+- **`guides/ai.md`** — AI (人工智能): synchronous or SSE-streamed text, embeddings, asynchronous image/video generation with `task wait`, text-to-speech, and speech-to-text
 - **`guides/ai_gateway.md`** — xAPI AI Gateway: Claude Code and Anthropic/OpenAI SDK setup, model discovery, routing strategies, streaming, fallback, routing/billing headers, direct media endpoints, and known limitations
 - **`guides/ws_gateway.md`** — xAPI WebSocket Gateway: OpenAI Realtime, streaming ASR/TTS, simultaneous interpretation, podcast generation, service/path routing, browser authentication, native binary protocols, limits, billing, close codes, and reconnects
 - **`guides/sms.md`** — SMS verification: buy virtual phone numbers, receive verification codes, finish/cancel orders (5SIM)

@@ -8,8 +8,10 @@ Use xAPI's public AI Gateway when a tool or application expects an Anthropic- or
 - [Base URLs and authentication](#base-urls-and-authentication)
 - [Claude Code and Anthropic setup](#claude-code-and-anthropic-setup)
 - [OpenAI-compatible setup](#openai-compatible-setup)
+- [Select a model in the URL](#select-a-model-in-the-url)
 - [Supported endpoints](#supported-endpoints)
 - [Routing strategies](#routing-strategies)
+- [Provider affinity](#provider-affinity)
 - [Streaming and protocol translation](#streaming-and-protocol-translation)
 - [Routing and billing headers](#routing-and-billing-headers)
 - [Image, video, and rerank endpoints](#image-video-and-rerank-endpoints)
@@ -118,6 +120,19 @@ curl https://ai.xapi.to/v1/models
 
 Use the returned model ID in subsequent requests. A model can only be routed when an active provider exposes a compatible endpoint and input modality.
 
+## Select a model in the URL
+
+For strategy-aware endpoints, the segment before `/v1` can be either a routing strategy or a model ID. When it is not one of the reserved strategies `default`, `cost`, `speed`, or `quality`, the Gateway treats it as the model, overwrites any `model` value in the request body, and uses the default strategy.
+
+```bash
+curl https://ai.xapi.to/gpt-4o/v1/chat/completions \
+  -H 'authorization: Bearer <XAPI_KEY>' \
+  -H 'content-type: application/json' \
+  -d '{"model":"ignored","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+This also works for Anthropic Messages, OpenAI Responses, and embeddings. Use it only for model IDs that fit in one URL path segment. For IDs containing `/`, keep the model in the JSON body and use a strategy-prefixed or unprefixed `/v1` route.
+
 ## Supported endpoints
 
 | Interface | Method and path | Strategy prefix |
@@ -145,6 +160,16 @@ Accepted strategies:
 | `quality` | Accepted, but currently uses the same candidate ordering as `default`. |
 
 All strategies apply the active-provider gate, model and modality compatibility checks, provider health checks, circuit breaking, and eligible-provider fallback. Do not promise distinct latency or quality optimization for `speed` or `quality` until their dedicated rankers are implemented.
+
+## Provider affinity
+
+After a successful request, the Gateway remembers the serving provider for one hour and promotes it for later requests with the same strategy, model, and affinity identity. The identity is selected in this order:
+
+- Anthropic Messages: `metadata.user_id`, then the xAPI key;
+- OpenAI Chat Completions: `prompt_cache_key`, then `user`, then the xAPI key;
+- other interfaces, including Responses and embeddings: the xAPI key.
+
+Affinity is isolated between routing strategies and only changes candidate order. It does not bypass health, circuit-breaker, model, modality, or active-provider checks, so clients must not rely on a provider remaining fixed for the full hour.
 
 ## Streaming and protocol translation
 
@@ -202,7 +227,7 @@ The current video provider is `openrouter`, which is also the default and is har
 Image and video generation are asynchronous. A successful submit returns a `task_id`, `status`, and `poll_url`. Follow the authenticated `poll_url`, or poll the same task through the CLI:
 
 ```bash
-npx xapi-to call task.poll --input '{"task_id":"<task_id>"}'
+npx xapi-to task wait <task_id> --interval 2s --timeout 10m
 ```
 
 ### Rerank
@@ -224,6 +249,7 @@ Rerank currently routes directly through OpenRouter rather than the strategy-bas
 - Image/video provider selection is hard-pinned and does not use chat-style fallback.
 - Text-to-speech and speech-to-text are not exposed as HTTP AI Gateway routes. Use `ai.speech.generate` and `ai.speech.transcribe` through the xAPI CLI for synchronous calls, or `guides/ws_gateway.md` for provider-native streaming sessions.
 - Model and feature availability is dynamic. Use `GET /v1/models` and handle unsupported-model or modality errors.
+- Path-selected models must fit in one URL path segment; otherwise send the model in the body.
 
 ## Error handling and security
 

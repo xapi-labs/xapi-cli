@@ -12,6 +12,7 @@ The WebSocket Gateway shares the public `ai.xapi.to` host with the HTTP AI Gatew
 - [OpenAI Realtime example](#openai-realtime-example)
 - [Browser connections](#browser-connections)
 - [Native protocol endpoints](#native-protocol-endpoints)
+- [Volcengine ASR options](#volcengine-asr-options)
 - [Connection behavior and billing](#connection-behavior-and-billing)
 - [Errors and reconnects](#errors-and-reconnects)
 - [Security](#security)
@@ -147,6 +148,20 @@ The Gateway forwards frames without translating the application protocol. The se
 Do not send JSON copied from the OpenAI Realtime API to a Doubao binary endpoint. The shared `ai.xapi.to` hostname does not imply a shared event schema, and the Gateway does not currently translate OpenAI Realtime events into Doubao events.
 
 For binary services, prefer the service's xAPI Try-It client or the provider protocol documentation. `wscat` can prove that a handshake succeeds, but it is not sufficient for a functional ASR, TTS, AST, or podcast test.
+
+## Volcengine ASR options
+
+The `/v1/asr` adapter exposes these per-session fields in the native config frame's `request` object:
+
+| Field | Default | Meaning |
+|---|---:|---|
+| `enable_punc` | `true` | Insert punctuation. |
+| `enable_itn` | `true` | Normalize spoken numbers, dates, and amounts. |
+| `enable_ddc` | `false` | Remove filler words and repeated speech. |
+| `show_utterances` | `false` | Return utterance boundaries and timestamps. |
+| `result_type` | `full` | Use `full` for cumulative text or `single` for incremental fragments. |
+
+Audio must be raw PCM, 16-bit, mono, at 16 kHz (default) or 8 kHz. The rate declared in the config frame must exactly match the bytes sent. The ASR `model_name` is fixed by the selected endpoint and is not a caller-selectable option.
 
 ## Connection behavior and billing
 
