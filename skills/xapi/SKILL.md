@@ -117,7 +117,7 @@ npx xapi-to call openrouter.audio_speech \
   --output speech.mp3
 ```
 
-Raw download is not available for built-in capabilities. For example, `ai.speech.generate` continues to return its documented JSON/base64 envelope.
+Raw download is not available for built-in capabilities. For example, `ai.audio.generate` continues to return its documented JSON/base64 envelope.
 
 For an action whose schema supports streaming, pass `--stream` to forward its HTTP SSE frames unchanged. This is not a WebSocket client; use `guides/ws_gateway.md` and a real WebSocket library for WS endpoints. Streaming cannot be combined with `--output` or `--code`, and arbitrary calls are not automatically retried:
 
@@ -309,10 +309,10 @@ Both capabilities return `{ "task_id": "...", "status": "pending", "poll_url": "
 
 ```bash
 # Text to speech (synchronous; returns a base64-encoded binary envelope)
-npx xapi-to call ai.speech.generate --input '{"text":"Hello world","model":"hexgrad/kokoro-82m","voice":"af_bella","format":"mp3"}'
+npx xapi-to call ai.audio.generate --input '{"text":"Hello world","model":"hexgrad/kokoro-82m","voice":"af_bella","format":"mp3"}'
 
 # Speech to text (audio.data is raw base64 without a data URI prefix)
-npx xapi-to call ai.speech.transcribe --input '{"audio":{"data":"<base64-audio>","format":"wav"},"model":"openai/whisper-large-v3"}'
+npx xapi-to call ai.audio.transcribe --input '{"audio":{"data":"<base64-audio>","format":"wav"},"model":"openai/whisper-large-v3"}'
 ```
 
 ### AI Gateway — Anthropic/OpenAI-compatible HTTP

@@ -247,7 +247,7 @@ Rerank currently routes directly through OpenRouter rather than the strategy-bas
 - `speed` and `quality` are accepted strategy names but currently use default ordering.
 - Image and video endpoints submit asynchronous tasks; they do not return final media in the initial response.
 - Image/video provider selection is hard-pinned and does not use chat-style fallback.
-- Text-to-speech and speech-to-text are not exposed as HTTP AI Gateway routes. Use `ai.speech.generate` and `ai.speech.transcribe` through the xAPI CLI for synchronous calls, or `guides/ws_gateway.md` for provider-native streaming sessions.
+- Text-to-speech and speech-to-text are not exposed as HTTP AI Gateway routes. Use `ai.audio.generate` and `ai.audio.transcribe` through the xAPI CLI for synchronous calls, or `guides/ws_gateway.md` for provider-native streaming sessions.
 - Model and feature availability is dynamic. Use `GET /v1/models` and handle unsupported-model or modality errors.
 - Path-selected models must fit in one URL path segment; otherwise send the model in the body.
 

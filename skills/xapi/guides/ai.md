@@ -139,7 +139,7 @@ Do not busy-loop with zero delay — space polls a few seconds apart. If the tas
 Text-to-speech calls are synchronous.
 
 ```bash
-npx xapi-to call ai.speech.generate \
+npx xapi-to call ai.audio.generate \
   --input '{"text":"Hello world, this is a test.","model":"hexgrad/kokoro-82m","voice":"af_bella","format":"mp3"}'
 ```
 
@@ -177,7 +177,7 @@ Decode `data.content` from base64 to save or play the audio. `data.content_dispo
 Speech-to-text calls are synchronous.
 
 ```bash
-npx xapi-to call ai.speech.transcribe \
+npx xapi-to call ai.audio.transcribe \
   --input '{"audio":{"data":"<base64-audio>","format":"wav"},"model":"openai/whisper-large-v3","language":"en"}'
 ```
 
