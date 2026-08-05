@@ -222,7 +222,14 @@ export async function actionList(
 export async function actionSearch(
   query: string,
   opts: ClientOptions,
-  params: { category?: string; source?: string; page?: number; page_size?: number; include_all_versions?: boolean } = {},
+  params: {
+    category?: string;
+    source?: string;
+    page?: number;
+    page_size?: number;
+    include_all_versions?: boolean;
+    sort?: 'default' | 'relevance' | 'price';
+  } = {},
 ) {
   const url = new URL(`${baseUrl(opts)}/v1/actions/search`);
   url.searchParams.set('q', query);
@@ -231,7 +238,14 @@ export async function actionSearch(
   if (params.page) url.searchParams.set('page', String(params.page));
   if (params.page_size) url.searchParams.set('page_size', String(params.page_size));
   if (params.include_all_versions) url.searchParams.set('include_all_versions', 'true');
-  return request<{ results: unknown[]; query: string; pagination: unknown }>(
+  if (params.sort) url.searchParams.set('sort', params.sort);
+  return request<{
+    results: unknown[];
+    query: string;
+    sort?: 'default' | 'relevance' | 'price';
+    ranking_version?: number;
+    pagination: unknown;
+  }>(
     url.toString(),
     { method: 'GET', headers: headers(opts.apiKey) },
     DEFAULT_TIMEOUT_MS,

@@ -72,6 +72,8 @@ Both types use the same discovery and call workflow. Use `--source capability` o
 # Search by keyword
 npx xapi-to search "twitter"
 npx xapi-to search "token price" --source api
+npx xapi-to search "token price" --sort relevance  # strongest text match
+npx xapi-to search "token price" --sort price      # lowest comparable price
 npx xapi-to search "twitter" --include-all-versions  # include active non-default majors
 
 # List all APIs (supports --source, --category, --service-id, --page, --page-size)
@@ -88,6 +90,14 @@ npx xapi-to services --category Social
 npx xapi-to get crypto.token.price
 npx xapi-to get-batch twitter.tweet_detail crypto.token.price
 ```
+
+Search supports `--sort default|relevance|price`:
+
+- `default` (recommended) ranks keyword coverage and match quality first, then prefers stable built-in capabilities when otherwise comparable.
+- `relevance` is source-neutral and ranks the strongest text match first.
+- `price` preserves keyword coverage and an exact action ID first, keeps endpoint-local matches ahead of service-only matches, then ranks comparable fixed per-call USD list prices from low to high. Dynamic, per-token, per-resource, and unknown prices follow comparable prices in the same match bucket and must not be interpreted as free.
+
+Ranking is global: the service sorts all matching results before applying `--page` and `--page-size`. When `--sort` is explicitly provided, the CLI verifies that the backend applied it and reports a deployment-order error instead of silently accepting an older backend.
 
 `get-batch` accepts at most 100 action IDs per invocation.
 

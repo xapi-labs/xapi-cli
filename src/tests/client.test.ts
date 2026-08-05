@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
-import { request, actionCall, actionStream, deleteOAuthBinding, listOAuthProviders } from '../client.ts';
+import { request, actionCall, actionSearch, actionStream, deleteOAuthBinding, listOAuthProviders } from '../client.ts';
 
 const OK = () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
 
@@ -178,6 +178,27 @@ describe('client.request', () => {
       await expect(
         actionCall('task.poll', {}, { actionHost: 'action.xapi.to', apiKey: 'sk' }, undefined, 0, 15),
       ).rejects.toThrow(/timed out/);
+    });
+  });
+
+  describe('actionSearch sorting', () => {
+    it('sends sort to the backend and returns ranking metadata', async () => {
+      fetchSpy = mockFetch(() => new Response(JSON.stringify({
+        results: [],
+        query: 'twitter',
+        sort: 'relevance',
+        ranking_version: 1,
+        pagination: {},
+      }), { status: 200, headers: { 'content-type': 'application/json' } }));
+      const result = await actionSearch(
+        'twitter',
+        { actionHost: 'action.xapi.to' },
+        { sort: 'relevance' },
+      );
+      const [url] = fetchSpy.mock.calls[0] as [string, RequestInit];
+      expect(new URL(url).searchParams.get('sort')).toBe('relevance');
+      expect(result.sort).toBe('relevance');
+      expect(result.ranking_version).toBe(1);
     });
   });
 

@@ -54,6 +54,7 @@ COMMANDS
     --source capability|api         Filter by source type
     --category <name>               Filter by category
     --page N  --page-size N         Pagination
+    --sort default|relevance|price  Recommended, strongest match, or comparable price
     --include-all-versions          Include active non-default major versions
   categories                        List all action categories
     --source capability|api         Filter by source type

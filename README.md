@@ -60,6 +60,8 @@ xapi-to list --service-id <id>                          # filter by service
 
 xapi-to search "twitter"                                # search by keyword
 xapi-to search "token price" --source api               # search APIs only
+xapi-to search "token price" --sort relevance           # strongest text match
+xapi-to search "token price" --sort price               # lowest comparable price
 xapi-to search "twitter" --include-all-versions          # include active non-default majors
 
 xapi-to categories                                      # list all categories
@@ -73,6 +75,17 @@ xapi-to get-batch twitter.tweet_detail crypto.token.price # get several schemas
 xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'  # execute
 xapi-to call ai.text.chat.fast --input '{"messages":[{"role":"user","content":"Hi"}]}' --stream
 ```
+
+Search uses `--sort default|relevance|price`. `default` is the recommended
+order: it considers keyword coverage and match quality first, then favors
+stable built-in capabilities when matches are otherwise comparable.
+`relevance` is source-neutral and selects the strongest text match. `price`
+preserves keyword coverage and an exact action ID first, keeps endpoint-local
+matches ahead of service-only matches, then orders comparable fixed per-call
+USD list prices from low to high. Dynamic, per-token, per-resource, and unknown
+prices appear after comparable prices in the same match bucket and are never
+treated as free. All three modes rank the full matching result set before
+applying `--page` and `--page-size`.
 
 `--stream` forwards an HTTP Server-Sent Events (SSE) response; it is not a
 WebSocket client. Active SSE and raw downloads may run longer than 60 seconds,

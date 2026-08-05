@@ -154,6 +154,80 @@ describe('action commands', () => {
       spy.mockRestore();
     });
 
+    it('passes a supported --sort value and verifies the backend applied it', async () => {
+      const spy = spyOn(client, 'actionSearch').mockResolvedValue({
+        results: [],
+        query: 'x',
+        sort: 'price',
+        ranking_version: 1,
+        pagination: {},
+      });
+      await actionSearch(['x'], { sort: 'price' });
+      expect(spy).toHaveBeenCalledWith(
+        'x',
+        expect.any(Object),
+        expect.objectContaining({ sort: 'price' }),
+      );
+      spy.mockRestore();
+    });
+
+    it('rejects a bare or unknown --sort before making an API call', async () => {
+      const spy = spyOn(client, 'actionSearch');
+      await expect(actionSearch(['x'], { sort: 'true' })).rejects.toThrow('err called');
+      await expect(actionSearch(['x'], { sort: 'cheap' })).rejects.toThrow('err called');
+      expect(spy).not.toHaveBeenCalled();
+      expect(errSpy).toHaveBeenCalledWith(
+        'invalid --sort value: "cheap". Must be default, relevance, or price.',
+      );
+      spy.mockRestore();
+    });
+
+    it('does not silently accept --sort against an older backend', async () => {
+      const spy = spyOn(client, 'actionSearch').mockResolvedValue({
+        results: [],
+        query: 'x',
+        pagination: {},
+      });
+      await expect(actionSearch(['x'], { sort: 'relevance' })).rejects.toThrow('err called');
+      expect(errSpy).toHaveBeenCalledWith(
+        'search failed',
+        expect.stringContaining('does not support search sorting'),
+      );
+      spy.mockRestore();
+    });
+
+    it('renders only comparable listed prices in table output', async () => {
+      const results = [
+        {
+          ...mockActions[1],
+          meta: {
+            ...mockActions[1].meta,
+            pricing: {
+              billing_type: 'PER_CALL',
+              currency: 'USD',
+              comparable: true,
+              listed_price: 0.01,
+              unit: 'call',
+            },
+          },
+        },
+        {
+          ...mockActions[0],
+          meta: { ...mockActions[0].meta, pricing: { billing_type: 'UNKNOWN', currency: 'USD', comparable: false } },
+        },
+      ];
+      const spy = spyOn(client, 'actionSearch').mockResolvedValue({ results, query: 'x', pagination: {} });
+      await actionSearch(['x'], { format: 'table' });
+      expect(outputSpy).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ id: mockActions[1].id, price: 0.01, pricing: 'PER_CALL' }),
+          expect.objectContaining({ id: mockActions[0].id, price: '', pricing: 'UNKNOWN' }),
+        ]),
+        'table',
+      );
+      spy.mockRestore();
+    });
+
     it('calls err when no query provided', async () => {
       await expect(actionSearch([], {})).rejects.toThrow('err called');
       expect(errSpy).toHaveBeenCalledWith('usage: xapi-to search <query>');

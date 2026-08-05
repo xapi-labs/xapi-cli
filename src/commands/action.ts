@@ -10,6 +10,8 @@ import { output, err, getFormat } from '../format.ts';
 import { generateCode, buildDefaultInput, resolveTarget } from '../codegen.ts';
 
 const VALID_SOURCES = ['capability', 'api'];
+const VALID_SEARCH_SORTS = ['default', 'relevance', 'price'] as const;
+type SearchSort = (typeof VALID_SEARCH_SORTS)[number];
 
 // ── Subcommand help texts ────────────────────────────────────────────────────
 
@@ -42,12 +44,17 @@ FLAGS
   --category <name>         Filter by category
   --page N                  Page number (default: 1)
   --page-size N             Results per page
+  --sort default|relevance|price
+                            Recommended (default), strongest match, or lowest
+                            comparable price after exact-id/local-match guards
   --include-all-versions    Include active non-default major versions
   --format json|pretty|table  Output format
 
 EXAMPLES
   xapi-to search twitter
   xapi-to search "tweet detail" --source api
+  xapi-to search "tweet detail" --sort relevance
+  xapi-to search weather --sort price
   xapi-to search weather --category utility --format table
   xapi-to search twitter --include-all-versions
 `;
@@ -193,6 +200,18 @@ function getSource(flags: Record<string, string>): string | undefined {
   return flags.source;
 }
 
+function getSearchSort(flags: Record<string, string>): SearchSort | undefined {
+  const value = flags.sort;
+  if (value === undefined) return undefined;
+  if (value === 'true') {
+    err('--sort requires a value: default, relevance, or price');
+  }
+  if (!VALID_SEARCH_SORTS.includes(value as SearchSort)) {
+    err(`invalid --sort value: "${value}". Must be default, relevance, or price.`);
+  }
+  return value as SearchSort;
+}
+
 function positiveIntegerFlag(value: string | undefined, name: string): number | undefined {
   if (value === undefined) return undefined;
   if (!/^\d+$/.test(value) || Number(value) < 1) {
@@ -244,6 +263,7 @@ export async function actionSearch(args: string[], flags: Record<string, string>
   showHelpIfRequested(flags, SEARCH_HELP);
   const query = args[0];
   if (!query) err('usage: xapi-to search <query>');
+  const requestedSort = getSearchSort(flags);
   const cfg = getConfig();
   const fmt = flags.format || getFormat();
   try {
@@ -253,7 +273,15 @@ export async function actionSearch(args: string[], flags: Record<string, string>
       page: positiveIntegerFlag(flags.page, '--page'),
       page_size: positiveIntegerFlag(flags['page-size'], '--page-size'),
       include_all_versions: flags['include-all-versions'] === 'true',
+      sort: requestedSort,
     });
+    if (requestedSort && res.sort !== requestedSort) {
+      throw new Error(
+        res.sort
+          ? `backend applied sort "${res.sort}" instead of requested "${requestedSort}"`
+          : 'backend does not support search sorting yet; deploy the updated backend before using --sort',
+      );
+    }
     const results = (res.results || []) as any[];
     if (fmt === 'table') {
       output(results.map((a: any) => ({
@@ -263,7 +291,10 @@ export async function actionSearch(args: string[], flags: Record<string, string>
         source: a.source ?? '',
         category: a.meta?.category ?? '',
         status: a.status ?? '',
-        cost: a.meta?.cost ?? '',
+        price: a.meta?.pricing?.comparable
+          ? a.meta.pricing.listed_price
+          : '',
+        pricing: a.meta?.pricing?.billing_type ?? '',
       })), 'table');
     } else {
       output(res, flags.format as any);
