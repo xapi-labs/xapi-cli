@@ -4,6 +4,7 @@
 
 import { scheme, assertAllowedHost } from './config.ts';
 import { open, rm } from 'node:fs/promises';
+import { once } from 'node:events';
 import { resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -207,7 +208,7 @@ export async function actionList(
 export async function actionSearch(
   query: string,
   opts: ClientOptions,
-  params: { category?: string; source?: string; page?: number; page_size?: number } = {},
+  params: { category?: string; source?: string; page?: number; page_size?: number; include_all_versions?: boolean } = {},
 ) {
   const url = new URL(`${baseUrl(opts)}/v1/actions/search`);
   url.searchParams.set('q', query);
@@ -215,6 +216,7 @@ export async function actionSearch(
   if (params.source) url.searchParams.set('source', params.source);
   if (params.page) url.searchParams.set('page', String(params.page));
   if (params.page_size) url.searchParams.set('page_size', String(params.page_size));
+  if (params.include_all_versions) url.searchParams.set('include_all_versions', 'true');
   return request<{ results: unknown[]; query: string; pagination: unknown }>(
     url.toString(),
     { method: 'GET', headers: headers(opts.apiKey) },
@@ -281,6 +283,66 @@ export async function actionCall(
     Math.min(timeoutMs, EXECUTE_TIMEOUT_MS),
     retries,
   );
+}
+
+/** Execute an action through the SSE interface and forward frames unchanged. */
+export async function actionStream(
+  actionId: string,
+  input: Record<string, unknown>,
+  opts: ClientOptions,
+  httpMethod?: string,
+): Promise<void> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, EXECUTE_TIMEOUT_MS);
+  const url = `${baseUrl(opts)}/v1/actions/execute`;
+  assertAllowedHost(url);
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        ...headers(opts.apiKey),
+        Accept: 'text/event-stream',
+      },
+      body: JSON.stringify({
+        action_id: actionId,
+        ...(httpMethod ? { method: httpMethod } : {}),
+        input,
+        stream: true,
+      }),
+      redirect: 'manual',
+      signal: controller.signal,
+    });
+    if (res.status >= 300 && res.status < 400) {
+      throw new Error(
+        `refusing to follow redirect to "${res.headers.get('location') ?? '?'}" `
+          + '(would forward the API key past the host allowlist)',
+      );
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      throw new HttpError(
+        res.status,
+        text.slice(0, 300),
+        isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined,
+      );
+    }
+
+    if (!res.body) return;
+    const source = Readable.fromWeb(res.body as any);
+    for await (const chunk of source) {
+      if (!process.stdout.write(chunk)) await once(process.stdout, 'drain');
+    }
+  } catch (error) {
+    if (timedOut) throw new RequestTimeoutError(EXECUTE_TIMEOUT_MS);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export interface ActionDownloadResult {

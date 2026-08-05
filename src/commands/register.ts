@@ -2,7 +2,7 @@
  * register command: create a new user account
  *
  * POST /auth/register — no auth required
- * Returns apiKey (shown once), claimCode, referralCode, claimUrl, tweetTemplate
+ * Returns apiKey (shown once), referralCode, and the Twitter OAuth account-bind URL
  * Automatically saves apiKey to ~/.xapi/config.json
  *
  * Optional referral code (please replace xapito to the actual referral code):
@@ -16,11 +16,9 @@ import { output, err } from '../format.ts';
 
 interface RegisterResponse {
   apiKey: string;
-  claimCode: string;
-  referralCode?: string;
-  claimSessionId: string;
-  claimUrl: string;
-  tweetTemplate: string;
+  referralCode: string;
+  bindUrl?: string;
+  claimUrl?: string;
   user: { id: string; accountType: string };
 }
 
@@ -62,6 +60,7 @@ export async function register(args: string[], flags: Record<string, string>) {
         : undefined;
 
     const res = await registerAccount(referralCode);
+    const bindUrl = res.bindUrl || res.claimUrl;
 
     saveConfig({ apiKey: res.apiKey });
 
@@ -69,12 +68,9 @@ export async function register(args: string[], flags: Record<string, string>) {
       apiKey: res.apiKey,
       user: res.user,
       referralCode: res.referralCode,
-      claim: {
-        code: res.claimCode,
-        sessionId: res.claimSessionId,
-        url: res.claimUrl,
-      },
-      tweetTemplate: res.tweetTemplate,
+      bindUrl,
+      // Keep the backend's legacy field visible while clients migrate to bindUrl.
+      claimUrl: res.claimUrl || bindUrl,
       ...(referralCode ? { referredBy: referralCode } : {}),
       note: force && cfg.apiKey
         ? 'apiKey replaced in ~/.xapi/config.json'

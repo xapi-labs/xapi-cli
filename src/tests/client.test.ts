@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
-import { request, actionCall, deleteOAuthBinding, listOAuthProviders } from '../client.ts';
+import { request, actionCall, actionStream, deleteOAuthBinding, listOAuthProviders } from '../client.ts';
 
 const OK = () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
 
@@ -164,6 +164,39 @@ describe('client.request', () => {
       await expect(
         actionCall('task.poll', {}, { actionHost: 'action.xapi.to', apiKey: 'sk' }, undefined, 0, 15),
       ).rejects.toThrow(/timed out/);
+    });
+  });
+
+  describe('actionStream', () => {
+    it('requests SSE mode and forwards response frames unchanged', async () => {
+      const frame = 'event: message\ndata: {"text":"hi"}\n\n';
+      fetchSpy = mockFetch(() => new Response(frame, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      }));
+      const writeSpy = spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+      try {
+        await actionStream(
+          'ai.text.chat.fast',
+          { messages: [{ role: 'user', content: 'Hello' }] },
+          { actionHost: 'action.xapi.to', apiKey: 'sk' },
+        );
+        const [, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
+        expect((opts.headers as Record<string, string>).Accept).toBe('text/event-stream');
+        expect(JSON.parse(String(opts.body))).toEqual({
+          action_id: 'ai.text.chat.fast',
+          input: { messages: [{ role: 'user', content: 'Hello' }] },
+          stream: true,
+        });
+        expect(writeSpy).toHaveBeenCalled();
+        const forwarded = Buffer.concat(
+          writeSpy.mock.calls.map(([chunk]) => Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))),
+        ).toString();
+        expect(forwarded).toBe(frame);
+      } finally {
+        writeSpy.mockRestore();
+      }
     });
   });
 

@@ -9,12 +9,10 @@ import { register } from '../commands/register.ts';
 
 const mockRegisterResponse = {
   apiKey: 'sk-newkey123',
-  claimCode: 'CODE123',
-  referralCode: 'CODE123',
-  claimSessionId: 'sess-abc',
-  claimUrl: 'https://xapi.to/claim?code=CODE123',
-  tweetTemplate: 'I just registered @xapi!',
-  user: { id: 'user-1', accountType: 'ENTITY' },
+  referralCode: 'a3b8c2',
+  bindUrl: 'https://xapi.to/bind?apikey=sk-newkey123',
+  claimUrl: 'https://xapi.to/bind?apikey=sk-newkey123',
+  user: { id: 'user-1', accountType: 'VIRTUAL' },
 };
 
 describe('register command', () => {
@@ -52,21 +50,39 @@ describe('register command', () => {
     expect(saveConfigSpy).toHaveBeenCalledWith({ apiKey: 'sk-newkey123' });
   });
 
-  it('outputs apiKey, user, claim, referralCode, and note', async () => {
+  it('outputs apiKey, user, referralCode, bind URLs, and note', async () => {
     await register([], {});
     expect(outputSpy).toHaveBeenCalledWith(
       {
         apiKey: 'sk-newkey123',
         user: mockRegisterResponse.user,
-        referralCode: 'CODE123',
-        claim: {
-          code: 'CODE123',
-          sessionId: 'sess-abc',
-          url: 'https://xapi.to/claim?code=CODE123',
-        },
-        tweetTemplate: 'I just registered @xapi!',
+        referralCode: 'a3b8c2',
+        bindUrl: 'https://xapi.to/bind?apikey=sk-newkey123',
+        claimUrl: 'https://xapi.to/bind?apikey=sk-newkey123',
         note: 'apiKey saved to ~/.xapi/config.json',
       },
+      undefined,
+    );
+  });
+
+  it('falls back to the legacy claimUrl when bindUrl is absent', async () => {
+    fetchSpy.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ...mockRegisterResponse,
+          bindUrl: undefined,
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await register([], {});
+
+    expect(outputSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bindUrl: mockRegisterResponse.claimUrl,
+        claimUrl: mockRegisterResponse.claimUrl,
+      }),
       undefined,
     );
   });

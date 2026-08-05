@@ -1,5 +1,5 @@
 /**
- * Top-level action commands: list, search, categories, services, get, call
+ * Top-level action commands: list, search, categories, services, get, get-batch, call
  * Unified interface for all actions (capabilities + APIs).
  * Use --source capability|api to filter by source type.
  */
@@ -42,12 +42,26 @@ FLAGS
   --category <name>         Filter by category
   --page N                  Page number (default: 1)
   --page-size N             Results per page
+  --include-all-versions    Include active non-default major versions
   --format json|pretty|table  Output format
 
 EXAMPLES
   xapi-to search twitter
   xapi-to search "tweet detail" --source api
   xapi-to search weather --category utility --format table
+  xapi-to search twitter --include-all-versions
+`;
+
+const GET_BATCH_HELP = `xapi-to get-batch - Get multiple action schemas
+
+USAGE
+  xapi-to get-batch <id> [id ...] [flags]
+
+FLAGS
+  --format json|pretty|table  Output format
+
+EXAMPLES
+  xapi-to get-batch twitter.tweet_detail crypto.token.price
 `;
 
 const GET_HELP = `xapi-to get - Get action schema
@@ -93,6 +107,7 @@ FLAGS
   --input <json>            Input payload as JSON (required for execution)
   --method GET|POST|...     Override HTTP method
   --output <path>           Save a raw binary response to a new file
+  --stream                  Forward the action's SSE response unchanged
   --code <target>           Generate code snippet instead of executing
   --format json|pretty|table  Output format
 
@@ -116,6 +131,7 @@ CODE TARGETS
 EXAMPLES
   xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
   xapi-to call openrouter.audio_speech --input '{"body":{"input":"Hello"}}' --output speech.mp3
+  xapi-to call ai.text.chat.fast --input '{"messages":[{"role":"user","content":"Hello"}]}' --stream
   xapi-to call twitter.tweet_detail --input '{"tweet_id":"123"}' --code py
   xapi-to call twitter.tweet_detail --input '{"tweet_id":"123"}' --code curl --format pretty
 `;
@@ -198,6 +214,7 @@ export async function actionSearch(args: string[], flags: Record<string, string>
       category: flags.category,
       page: flags.page ? parseInt(flags.page) : undefined,
       page_size: flags['page-size'] ? parseInt(flags['page-size']) : undefined,
+      include_all_versions: flags['include-all-versions'] === 'true',
     });
     const results = (res.results || []) as any[];
     if (fmt === 'table') {
@@ -296,15 +313,31 @@ export async function actionGet(args: string[], flags: Record<string, string>) {
   }
 }
 
+export async function actionBatchGet(args: string[], flags: Record<string, string>) {
+  showHelpIfRequested(flags, GET_BATCH_HELP);
+  if (args.length === 0) err('usage: xapi-to get-batch <id> [id ...]');
+  if (args.length > 100) err('get-batch accepts at most 100 action IDs');
+  const cfg = getConfig();
+  try {
+    const res = await client.actionBatch(args, cfg);
+    output(res, flags.format as any);
+  } catch (e: any) {
+    err('get-batch failed', e.message);
+  }
+}
+
 export async function actionCall(args: string[], flags: Record<string, string>) {
   showHelpIfRequested(flags, CALL_HELP);
   const id = args[0];
   if (!id) err('usage: xapi-to call <id> --input \'{"key":"val"}\'');
   if (flags.code) validateCodeFlag(flags);
   if (flags.output === 'true') err('--output requires a file path');
+  const stream = flags.stream === 'true' || flags.stream === '1' || flags.stream === 'yes';
   if (flags.code && flags.output) {
     err('--output cannot be combined with --code');
   }
+  if (stream && flags.output) err('--stream cannot be combined with --output');
+  if (stream && flags.code) err('--stream cannot be combined with --code');
   const cfg = getConfig();
   let input: Record<string, unknown> = {};
   if (flags.input) {
@@ -330,6 +363,10 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
 
   requireApiKey(cfg);
   try {
+    if (stream) {
+      await client.actionStream(id, cleanInput, cfg, method);
+      return;
+    }
     if (flags.output) {
       const result = await client.actionDownload(
         id,

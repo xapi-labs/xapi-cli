@@ -8,6 +8,7 @@
  *   xapi-to categories [--source capability|api]
  *   xapi-to services [--page N] [--page-size N] [--category X]
  *   xapi-to get <id> [--code curl|py|js|ts|go]
+ *   xapi-to get-batch <id> [id ...]
  *   xapi-to call <id> --input '{"k":"v"}' [--code curl|py|js|ts|go]
  *
  *   xapi-to config show
@@ -53,6 +54,7 @@ COMMANDS
     --source capability|api         Filter by source type
     --category <name>               Filter by category
     --page N  --page-size N         Pagination
+    --include-all-versions          Include active non-default major versions
   categories                        List all action categories
     --source capability|api         Filter by source type
   services                          List all services
@@ -60,9 +62,11 @@ COMMANDS
     --category <name>               Filter by category
   get <id> [--method GET|POST|...]   Get action schema (filter by HTTP method)
     --code <target>                  Generate code snippet (curl, py, js, ts, go)
+  get-batch <id> [id ...]           Get up to 100 action schemas
   call <id> --input '{"key":"val"}'  Execute an action
     --method GET|POST|...            Override HTTP method
     --output <path>                   Save a raw binary response to a new file
+    --stream                          Forward SSE frames unchanged
     --code <target>                  Generate code snippet instead of executing
     Variants: python.requests, python.httpx, javascript.fetch, javascript.axios
 
@@ -106,6 +110,7 @@ EXAMPLES
   xapi-to list --source capability
   xapi-to search twitter --source api
   xapi-to get twitter.tweet_detail
+  xapi-to get-batch twitter.tweet_detail crypto.token.price
   xapi-to get twitter.tweet_detail --code curl
   xapi-to get twitter.tweet_detail --code py --format pretty
   xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
@@ -141,6 +146,7 @@ async function main() {
     case 'categories': return actionCmds.actionCategories(rest, flags);
     case 'services':   return actionCmds.actionServices(rest, flags);
     case 'get':        return actionCmds.actionGet(rest, flags);
+    case 'get-batch':  return actionCmds.actionBatchGet(rest, flags);
     case 'call':       return actionCmds.actionCall(rest, flags);
     case 'task': {
       if (rest.length === 0) {

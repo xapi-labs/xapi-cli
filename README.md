@@ -22,6 +22,7 @@ The published CLI runs on Node.js 18+. Bun is only required for local source dev
 ```bash
 # 1. Register a new account (apiKey saved automatically)
 xapi-to register
+# Open the returned private bindUrl to upgrade the virtual account through Twitter OAuth
 
 # 1b. Or register with an inviter's referral code (please replace xapito to your referral code)
 xapi-to register --referral-code xapito
@@ -55,6 +56,7 @@ xapi-to list --service-id <id>                          # filter by service
 
 xapi-to search "twitter"                                # search by keyword
 xapi-to search "token price" --source api               # search APIs only
+xapi-to search "twitter" --include-all-versions          # include active non-default majors
 
 xapi-to categories                                      # list all categories
 xapi-to categories --source capability                  # categories for capabilities only
@@ -63,7 +65,9 @@ xapi-to services                                        # list all services
 xapi-to services --category Social --page-size 10       # filter and paginate
 
 xapi-to get twitter.tweet_detail                        # get action schema
+xapi-to get-batch twitter.tweet_detail crypto.token.price # get several schemas
 xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'  # execute
+xapi-to call ai.text.chat.fast --input '{"messages":[{"role":"user","content":"Hi"}]}' --stream
 ```
 
 ### Async Task Commands
@@ -82,6 +86,7 @@ Bind third-party OAuth accounts (e.g. Twitter) to your API key.
 
 ```bash
 xapi-to oauth bind --provider twitter                   # bind Twitter account
+xapi-to oauth bind --provider twitter --scopes "tweet.read users.read"
 xapi-to oauth status                                    # list current bindings
 xapi-to oauth unbind <binding-id>                       # remove a binding
 xapi-to oauth providers                                 # list available providers
@@ -93,6 +98,7 @@ xapi-to oauth providers                                 # list available provide
 xapi-to register                                        # create account, saves apiKey automatically
 xapi-to register --referral-code xapito                 # register with an inviter's referral code (please replace xapito to your referral code)
 xapi-to register xapito                                 # positional shorthand for --referral-code
+xapi-to register --force                                # intentionally replace an already-saved key
 xapi-to balance                                         # show USD balance
 xapi-to topup                                           # generate payment URL
 xapi-to topup --method stripe --amount 10               # stripe, $10
@@ -157,22 +163,22 @@ Config is stored at `~/.xapi/config.json`.
 |---|---|
 | `twitter.tweet_detail` | Get tweet details and replies |
 | `twitter.user_by_screen_name` | Get user profile by username |
-| `twitter.user_by_screen_names` | Batch get user profiles by usernames |
 | `twitter.user_tweets` | Get tweets from a user |
 | `twitter.user_tweets_and_replies` | Get tweets and replies from a user |
 | `twitter.user_media` | Get media posts from a user |
 | `twitter.following` | Get user following list |
 | `twitter.followers` | Get user followers |
 | `twitter.retweeters` | Get tweet retweeters |
-| `twitter.search_timeline` | Search tweets, users, photos, videos |
+| `twitter.search` | Search tweets |
 | `ai.text.chat.fast` | Fast AI chat completion |
 | `ai.text.chat.reasoning` | Advanced reasoning chat |
+| `ai.text.chat.auto` | Model-selected chat with provider fallback |
 | `ai.text.summarize` | Summarize long text |
 | `ai.text.rewrite` | Rewrite text with different styles |
 | `ai.embedding.generate` | Generate vector embeddings |
 | `web.search` | Web search |
 | `web.search.realtime` | Realtime web search with time filters |
-| `news.search.latest` | Latest news search |
+| `web.search.news` | News search |
 | `crypto.token.price` | Crypto token price and changes |
 | `crypto.token.metadata` | Crypto token metadata |
 

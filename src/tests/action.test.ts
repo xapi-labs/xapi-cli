@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as client from '../client.ts';
 import * as format from '../format.ts';
 import * as config from '../config.ts';
-import { actionList, actionSearch, actionCategories, actionServices, actionGet, actionCall } from '../commands/action.ts';
+import { actionList, actionSearch, actionCategories, actionServices, actionGet, actionBatchGet, actionCall } from '../commands/action.ts';
 
 const mockActions = [
   { id: 'twitter.tweet_detail', source: 'capability', version: '1', status: 'stable', displayName: 'twitter.tweet_detail', meta: { title: 'Get Tweet Detail', category: 'Social', cost: 10 } },
@@ -132,6 +132,17 @@ describe('action commands', () => {
       const spy = spyOn(client, 'actionSearch').mockResolvedValue({ results: [], query: 'x', pagination: {} });
       await actionSearch(['x'], { category: 'Social', page: '2', 'page-size': '5' });
       expect(spy).toHaveBeenCalledWith('x', expect.any(Object), expect.objectContaining({ category: 'Social', page: 2, page_size: 5 }));
+      spy.mockRestore();
+    });
+
+    it('passes --include-all-versions to the backend search', async () => {
+      const spy = spyOn(client, 'actionSearch').mockResolvedValue({ results: [], query: 'x', pagination: {} });
+      await actionSearch(['x'], { 'include-all-versions': 'true' });
+      expect(spy).toHaveBeenCalledWith(
+        'x',
+        expect.any(Object),
+        expect.objectContaining({ include_all_versions: true }),
+      );
       spy.mockRestore();
     });
 
@@ -354,6 +365,27 @@ describe('action commands', () => {
     });
   });
 
+  describe('actionBatchGet', () => {
+    it('fetches multiple action schemas in one request', async () => {
+      const spy = spyOn(client, 'actionBatch').mockResolvedValue({
+        actions: mockActions,
+        missing_ids: [],
+      });
+      await actionBatchGet(['twitter.tweet_detail', 'serper.search'], {});
+      expect(spy).toHaveBeenCalledWith(
+        ['twitter.tweet_detail', 'serper.search'],
+        expect.any(Object),
+      );
+      expect(outputSpy).toHaveBeenCalledWith({ actions: mockActions, missing_ids: [] }, undefined);
+      spy.mockRestore();
+    });
+
+    it('requires at least one action ID', async () => {
+      await expect(actionBatchGet([], {})).rejects.toThrow('err called');
+      expect(errSpy).toHaveBeenCalledWith('usage: xapi-to get-batch <id> [id ...]');
+    });
+  });
+
   describe('actionCall', () => {
     let cfgSpy: ReturnType<typeof spyOn>;
 
@@ -435,6 +467,38 @@ describe('action commands', () => {
       );
       downloadSpy.mockRestore();
       callSpy.mockRestore();
+    });
+
+    it('forwards SSE responses when --stream is provided', async () => {
+      const streamSpy = spyOn(client, 'actionStream').mockResolvedValue();
+      const callSpy = spyOn(client, 'actionCall');
+
+      await actionCall(['ai.text.chat.fast'], {
+        input: '{"messages":[{"role":"user","content":"Hello"}]}',
+        stream: 'true',
+      });
+
+      expect(streamSpy).toHaveBeenCalledWith(
+        'ai.text.chat.fast',
+        { messages: [{ role: 'user', content: 'Hello' }] },
+        expect.any(Object),
+        undefined,
+      );
+      expect(callSpy).not.toHaveBeenCalled();
+      streamSpy.mockRestore();
+      callSpy.mockRestore();
+    });
+
+    it('rejects combining --stream with --output or --code', async () => {
+      await expect(
+        actionCall(['ai.text.chat.fast'], { stream: 'true', output: 'events.txt' }),
+      ).rejects.toThrow('err called');
+      expect(errSpy).toHaveBeenCalledWith('--stream cannot be combined with --output');
+
+      await expect(
+        actionCall(['ai.text.chat.fast'], { stream: 'true', code: 'curl' }),
+      ).rejects.toThrow('err called');
+      expect(errSpy).toHaveBeenCalledWith('--stream cannot be combined with --code');
     });
 
     it('rejects a bare --output flag', async () => {
