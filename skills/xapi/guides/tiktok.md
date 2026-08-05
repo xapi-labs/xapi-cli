@@ -2,7 +2,21 @@
 
 Complete guide for TikTok operations via xAPI — user profiles, videos, comments, search, hashtags, music, live rooms, and recommended feed.
 
-All TikTok endpoints are API-type actions under the `tiktok` service. Every call requires `"method": "GET"` in the input and parameters go inside `"params"`.
+> **Dynamic catalog:** These are database-registered third-party APIs under the `tiktok` service. Exact action IDs, HTTP methods, parameters, and response fields can change. Run `search` and `get` before calling; the current schema wins. Examples below reflect one known GET-based version and keep `"method":"GET"` in the input for compatibility.
+
+## Contents
+
+- [User data](#user-data)
+- [Video data](#video-data)
+- [Search](#search)
+- [Hashtags](#hashtags)
+- [Music](#music)
+- [Live](#live)
+- [Feed](#feed)
+- [Common workflows](#common-workflows)
+- [Pagination](#pagination-patterns)
+- [API reference](#api-reference)
+- [Error handling](#error-handling)
 
 ## User Data
 

@@ -6,6 +6,15 @@ All AI endpoints are **built-in capabilities** (`--source capability`). Pass par
 
 This guide covers CLI capabilities. For Claude Code, Anthropic/OpenAI SDKs, streaming HTTP APIs, and Gateway routing, read `guides/ai_gateway.md`. For full-duplex OpenAI Realtime or provider-native streaming ASR/TTS, read `guides/ws_gateway.md`.
 
+## Contents
+
+- [Text](#text-synchronous-or-sse-streaming)
+- [Image generation](#image-generation)
+- [Video generation](#video-generation)
+- [Speech generation](#speech-generation)
+- [Speech transcription](#speech-transcription)
+- [Error handling](#error-handling)
+
 ## Text (synchronous or SSE streaming)
 
 ### Chat completions
@@ -26,6 +35,7 @@ npx xapi-to call ai.text.chat.auto \
 
 - `messages` follows the standard `[{role, content}]` chat format. `fast` and `reasoning` accept `system` | `user` | `assistant`; `auto` documents `user` | `assistant`.
 - **When to choose which:** `fast` for quick/cheap replies, `reasoning` for multi-step analysis, `auto` when you want to specify a particular model and let the gateway pick the healthiest provider that serves it (defaults to `deepseek-v4-pro` if `model` is omitted).
+- `ai.text.chat.auto.priority` accepts `default`, `cost`, `speed`, or `quality`. `cost` affects candidate ranking; `speed` and `quality` are accepted routing labels but currently have no dedicated rankers, so do not promise a distinct latency or quality outcome. See `guides/ai_gateway.md` for routing details.
 - Add `--stream` to `ai.text.chat.fast`, `ai.text.chat.reasoning`, `ai.text.chat.auto`, `ai.text.summarize`, or `ai.text.rewrite` to forward the backend SSE frames unchanged. Do not combine it with `--output` or `--code`.
 
 ### Summarize & rewrite
@@ -38,15 +48,21 @@ npx xapi-to call ai.text.rewrite --input '{"text":"<text>","mode":"formalize"}'
 
 `mode` values: `improve`, `simplify`, `formalize`, `casual`, `creative`, `professional`, `academic`.
 
+- Summarization controls that affect execution: `model`, `max_length` (target words), `style` (`concise`, `detailed`, `bullet_points`, or `executive`), `language` (`auto` keeps the input language), `focus`, and `temperature`.
+- Rewrite controls that affect execution: `model`, `mode`, `tone`, `target_audience`, `length_preference` (`shorter`, `similar`, or `longer`), and `temperature`.
+- Always run `get` before using newly advertised fields. Do not assume every declared compatibility field changes current backend behavior.
+
 ### Embeddings
 
 ```bash
 npx xapi-to call ai.embedding.generate --input '{"input":"hello world"}'
 ```
 
-Returns a vector for the input text; use for semantic search / similarity.
+Returns a vector for one input string; use it for semantic search or similarity. Optional fields are `model`, `encoding_format` (`float` or `base64`), model-dependent `dimensions`, `user`, and provider-routing options in the `provider` object. The current declared schema accepts a string, so do not send a batch array until `get` reports array support.
 
-## Image generation (ASYNCHRONOUS — poll for the result)
+## Image generation
+
+Image generation is asynchronous and returns a task to wait for.
 
 ```bash
 npx xapi-to call ai.image.generate \
@@ -63,7 +79,7 @@ npx xapi-to call ai.image.generate \
 - Other optional controls include `aspect_ratio`, `quality`, `background`, `moderation`, `style`, `image` (reference-image array), and `user`. Support depends on the selected model.
 - Returns an async task handle, not the image itself. Wait for it with `task wait` as described below.
 
-## Video generation (ASYNCHRONOUS — poll for the result)
+## Video generation
 
 Video generation does **not** return the video immediately. It returns a task handle you must poll.
 
@@ -118,7 +134,9 @@ handle result
 
 Do not busy-loop with zero delay — space polls a few seconds apart. If the task `expires`, resubmit.
 
-## Speech generation (text-to-speech, synchronous)
+## Speech generation
+
+Text-to-speech calls are synchronous.
 
 ```bash
 npx xapi-to call ai.speech.generate \
@@ -154,7 +172,9 @@ The response is a lossless binary envelope:
 
 Decode `data.content` from base64 to save or play the audio. `data.content_disposition` may also be present when supplied upstream.
 
-## Speech transcription (speech-to-text, synchronous)
+## Speech transcription
+
+Speech-to-text calls are synchronous.
 
 ```bash
 npx xapi-to call ai.speech.transcribe \

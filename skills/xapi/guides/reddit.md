@@ -2,9 +2,22 @@
 
 Complete guide for Reddit operations via xAPI — user profiles, posts, comments, subreddit feeds, popular/news/games feeds, trending, and search suggestions.
 
-All Reddit endpoints are API-type actions under the `reddit` service. Every call requires `"method": "GET"` in the input and parameters go inside `"params"`.
+> **Dynamic catalog:** These are database-registered third-party APIs under the `reddit` service. Exact action IDs, HTTP methods, parameters, and response fields can change. Run `search` and `get` before calling; the current schema wins. Examples below reflect one known GET-based version and keep `"method":"GET"` in the input for compatibility.
 
 **Tip:** Most endpoints accept `need_format` (boolean). Set it to `true` for cleaner, pre-processed responses; omit or set `false` for raw Reddit data.
+
+## Contents
+
+- [User data](#user-data)
+- [Post data](#post-data)
+- [Subreddit data](#subreddit-data)
+- [Feeds](#feeds)
+- [Search and trending](#search--trending)
+- [Common workflows](#common-workflows)
+- [Pagination](#pagination)
+- [Reddit ID prefixes](#reddit-id-prefixes)
+- [API reference](#api-reference)
+- [Error handling](#error-handling)
 
 ## User Data
 

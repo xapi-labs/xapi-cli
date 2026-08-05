@@ -4,6 +4,19 @@ Complete guide for crypto/on-chain data via xAPI — token price & market data, 
 
 All crypto endpoints are **built-in capabilities** (`--source capability`). Pass parameters with `--input` as a JSON object.
 
+## Contents
+
+- [Addressing models](#the-two-addressing-models-read-this-first)
+- [Chains](#chains)
+- [Token data](#token-data-by-contract-address)
+- [Wallet analytics](#wallet-analytics-by-wallet-address)
+- [Transactions and DEX pairs](#transaction-and-dex-pair)
+- [CEX spot data](#cex-spot-data-by-symbol)
+- [News](#news)
+- [Symbol-to-contract workflow](#common-workflow-from-symbol-to-on-chain-data)
+- [Pagination](#cursor-pagination)
+- [Error handling](#error-handling)
+
 ## The two addressing models (read this first)
 
 Crypto endpoints split into two families by how you identify the asset:
@@ -111,7 +124,7 @@ Typical wallet-analysis flow: `wallet.balance` (what they hold) → `wallet.pnl`
 
 `crypto.wallet.balance` and `crypto.wallet.history` are paginated when served by Moralis. Read `data.next_cursor` and pass it back as `cursor` for the next page. `crypto.wallet.pnl` is not paginated.
 
-## Transaction & DEX pair
+## Transaction and DEX pair
 
 ```bash
 # Decode a single transaction
@@ -123,7 +136,7 @@ npx xapi-to call crypto.dex.pair --input '{"pair":"0x...","chain":"bsc"}'
 
 Note `crypto.dex.pair` takes the **pool/pair contract address** (not a token address).
 
-## CEX spot data (by symbol — no contract address)
+## CEX spot data by symbol
 
 Use these when you only have a ticker and want a centralized-exchange price.
 
@@ -146,7 +159,7 @@ npx xapi-to call crypto.news --input '{"symbol":"BTC","limit":20}'
 
 All parameters are optional; omit `symbol` for general market news.
 
-## Common workflow: symbol → on-chain data
+## Common workflow from symbol to on-chain data
 
 The user gives you a token name or symbol but you need on-chain metrics (holders, security, liquidity):
 

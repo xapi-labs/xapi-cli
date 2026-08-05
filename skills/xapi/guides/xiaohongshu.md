@@ -2,9 +2,22 @@
 
 Complete guide for Xiaohongshu (小红书) operations via xAPI — user profiles, notes, comments, search, topics, products, and creator inspiration.
 
-All Xiaohongshu endpoints are API-type actions under the `xiaohongshu` service. Every call requires `"method": "GET"` in the input and parameters go inside `"params"`.
+> **Dynamic catalog:** These are database-registered third-party APIs under the `xiaohongshu` service. Exact action IDs, HTTP methods, parameters, and response fields can change. Run `search` and `get` before calling; the current schema wins. Examples below reflect one known GET-based version and keep `"method":"GET"` in the input for compatibility.
 
 **Tip:** Many endpoints accept both a direct ID (e.g. `user_id`, `note_id`) and a `share_text` (share link). You can use either one.
+
+## Contents
+
+- [User data](#user-data)
+- [Note data](#note-data)
+- [Search](#search)
+- [Topics](#topics)
+- [Products](#products-商品)
+- [Creator inspiration](#creator-inspiration-创作灵感)
+- [Common workflows](#common-workflows)
+- [Pagination](#pagination-patterns)
+- [API reference](#api-reference)
+- [Error handling](#error-handling)
 
 ## User Data
 

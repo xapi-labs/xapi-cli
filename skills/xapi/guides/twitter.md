@@ -4,6 +4,15 @@ Complete guide for Twitter operations via xAPI — reading data, posting tweets,
 
 > **Upstream provider:** All `twitter.*` capabilities accept an optional `provider` — `"x"` (fapi.uk, the default) or `"twitter"` (legacy upstream). The response is normalized to an identical structure regardless of provider, so you normally omit it. Pass `"provider":"twitter"` only to force the legacy upstream, e.g. `--input '{"screen_name":"elonmusk","provider":"twitter"}'`.
 
+## Contents
+
+- [Read Twitter data](#reading-twitter-data-no-oauth-needed)
+- [Post and mutate with OAuth](#posting-tweets-oauth-required)
+- [Common workflows](#common-workflows)
+- [Pagination reference](#pagination-reference)
+- [API reference](#api-reference)
+- [Error handling](#error-handling)
+
 ## Reading Twitter Data (no OAuth needed)
 
 ### Look up a user by @handle
@@ -47,6 +56,8 @@ Similar to `twitter.user_tweets`, but the timeline also includes the user's repl
 **Filter tip:** because conversation entries can contain tweets from other authors, filter by `author.id === user_id` if you only want the monitored user's content.
 
 Pagination uses the same `cursor` → `data.cursors.bottom` pattern as `twitter.user_tweets`.
+
+For `twitter.user_tweets` and `twitter.user_tweets_and_replies`, set `"cache":true` to use the fast cache when available and skip the normal upstream call. Cached results can be less fresh; keep the default `false` when freshness matters.
 
 ### Get a specific tweet and its replies
 
@@ -105,7 +116,7 @@ npx xapi-to call twitter.search --input '{
 }'
 ```
 
-Supported structured filters: `from`, `to`, `mentioning`, `phrase`, `any`, `none`, `tag`, `since`, `until`, `min_replies`, `min_likes`, `min_retweets`, and `count`. Dates use `YYYY-MM-DD`; `until` is exclusive. Paginate with `cursor` from `data.cursor_bottom`.
+Supported structured filters: `from`, `to`, `mentioning`, `phrase`, `any`, `none`, `tag`, `since`, `until`, `min_replies`, `min_likes`, `min_retweets`, and `count`. `sort_by` accepts `Top`, `Latest` (default), `People`, `Photos`, or `Videos`; the default `x` provider maps both media-specific values to its combined Media search. Dates use `YYYY-MM-DD`; `until` is exclusive. Paginate with `cursor` from `data.cursor_bottom`.
 
 ### Get user's media posts
 
@@ -130,7 +141,7 @@ npx xapi-to call twitter.retweeters --input '{"tweet_id":"1234567890"}'
 
 ## Posting Tweets (OAuth required)
 
-Posting, replying, quoting, liking, and retweeting all require OAuth. This is a **one-time setup** — the user authorizes once, then the agent can post freely.
+Posting, replying, quoting, liking, retweeting, and deleting require OAuth. A saved binding provides technical authorization, not standing user consent: confirm the current content and target before a write, and obtain explicit confirmation before destructive or bulk actions.
 
 ### Step 1: Bind Twitter OAuth
 
@@ -235,7 +246,7 @@ Omit `cursor` for the first page. Stop when the relevant bottom cursor is absent
 | `twitter.following` | — | Get user's following |
 | `twitter.retweeters` | — | Get tweet retweeters |
 | `x-official.2_tweets` | POST | Post a tweet |
-| `x-official.2_tweets` | DELETE | Delete a tweet |
+| `x-official.2_tweets_id` | DELETE | Delete a tweet |
 | `x-official.2_users_id_likes` | POST | Like a tweet |
 | `x-official.2_users_id_retweets` | POST | Retweet |
 

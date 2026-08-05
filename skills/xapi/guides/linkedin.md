@@ -2,7 +2,18 @@
 
 Complete guide for LinkedIn operations via xAPI — person profiles and full career history (experience, education, skills, honors, publications), company pages, and job search.
 
-All LinkedIn endpoints are API-type actions under the `linkedin` service. Every call requires `"method": "GET"` in the input and parameters go inside `"params"`.
+> **Dynamic catalog:** These are database-registered third-party APIs under the `linkedin` service. Exact action IDs, HTTP methods, parameters, response fields, charging, and retry behavior can change. Run `search` and `get` before calling; the current schema and live response win. Examples below reflect one known GET-based version and keep `"method":"GET"` in the input for compatibility.
+
+## Contents
+
+- [Identifiers](#key-concept-three-identifiers)
+- [Person data](#person-data)
+- [Company data](#company-data)
+- [Jobs](#jobs)
+- [Common workflows](#common-workflows)
+- [Pagination](#pagination)
+- [API reference](#api-reference)
+- [Error handling](#error-handling)
 
 ## Key Concept: three identifiers
 
@@ -29,7 +40,7 @@ npx xapi-to call linkedin.api_v1_linkedin_web_get__user__experience \
 
 > ⚠️ **Percent-encode non-ASCII usernames.** A slug like `levent-alpöge-b6426319` must be sent as `levent-alp%C3%B6ge-b6426319` (raw `ö` returns `400`).
 >
-> ⚠️ **The upstream is occasionally flaky.** Individual calls can return an intermittent `HTTP 400` with `"message": "Request failed. Please retry."` — these are **not charged**. Retry with a short backoff (a few seconds). If even a known-good profile (e.g. `williamhgates`) starts failing, you are being rate-limited — pause ~1–2 minutes before retrying.
+> The upstream can return `HTTP 400` with `"message": "Request failed. Please retry."`. Treat this as an upstream failure, use bounded exponential backoff, and inspect the current usage/balance response before making any charging claim. Repeated failures can have several causes; do not label them as rate limiting unless the live response says so.
 
 ## Person Data
 
@@ -248,7 +259,7 @@ Person detail and activity endpoints return `page`, `total`, and `has_more`. Pag
 
 ## Error Handling
 
-- **`400` with `"Please retry"`** → Transient upstream flakiness; **not charged**. Retry with a few seconds of backoff. Persistent failure across known-good inputs = rate limit → pause ~1–2 min.
+- **`400` with `"Please retry"`** → Retry with bounded exponential backoff. Check live usage/balance separately; the error text alone does not prove charging or rate-limit state.
 - **`400 must have required property 'urn'`** → You passed `username` to a `urn`-based endpoint. Call `get_user_profile` first, take `data.data.urn`, and retry.
 - **`400` on a name with accents** → Percent-encode non-ASCII characters in the `username` slug (e.g. `ö` → `%C3%B6`).
 - **Empty `data[]`** → The person hasn't filled in that section, or LinkedIn returns it empty; not an error.

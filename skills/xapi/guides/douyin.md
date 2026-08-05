@@ -2,7 +2,20 @@
 
 Complete guide for Douyin (抖音) operations via xAPI — user profiles, videos, comments, hot search, hashtags, music, and video statistics.
 
-All Douyin endpoints are API-type actions under the `douyin` service. Every call requires `"method": "GET"` in the input and parameters go inside `"params"`.
+> **Dynamic catalog:** These are database-registered third-party APIs under the `douyin` service. Exact action IDs, HTTP methods, parameters, and response fields can change. Run `search` and `get` before calling; the current schema wins. Examples below reflect one known GET-based version and keep `"method":"GET"` in the input for compatibility.
+
+## Contents
+
+- [User data](#user-data)
+- [Video data](#video-data)
+- [Video mixes](#video-mix-合集)
+- [Hot search](#hot-search-热搜)
+- [Hashtags](#hashtags)
+- [Music](#music)
+- [Common workflows](#common-workflows)
+- [Pagination](#pagination-patterns)
+- [API reference](#api-reference)
+- [Error handling](#error-handling)
 
 ## User Data
 

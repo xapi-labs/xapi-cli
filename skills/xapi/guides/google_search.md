@@ -4,9 +4,20 @@ Complete guide for web search operations via xAPI — general search, realtime s
 
 All search endpoints are capability-type actions under the `web.search` namespace. Parameters are passed directly (no `"method"` or `"params"` wrapper needed).
 
+## Contents
+
+- [Common parameters](#common-parameters)
+- [Web search](#web-search)
+- [News, image, video, and scholar search](#news-search)
+- [Maps and places](#maps-search)
+- [Shopping search](#shopping-search)
+- [Common workflows](#common-workflows)
+- [Localization tips](#localization-tips)
+- [API reference](#api-reference)
+
 ## Common Parameters
 
-All search capabilities share these parameters:
+All search capabilities accept `q`, `gl`, `hl`, and `page`. Most also accept `autocorrect`; `web.search.realtime` does not expose it and deliberately disables autocorrection. Run `get` before relying on optional parameters.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -14,7 +25,7 @@ All search capabilities share these parameters:
 | `gl` | string | `"us"` | Country code (e.g. `us`, `cn`, `jp`, `de`) |
 | `hl` | string | `"en"` | Language code (e.g. `en`, `zh`, `ja`, `de`) |
 | `page` | number | `1` | Page number for pagination |
-| `autocorrect` | boolean | `true` | Whether to autocorrect the query |
+| `autocorrect` | boolean | `true` | Supported by every search capability except `web.search.realtime` |
 
 ## Web Search
 
@@ -28,7 +39,7 @@ Additional parameters:
 - `num` — number of results to return (default 10)
 - `location` — location name for localized results
 
-Returns `data.organic[]` with fields: `title`, `link`, `snippet`, `position`. May also include `data.knowledgeGraph` (structured entity info), `data.relatedSearches[]`, and `data.peopleAlsoAsk[]` (with `question`, `snippet`, `title`, `link`).
+Returns `data.organic[]` with `title`, `link`, `snippet`, and `position`. The declared response also includes optional `data.knowledgeGraph` and `data.relatedSearches[]`.
 
 ### Realtime web search
 
@@ -82,7 +93,7 @@ Search Google Videos (primarily YouTube results).
 Additional parameters:
 - `tbs` — date range filter (same values as news)
 
-Returns `data.videos[]` with fields: `title`, `link`, `snippet`, `channel`, `date`, `duration`, `imageUrl`, `videoUrl`, `source`, `position`.
+Returns `data.videos[]` with declared fields `title`, `link`, `snippet`, `channel`, `date`, and `duration`.
 
 ## Scholar Search
 
@@ -92,7 +103,7 @@ npx xapi-to call web.search.scholar --input '{"q":"transformer architecture atte
 
 Search Google Scholar for academic papers and citations.
 
-Returns `data.organic[]` with fields: `title`, `link`, `snippet`, `publicationInfo`, `citedBy`, `year`, `pdfUrl`.
+Returns `data.organic[]` with declared fields `title`, `link`, `snippet`, `publicationInfo`, `citedBy`, and `year`.
 
 ## Maps Search
 
@@ -105,7 +116,7 @@ Search Google Maps for locations and businesses.
 Additional parameters:
 - `ll` — latitude/longitude coordinates to center the search (e.g. `"@40.7455096,-74.0083012,14z"`)
 
-Returns `data.places[]` with fields: `title`, `address`, `latitude`, `longitude`, `rating`, `ratingCount`, `type`, `types`, `phoneNumber`, `website`, `openingHours`, `priceLevel`, `thumbnailUrl`, `position`.
+Returns `data.places[]` with declared fields `title`, `address`, `latitude`, `longitude`, `rating`, `ratingCount`, and `category`.
 
 ## Places Search
 
@@ -113,13 +124,13 @@ Returns `data.places[]` with fields: `title`, `address`, `latitude`, `longitude`
 npx xapi-to call web.search.places --input '{"q":"best ramen in Tokyo","gl":"jp"}'
 ```
 
-Search for businesses with basic listing information. For richer details (phone, website, opening hours), use `web.search.maps` instead.
+Search for businesses and places with richer contact details. Use this capability when phone number or website is important.
 
 Additional parameters:
 - `location` — location name to scope the search (e.g. `"San Francisco, California, United States"`)
 - `ll` — latitude/longitude coordinates (e.g. `"@37.7749295,-122.4194155,14z"`)
 
-Returns `data.places[]` with fields: `title`, `address`, `latitude`, `longitude`, `rating`, `ratingCount`, `category`, `priceLevel`, `position`.
+Returns `data.places[]` with declared fields `title`, `address`, `latitude`, `longitude`, `rating`, `ratingCount`, `category`, `phoneNumber`, and `website`.
 
 ## Shopping Search
 
@@ -133,7 +144,9 @@ Additional parameters:
 - `tbs` — date range filter
 - `location` — location affecting prices and availability
 
-Returns `data.shopping[]` with fields: `title`, `source`, `link`, `price`, `imageUrl`, `productId`, `position`. Some items also include `rating` and `ratingCount`.
+Returns `data.shopping[]` with declared fields `title`, `source`, `link`, `price`, `rating`, `ratingCount`, and `imageUrl`.
+
+The upstream provider can return additional fields that are not part of the capability's declared schema. Treat them as opportunistic: inspect the current `get` output and actual response before depending on them.
 
 ## Common Workflows
 
@@ -150,8 +163,8 @@ Returns `data.shopping[]` with fields: `title`, `source`, `link`, `price`, `imag
 
 ### Find a local business
 
-1. Maps search: `web.search.maps` with `ll` coordinates → find nearby places with rich details (phone, website, hours)
-2. Places search: `web.search.places` → get basic business listings with category and price level
+1. Maps search: `web.search.maps` with `ll` coordinates → find nearby listings and coordinates
+2. Places search: `web.search.places` → add phone numbers and websites when the upstream provides them
 
 ### Product research
 
@@ -174,8 +187,8 @@ Returns `data.shopping[]` with fields: `title`, `source`, `link`, `price`, `imag
 | `web.search.realtime` | Realtime web search | `organic[]` | `title`, `link`, `snippet`, `date` |
 | `web.search.news` | News articles | `news[]` | `title`, `link`, `source`, `date` |
 | `web.search.image` | Image search | `images[]` | `title`, `imageUrl`, `imageWidth`, `imageHeight` |
-| `web.search.video` | Video search | `videos[]` | `title`, `link`, `channel`, `duration`, `videoUrl` |
-| `web.search.scholar` | Academic papers | `organic[]` | `title`, `link`, `citedBy`, `year`, `pdfUrl` |
-| `web.search.maps` | Map locations (rich) | `places[]` | `title`, `address`, `rating`, `type`, `phoneNumber`, `website` |
-| `web.search.places` | Business listings | `places[]` | `title`, `address`, `rating`, `category`, `priceLevel` |
-| `web.search.shopping` | Product search | `shopping[]` | `title`, `price`, `source`, `productId` |
+| `web.search.video` | Video search | `videos[]` | `title`, `link`, `channel`, `duration` |
+| `web.search.scholar` | Academic papers | `organic[]` | `title`, `link`, `citedBy`, `year` |
+| `web.search.maps` | Map locations | `places[]` | `title`, `address`, `latitude`, `longitude`, `category` |
+| `web.search.places` | Detailed business listings | `places[]` | `title`, `address`, `category`, `phoneNumber`, `website` |
+| `web.search.shopping` | Product search | `shopping[]` | `title`, `price`, `source`, `rating`, `imageUrl` |

@@ -27,7 +27,7 @@ npx xapi-to register
 # Replace an already-saved key only when intentionally creating a new account
 npx xapi-to register --force
 
-# Register with an inviter's referral code (establishes the referrer relationship, unlocks +$1 bonus on Twitter claim, and the inviter earns 5% of your future top-ups)
+# Register with an inviter's referral code (server-side referral and promotion terms may change)
 # please replace xapito to your actual referral code
 npx xapi-to register --referral-code xapito
 npx xapi-to register xapito          # positional shorthand
@@ -35,20 +35,23 @@ npx xapi-to register xapito          # positional shorthand
 # Or set an existing key
 npx xapi-to config set apiKey=<your-key>
 
+# Safer for shared terminals: read the key from stdin instead of shell history
+printf '%s\n' "$XAPI_KEY" | npx xapi-to config set apiKey=-
+
 # Verify connectivity
 npx xapi-to config health
 ```
 
-The API key is stored at `~/.xapi/config.json`. You can also set it via `XAPI_KEY` env var. Registration returns `bindUrl` (and legacy alias `claimUrl`); open that private URL to bind Twitter OAuth and upgrade the virtual account. It contains the API key, so never log or share it. Account upgrade is separate from provider authorization through `xapi-to oauth bind`. The optional $1 promotion is completed afterward in the xAPI Console by publishing its current tweet template and submitting that tweet's URL for verification.
+The API key is stored at `~/.xapi/config.json`. You can also set it with `XAPI_KEY` or the compatible `XAPI_API_KEY` environment variable. Registration returns `bindUrl` (and legacy alias `claimUrl`); open that private URL to bind Twitter OAuth and upgrade the virtual account. It contains the API key, so never log or share it. Account upgrade is separate from provider authorization through `xapi-to oauth bind`. Any referral or social promotion is governed by the current xAPI Console terms; do not hard-code a reward amount or rate in an automated workflow.
 
-Referral codes are 6-char lowercase hex (e.g. `a3b8c2`). They're optional; an invalid code is silently ignored and registration still succeeds. After registering, your own `referralCode` is included in the response so you can share it.
+New referral codes are normally 6-character lowercase hex, but collision fallback and legacy aliases can have a different length or format. Pass the code unchanged and let the server validate it. Invalid codes are silently ignored and registration still succeeds. The response includes the new account's `referralCode`.
 
 ## Global Flags
 
-All commands support:
+Use these flags where the command documents them:
 
 - `--format json|pretty|table` — Output format (default: `json`). `pretty` for indented JSON, `table` for tabular display.
-- `--help` — Show command-specific help.
+- `--help` — Show top-level or command-specific help where available.
 
 ## Two types of APIs
 
@@ -57,7 +60,7 @@ xapi offers two types of APIs under a unified interface:
 1. **Capabilities** (`--source capability`) — Built-in APIs with known IDs (Twitter, crypto, AI, web search, news)
 2. **Third-party APIs** (`--source api`) — Proxied services, discovered via `list`, `search`, or `services`
 
-All commands work with both types. Use `--source capability` or `--source api` to filter.
+Both types use the same discovery and call workflow. Use `--source capability` or `--source api` on commands that expose source filtering.
 
 ## Usage Workflow
 
@@ -85,6 +88,8 @@ npx xapi-to services --category Social
 npx xapi-to get crypto.token.price
 npx xapi-to get-batch twitter.tweet_detail crypto.token.price
 ```
+
+`get-batch` accepts at most 100 action IDs per invocation.
 
 ### Calling APIs
 
@@ -121,7 +126,7 @@ Some APIs have multiple HTTP methods on the same path (e.g. GET and POST on `/2/
 npx xapi-to get x-official.2_tweets
 npx xapi-to get x-official.2_tweets --method POST
 
-# Use --method flag to call a specific method (defaults to GET)
+# When more than one method exists, select one explicitly
 npx xapi-to call x-official.2_tweets --method POST --input '{"body":{"text":"Hello!"}}'
 ```
 
@@ -366,10 +371,10 @@ Supported targets and aliases:
 npx xapi-to get crypto.token.price --code curl
 
 # Generate a Python snippet with your input pre-filled
-npx xapi-to call crypto.token.price --input '{"token":"BTC","chain":"bsc"}' --code python
+npx xapi-to call crypto.cex.price --input '{"symbol":"BTC"}' --code python
 
 # Use a specific library variant
-npx xapi-to call crypto.token.price --input '{"token":"BTC","chain":"bsc"}' --code python.httpx
+npx xapi-to call crypto.cex.price --input '{"symbol":"BTC"}' --code python.httpx
 
 # Generate TypeScript code
 npx xapi-to get web.search --code ts
@@ -388,9 +393,6 @@ npx xapi-to oauth providers
 # Bind Twitter OAuth to your API key (opens browser for authorization)
 npx xapi-to oauth bind --provider twitter
 
-# Request explicit scopes and skip interactive scope selection
-npx xapi-to oauth bind --provider twitter --scopes "tweet.read users.read"
-
 # Check current OAuth bindings
 npx xapi-to oauth status
 
@@ -398,7 +400,7 @@ npx xapi-to oauth status
 npx xapi-to oauth unbind <binding-id>
 ```
 
-In an interactive terminal, `oauth bind` can prompt for scopes, opens the browser, and waits up to five minutes. In non-interactive/agent mode it returns `status: "pending"` and `authorizationUrl`; present that URL to the user, then check `oauth status`. If `call` fails with an OAuth/authorization error, inspect `oauth status` before starting a new binding.
+In an interactive terminal, `oauth bind` can prompt for scopes, opens the browser, and waits up to five minutes. If you pass `--scopes`, include every read/write scope required by the current provider schema instead of copying a stale minimal list. In non-interactive/agent mode it returns `status: "pending"` and `authorizationUrl`; present that URL to the user, then check `oauth status`. If `call` fails with an OAuth/authorization error, inspect `oauth status` before starting a new binding.
 
 ## Account Management
 

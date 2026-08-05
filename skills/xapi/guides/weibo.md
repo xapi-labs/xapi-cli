@@ -2,7 +2,19 @@
 
 Complete guide for Weibo operations via xAPI — hot search, content search, user profiles, posts, comments, and media.
 
-All Weibo endpoints are API-type actions under the `weibo-app` service. Every call requires `"method": "GET"` in the input and parameters go inside `"params"`.
+> **Dynamic catalog:** These are database-registered third-party APIs under the `weibo-app` service. Exact action IDs, HTTP methods, parameters, and response fields can change. Run `search` and `get` before calling; the current schema wins. Examples below reflect one known GET-based version and keep `"method":"GET"` in the input for compatibility.
+
+## Contents
+
+- [Hot search](#hot-search-热搜)
+- [Search](#search-搜索)
+- [User data](#user-data-用户)
+- [Post data](#post-data-博文)
+- [Media](#media-多媒体)
+- [Feed](#feed-信息流)
+- [Common workflows](#common-workflows)
+- [API reference](#api-reference)
+- [Error handling](#error-handling)
 
 ## Hot Search (热搜)
 
