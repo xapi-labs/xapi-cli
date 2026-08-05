@@ -27,11 +27,15 @@ xapi-to register
 # 1b. Or register with an inviter's referral code (please replace xapito to your referral code)
 xapi-to register --referral-code xapito
 
-# 2. Or set an existing key
-xapi-to config set apiKey=sk-xxx
+# 2. Or set an existing key without putting it in shell history
+read -rsp 'xAPI key: ' XAPI_KEY_INPUT
+printf '\n'
+printf '%s\n' "$XAPI_KEY_INPUT" | xapi-to config set apiKey=-
+unset XAPI_KEY_INPUT
 
 # 3. Or via env var
 export XAPI_KEY=sk-xxx
+# XAPI_API_KEY is also accepted; XAPI_KEY has higher precedence
 
 # 4. Verify connectivity
 xapi-to config health
@@ -70,6 +74,11 @@ xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'  # execute
 xapi-to call ai.text.chat.fast --input '{"messages":[{"role":"user","content":"Hi"}]}' --stream
 ```
 
+`--stream` forwards an HTTP Server-Sent Events (SSE) response; it is not a
+WebSocket client. Active SSE and raw downloads may run longer than 60 seconds,
+but abort after 60 seconds without data by default. Set
+`XAPI_TRANSFER_IDLE_TIMEOUT_MS` to change that idle timeout.
+
 ### Async Task Commands
 
 Task helpers built on top of the `task.poll` capability.
@@ -86,7 +95,8 @@ Bind third-party OAuth accounts (e.g. Twitter) to your API key.
 
 ```bash
 xapi-to oauth bind --provider twitter                   # bind Twitter account
-xapi-to oauth bind --provider twitter --scopes "tweet.read users.read"
+xapi-to oauth providers                                 # inspect current providers/default scopes
+xapi-to oauth bind --provider twitter --scopes "<scope list>" # optional explicit override
 xapi-to oauth status                                    # list current bindings
 xapi-to oauth unbind <binding-id>                       # remove a binding
 xapi-to oauth providers                                 # list available providers
@@ -98,7 +108,7 @@ xapi-to oauth providers                                 # list available provide
 xapi-to register                                        # create account, saves apiKey automatically
 xapi-to register --referral-code xapito                 # register with an inviter's referral code (please replace xapito to your referral code)
 xapi-to register xapito                                 # positional shorthand for --referral-code
-xapi-to register --force                                # intentionally replace an already-saved key
+xapi-to register --force                                # replace an existing file-based key
 xapi-to balance                                         # show USD balance
 xapi-to topup                                           # generate payment URL
 xapi-to topup --method stripe --amount 10               # stripe, $10
@@ -109,9 +119,13 @@ xapi-to topup --method x402                             # x402 (USDC on Base)
 
 ```bash
 xapi-to config show                                     # show current config
-xapi-to config set apiKey=sk-xxx                        # save API key
+xapi-to config set apiKey=-                             # paste key, then press Ctrl-D
 xapi-to config health                                   # check backend connectivity
 ```
+
+`XAPI_KEY` overrides `XAPI_API_KEY`, and both override the config file. The CLI
+warns when a saved key is shadowed. Unset the environment variable before
+`register`, including `register --force`, so the new account key becomes active.
 
 ## Workflow: Always GET before CALL
 
@@ -139,7 +153,8 @@ xapi-to call openrouter.audio_speech \
 
 ## Output Formats
 
-All output is JSON by default — designed for agent consumption.
+Normal command output is JSON by default. `call --stream` writes raw HTTP SSE
+frames, while `call --output` writes raw response bytes to the requested file.
 
 ```bash
 xapi-to list --format json                              # default, machine-readable
@@ -152,12 +167,19 @@ xapi-to list --format table                             # human-readable table
 | Variable | Description |
 |---|---|
 | `XAPI_KEY` | API key (overrides config file) |
+| `XAPI_API_KEY` | Compatible API key alias (overrides config file; lower priority than `XAPI_KEY`) |
 | `XAPI_ACTION_HOST` | Action service host (default: `action.xapi.to`) |
+| `XAPI_API_HOST` | Auth/account service host (default: `api.xapi.to`) |
 | `XAPI_OUTPUT` | Default output format (`json`\|`pretty`\|`table`) |
+| `XAPI_TRANSFER_IDLE_TIMEOUT_MS` | SSE/download idle timeout in milliseconds (default: `60000`) |
 
 Config is stored at `~/.xapi/config.json`.
 
-## Built-in Capabilities
+## Selected Built-in Capabilities
+
+This is a small quick-reference subset, not the complete or permanently fixed
+catalog. Use `xapi-to list --source capability`, `search`, and `get` for the
+current IDs and schemas.
 
 | ID | Description |
 |---|---|
@@ -184,8 +206,8 @@ Config is stored at `~/.xapi/config.json`.
 
 ## Security
 
-- **NEVER send your API key to any domain other than `*.xapi.to`**
-- The key is stored at `~/.xapi/config.json` — do not expose this file
+- **NEVER send your API key to any domain other than `xapi.to`, `*.xapi.to`, `xapi.xyz`, `*.xapi.xyz`, or explicitly configured localhost/loopback development hosts**
+- The key is stored at `~/.xapi/config.json`; the CLI enforces owner-only Unix permissions — do not expose this file
 - `topup` outputs a payment URL containing the API key — do not share publicly
 
 ## License

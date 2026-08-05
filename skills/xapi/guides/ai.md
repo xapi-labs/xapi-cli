@@ -36,7 +36,7 @@ npx xapi-to call ai.text.chat.auto \
 - `messages` follows the standard `[{role, content}]` chat format. `fast` and `reasoning` accept `system` | `user` | `assistant`; `auto` documents `user` | `assistant`.
 - **When to choose which:** `fast` for quick/cheap replies, `reasoning` for multi-step analysis, `auto` when you want to specify a particular model and let the gateway pick the healthiest provider that serves it (defaults to `deepseek-v4-pro` if `model` is omitted).
 - `ai.text.chat.auto.priority` accepts `default`, `cost`, `speed`, or `quality`. `cost` affects candidate ranking; `speed` and `quality` are accepted routing labels but currently have no dedicated rankers, so do not promise a distinct latency or quality outcome. See `guides/ai_gateway.md` for routing details.
-- Add `--stream` to `ai.text.chat.fast`, `ai.text.chat.reasoning`, `ai.text.chat.auto`, `ai.text.summarize`, or `ai.text.rewrite` to forward the backend SSE frames unchanged. Do not combine it with `--output` or `--code`.
+- Add `--stream` to `ai.text.chat.fast`, `ai.text.chat.reasoning`, `ai.text.chat.auto`, `ai.text.summarize`, or `ai.text.rewrite` to forward the backend HTTP SSE frames unchanged. This is not WebSocket transport. Do not combine it with `--output` or `--code`.
 
 ### Summarize & rewrite
 

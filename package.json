@@ -1,6 +1,6 @@
 {
   "name": "xapi-to",
-  "version": "0.1.8",
+  "version": "0.1.19",
   "description": "Agent-friendly CLI for xapi - discover and call capabilities and APIs",
   "type": "module",
   "bin": {
@@ -9,8 +9,15 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "skills"
   ],
+  "license": "MIT",
+  "homepage": "https://xapi.to",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xapi-labs/xapi-cli.git"
+  },
   "scripts": {
     "build": "tsup src/index.ts --format esm --target node18 --clean --out-dir dist --tsconfig tsconfig.build.json",
     "typecheck": "tsc --noEmit",
