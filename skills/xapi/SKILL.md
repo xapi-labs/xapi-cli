@@ -1,6 +1,6 @@
 ---
 name: xapi
-description: Access real-time external data via the xapi CLI — Twitter/X, Douyin/TikTok, Reddit, LinkedIn, Weibo, on-chain crypto data (price, holders, wallets, DEX, CEX), web/news/image/video/scholar search, AI text/image/video/speech generation and transcription, and SMS verification. Configure the Anthropic/OpenAI-compatible xAPI AI Gateway or the xAPI WebSocket Gateway for realtime voice, streaming ASR/TTS, and provider-native bidirectional sessions. Use when the user mentions xapi, wants to call a third-party API, asks what external services are available, or needs to connect an AI or realtime client to xAPI.
+description: Access real-time external data via the xapi CLI — Twitter/X (including resolving and downloading tweet videos), Douyin/TikTok, Reddit, LinkedIn, Weibo, on-chain crypto data (price, holders, wallets, DEX, CEX), web/news/image/video/scholar search, AI text/image/video/speech generation and transcription, and SMS verification. Configure the Anthropic/OpenAI-compatible xAPI AI Gateway or the xAPI WebSocket Gateway for realtime voice, streaming ASR/TTS, and provider-native bidirectional sessions. Use when the user mentions xapi, wants to call a third-party API, asks what external services are available, or needs to connect an AI or realtime client to xAPI.
 metadata: {"openclaw":{"emoji":"x","requires":{"anyBins":["npx"]},"primaryEnv":"XAPI_KEY"}}
 ---
 
@@ -156,7 +156,7 @@ npx xapi-to call twitter.user_tweets --input '{"user_id":"44196397"}'
 # Get user's tweets and replies (timeline includes replies)
 npx xapi-to call twitter.user_tweets_and_replies --input '{"user_id":"44196397"}'
 
-# Get tweet details and replies
+# Get tweet details and replies; video media include the highest-bitrate MP4 in video_url
 npx xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
 
 # Get user's media posts
@@ -183,6 +183,8 @@ Note: All `twitter.*` capabilities accept an optional `provider` — `"x"` (fapi
 Note: Timeline, reply, media, follower/following, retweeter, and search responses expose pagination cursors. Pass the previous response's bottom cursor back as `cursor`; see `guides/twitter.md` for the exact response field used by each endpoint.
 
 Note: For long-form **X Articles**, `twitter.tweet_detail` automatically returns the full article in `tweet.article`, including `text`, `markdown`, cover image, links, and timestamps. No raw GraphQL call is needed.
+
+Note: To download tweet videos, use the bundled `scripts/download_tweet_videos.sh` workflow documented in `guides/twitter.md`. It consumes `twitter.tweet_detail`'s normalized `media[].video_url`, handles multiple and nested quoted/retweeted videos, preserves automatic `x` → `twitter` failover, validates MP4 content, and publishes downloads atomically. Do not treat `media[].url` or `preview_url` as video files; they are preview images.
 
 ### Crypto (17 registered APIs; 16 recommended)
 
@@ -461,7 +463,7 @@ The CLI retries idempotent metadata reads and `task poll` for transient timeouts
 
 When the user's task involves these workflows, read the corresponding guide file for detailed instructions:
 
-- **`guides/twitter.md`** — Twitter/X (推特): read and paginate tweets/replies/media, advanced search, read long-form X Articles directly from `tweet_detail`, post tweets, reply, quote, like, retweet, OAuth binding
+- **`guides/twitter.md`** — Twitter/X (推特): read and paginate tweets/replies/media, download the highest-quality MP4 from a video tweet, advanced search, read long-form X Articles directly from `tweet_detail`, post tweets, reply, quote, like, retweet, OAuth binding
 - **`guides/reddit.md`** — Reddit: user profiles, posts, comments, subreddit feeds, popular/news/games feeds, trending, search
 - **`guides/linkedin.md`** — LinkedIn (领英): person profiles & full career history (experience, education, skills, honors, publications), company pages & employees, job search — covers the two-step `username`→`urn` lookup pattern
 - **`guides/tiktok.md`** — TikTok: user profiles, videos, comments, search, hashtags, music, live rooms, feed

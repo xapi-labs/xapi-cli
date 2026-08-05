@@ -1,12 +1,13 @@
 # Twitter / X Guide
 
-Complete guide for Twitter operations via xAPI — reading data, posting tweets, replying, and OAuth setup.
+Complete guide for Twitter operations via xAPI — reading data, downloading tweet videos, posting tweets, replying, and OAuth setup.
 
 > **Upstream provider:** All `twitter.*` capabilities accept an optional `provider` — `"x"` (fapi.uk, the default) or `"twitter"` (legacy upstream). The response is normalized to an identical structure regardless of provider, so you normally omit it. Pass `"provider":"twitter"` only to force the legacy upstream, e.g. `--input '{"screen_name":"elonmusk","provider":"twitter"}'`.
 
 ## Contents
 
 - [Read Twitter data](#reading-twitter-data-no-oauth-needed)
+- [Download a tweet video](#download-a-tweet-video)
 - [Post and mutate with OAuth](#posting-tweets-oauth-required)
 - [Common workflows](#common-workflows)
 - [Pagination reference](#pagination-reference)
@@ -73,6 +74,23 @@ npx xapi-to call twitter.tweet_detail \
 ```
 
 Paginated pages commonly contain more `replies` but no main tweet, so `data.tweet` may be `null` when `cursor` is present.
+
+### Download a tweet video
+
+Use the bundled downloader with either a complete status URL or its numeric tweet ID. Resolve `<xapi-skill-directory>` to the directory containing this guide's parent `SKILL.md`:
+
+```bash
+bash <xapi-skill-directory>/scripts/download_tweet_videos.sh \
+  'https://x.com/NousResearch/status/2084325600643445095'
+```
+
+Pass an optional existing output directory as the second argument; otherwise files are written to the current directory. A single video is named `tweet-<tweet-id>.mp4`; multiple videos are numbered `tweet-<tweet-id>-1.mp4`, `-2.mp4`, and so on. The script includes videos in the main, quoted, and retweeted tweets, deduplicates identical media URLs, and refuses to overwrite any existing output.
+
+The script verifies that the deployed `twitter.tweet_detail` schema exposes `video_url` before making the paid call. It omits `provider` to retain automatic failover from the default `x` upstream to the legacy `twitter` upstream on transient failures. The response's `data.provider` identifies the upstream that served it; explicitly setting `provider` would pin that upstream and disable failover.
+
+Each download is written to a same-directory temporary file, required to have MIME type `video/mp4`, optionally checked with `ffprobe`, and only renamed to its final path after every media file passes. Failures clean up temporary files, so a partial transfer is never published as the final MP4.
+
+`data.tweet.media[].url` and `preview_url` are preview images; do not download them as MP4. The optional `video_info.variants` retains the original MP4 and HLS variants when a specific rendition is needed. `call --output` is not appropriate because the xAPI action returns JSON metadata rather than video bytes; the bundled script downloads each resolved `video_url` with `curl`.
 
 ### Read an X Article (long-form post)
 
