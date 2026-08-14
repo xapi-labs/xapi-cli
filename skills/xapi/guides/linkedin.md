@@ -8,6 +8,7 @@ Complete guide for LinkedIn operations via xAPI — person profiles with career 
 
 - [Key concept: everything is addressed by URL](#key-concept-everything-is-addressed-by-url)
 - [Person data](#person-data)
+  - [When `experience` and `education` come back `null`](#when-experience-and-education-come-back-null)
 - [Company data](#company-data)
 - [Posts and comments](#posts-and-comments)
 - [Jobs](#jobs)
@@ -55,6 +56,48 @@ One call returns the whole profile — no follow-up requests for individual sect
 - Discovery: `people_also_viewed[]`, `similar_profiles[]`
 
 There are no separate `get__user__experience` / `educations` / `skills` / `honors` / `publications` endpoints in v2 — that was the older `username` → `urn` two-step API. If you were using those IDs, they now return `Action not found`.
+
+### When `experience` and `education` come back `null`
+
+`get__user__profile` reads the **logged-out** public page. LinkedIn renders the full career and school sections there only for creator/open profiles; on an ordinary member's page it serves a trimmed topcard. The call still succeeds with `code: 200`, so the failure is silent — you get identity, `current_company`, `educations_details`, `followers`, and `people_also_viewed`, but:
+
+```json
+{ "position": null, "experience": null, "education": null, "about": "Don't use LinkedIn that much…" }
+```
+
+`null` here means **not rendered to logged-out visitors**, not "this person has no jobs listed". A truncated `about` ending in `…` is the same signal. Never summarize a person's background from a response in this state, and never report the profile as private or empty — fall back:
+
+```bash
+npx xapi-to call icypeas-email.api_scrape_profile \
+  --input '{"method":"GET","params":{"url":"https://www.linkedin.com/in/ricky-wang-74b3a0194/"}}'
+```
+
+This returns a differently-shaped payload under `data.result`:
+
+| Field | Contents |
+|---|---|
+| `worksFor[]` | Current positions — `jobTitle`, `startDate`, `description`, nested `company` (industry, size, website, HQ) |
+| `alumniOf[]` | Past positions — same shape plus `endDate` |
+| `educations[]` | `name`, `degree`, `fieldsOfStudy[]`, `description` |
+| `headline`, `description` | Headline and the full untruncated About text |
+| `firstname`, `lastname`, `address`, `numOfConnections`, `skills[]`, `languages[]` | Identity and profile detail |
+
+Check `data.status` before reading `data.result`: `FOUND` means real data, `NOT_FOUND` means `result` is `null` and this source has nothing for that URL either. Two caveats worth carrying into any summary: the snapshot is cached, so `headline` can lag the person's current role, and `startDate`/`endDate` are year-granular (often stamped to January), so treat them as approximate. `jobTitle` also reflects whatever the member typed, which can disagree with a company's own announcement — prefer cross-checking a role against `web.search` before asserting a title.
+
+Do not reach for `contactout-api.v1_linkedin_enrich` as a fallback. Without a separate ContactOut contract it returns a fully-populated **sample profile** (`"Example Person"` at `"Legros, Smitham and Kessler"`) with `status_code: 200`, which is easy to mistake for real data, and it is the most expensive LinkedIn-adjacent action in the catalog.
+
+### Person profile decision path
+
+```
+get__user__profile
+  ├─ experience[] present            → done, use it
+  └─ experience/education == null    → icypeas-email.api_scrape_profile
+        ├─ status == FOUND           → read worksFor / alumniOf / educations
+        └─ status == NOT_FOUND       → say the career history is unavailable;
+                                        fall back to web.search for public
+                                        bios, or twitter.user_by_screen_name
+                                        when the person came from an X handle
+```
 
 ### Get a person's posts
 
@@ -144,6 +187,10 @@ This is the most expensive LinkedIn endpoint — search first, then fetch detail
 npx xapi-to call linkedin.api_v1_linkedin_web__v2_get__user__profile \
   --input '{"method":"GET","params":{"url":"https://www.linkedin.com/in/williamhgates/"}}'
 
+# 1b. Only if experience/education came back null — career history from the fallback
+npx xapi-to call icypeas-email.api_scrape_profile \
+  --input '{"method":"GET","params":{"url":"https://www.linkedin.com/in/williamhgates/"}}'
+
 # 2. Their posts (take `urn` from each item for step 3)
 npx xapi-to call linkedin.api_v1_linkedin_web__v2_get__user__posts \
   --input '{"method":"GET","params":{"url":"https://www.linkedin.com/in/williamhgates/","page":1}}'
@@ -186,6 +233,12 @@ npx xapi-to call linkedin.api_v1_linkedin_web__v2_get__company__profile \
 | `search__jobs` | Job search | `keywords` | `location`, `page` |
 | `get__job__detail` | Full job posting | `url` | — |
 
+One non-`linkedin` action belongs in this workflow:
+
+| Action ID | Purpose | Required params | Notes |
+|---|---|---|---|
+| `icypeas-email.api_scrape_profile` | Career history for profiles the logged-out page hides | `url` | Fallback when `get__user__profile` returns `experience: null`. Check `data.status == "FOUND"`. |
+
 Detail-style endpoints (`get__*__profile`, `get__post__detail`) are the cheapest; list-style endpoints (posts, comments, job search) cost more per call, and `get__job__detail` is the most expensive. Run `npx xapi-to get <action-id>` for the current `meta.pricing` rather than assuming these ratios hold.
 
 ## Error Handling
@@ -195,4 +248,6 @@ Detail-style endpoints (`get__*__profile`, `get__post__detail`) are the cheapest
 - **`must have required property 'urn'`** — `get__post__comments` needs the numeric `urn` alongside `url`. See [Get comments on a post](#get-comments-on-a-post).
 - **`must match pattern "^[0-9]+$"` on `/params/urn`** — you passed the prefixed `urn:li:activity:<id>` form. Send the digits only.
 - **`API Token lacks required permissions`** (upstream `403`) — the account's upstream provider token has no LinkedIn scope. This is an account entitlement, not a parameter problem; enable it in the provider dashboard.
+- **`experience: null` / `education: null` / `about` ending in `…` on `get__user__profile`** — not an error and not a private profile: the logged-out page LinkedIn serves for ordinary members omits those sections. Fall back to `icypeas-email.api_scrape_profile`. See [When `experience` and `education` come back `null`](#when-experience-and-education-come-back-null).
+- **A ContactOut response naming `Example Person` at `Legros, Smitham and Kessler`** — `contactout-api.*` returned its sample payload because the account has no ContactOut entitlement. It carries `status_code: 200` and a `message` pointing at a sales call. Discard it; never summarize from it.
 - **Empty `data[]` on a valid URL** — either the page is private/deleted, or you paginated past the end. LinkedIn also rate-limits aggressively; retry with backoff rather than in a tight loop.

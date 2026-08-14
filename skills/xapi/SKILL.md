@@ -436,7 +436,7 @@ Beyond built-in capabilities, xapi proxies **dozens** of third-party API service
 - **Douyin** (`douyin`) — Douyin/TikTok API (videos, users, trending, comments)
 - **Twitter API** (`twitter`) — Alternative Twitter data API
 - **Reddit** (`reddit`) — Reddit API (posts, comments, subreddits, search)
-- **LinkedIn** (`linkedin`) — LinkedIn API (person profiles & career history, company pages, posts & comments, job search)
+- **LinkedIn** (`linkedin`) — LinkedIn API (person profiles & career history, company pages, posts & comments, job search). For career history, see `guides/linkedin.md` first — the profile endpoint silently omits `experience`/`education` for ordinary profiles
 - **Weibo** (`weibo-app`) — Weibo API (user profiles, feeds, search, trending)
 - **5SIM SMS** (`5sim-sms`) — SMS verification (virtual numbers, activation codes)
 - **Serper API** (`serper`) — Google Search API
@@ -465,7 +465,7 @@ When the user's task involves these workflows, read the corresponding guide file
 
 - **`guides/twitter.md`** — Twitter/X (推特): read and paginate tweets/replies/media, download the highest-quality MP4 from a video tweet, advanced search, read long-form X Articles directly from `tweet_detail`, post tweets, reply, quote, like, retweet, OAuth binding
 - **`guides/reddit.md`** — Reddit: user profiles, posts, comments, subreddit feeds, popular/news/games feeds, trending, search
-- **`guides/linkedin.md`** — LinkedIn (领英): person profiles with career history, company pages, posts & comments, job search & job detail — every endpoint but job search is addressed by an ordinary LinkedIn page URL, and post comments need a numeric `urn` alongside `url`
+- **`guides/linkedin.md`** — LinkedIn (领英): person profiles with career history, company pages, posts & comments, job search & job detail — every endpoint but job search is addressed by an ordinary LinkedIn page URL, and post comments need a numeric `urn` alongside `url`. **Read this guide before summarizing anyone's background:** `get__user__profile` returns `experience: null` / `education: null` for ordinary (non-creator) profiles because it reads the logged-out page, and the guide gives the fallback that recovers the real career history
 - **`guides/tiktok.md`** — TikTok: user profiles, videos, comments, search, hashtags, music, live rooms, feed
 - **`guides/douyin.md`** — Douyin (抖音): user profiles, videos, comments, hot search, hashtags, music, video mix/series
 - **`guides/xiaohongshu.md`** — 小红书 (Xiaohongshu): user profiles, notes, comments, search, topics, products, creator inspiration
