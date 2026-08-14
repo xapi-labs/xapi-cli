@@ -17,6 +17,19 @@ cd xapi-cli && bun install
 
 The published CLI runs on Node.js 18+. Bun is only required for local source development and tests.
 
+## Teach Your Agent the xAPI Skill
+
+Paste into Cursor, Claude Code, or any agent that supports skills:
+
+```bash
+npx skills add xapi-labs/xapi-cli
+```
+
+This installs the bundled [`xapi` skill](skills/xapi), which teaches the agent
+how to call social, search, crypto, and AI data through this CLI. Then just ask
+— "what's the price of BTC" — and it takes it from there. Set up a key first;
+see [Quick Start](#quick-start).
+
 ## Quick Start
 
 ```bash
