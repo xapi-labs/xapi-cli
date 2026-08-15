@@ -321,10 +321,17 @@ xapi-to register --referral-code xapito                 # register with an invit
 xapi-to register xapito                                 # positional shorthand for --referral-code
 xapi-to register --force                                # replace an existing file-based key
 xapi-to balance                                         # show USD balance
+xapi-to earnings                                        # spendable balance + provider earnings
+xapi-to earnings list --status SETTLED --limit 20       # provider earning records
+xapi-to earnings transfer 1 --idempotency-key reinvest-001 # reinvest settled earnings
 xapi-to topup                                           # generate payment URL
 xapi-to topup --method stripe --amount 10               # stripe, $10
 xapi-to topup --method x402                             # x402 (USDC on Base)
 ```
+
+`earnings` summary/list require the `earnings:read` scope on the current key;
+`earnings transfer` requires `earnings:transfer`. Transfers are one-way and
+idempotent: reuse a key only when retrying the same amount.
 
 ### Config
 
