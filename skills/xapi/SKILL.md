@@ -423,6 +423,14 @@ npx xapi-to config show
 # Check balance
 npx xapi-to balance
 
+# Provider economy (requires earnings:read)
+npx xapi-to earnings
+npx xapi-to earnings list --status SETTLED --limit 20
+
+# Reinvest settled provider earnings into spendable balance (requires earnings:transfer)
+# This is one-way. Reuse the idempotency key only when retrying the same amount.
+npx xapi-to earnings transfer 1 --idempotency-key reinvest-001
+
 # Top up account
 npx xapi-to topup --method stripe --amount 10
 npx xapi-to topup --method x402
