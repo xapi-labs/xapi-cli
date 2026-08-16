@@ -53,4 +53,39 @@ describe('usage command', () => {
       'Run: xapi-to usage <request-id>',
     );
   });
+
+  it('waits through a not-finalized receipt and prints the finalized result', async () => {
+    const receipt = {
+      requestId: 'request-2',
+      actualCostUsd: '0.01000000',
+    };
+    const requestSpy = spyOn(client, 'request')
+      .mockRejectedValueOnce(new client.HttpError(404, 'not finalized'))
+      .mockResolvedValueOnce(receipt);
+
+    await usage(['wait', 'request-2'], { interval: '1ms', timeout: '100ms' });
+
+    expect(requestSpy).toHaveBeenCalledTimes(2);
+    expect(requestSpy.mock.calls[0]?.[2]).toBeGreaterThan(0);
+    expect(requestSpy.mock.calls[0]?.[3]).toBe(0);
+    expect(outputSpy).toHaveBeenCalledWith(receipt, undefined);
+    requestSpy.mockRestore();
+  });
+
+  it('does not retry permanent errors in wait mode', async () => {
+    const requestSpy = spyOn(client, 'request').mockRejectedValue(
+      new client.HttpError(403, 'missing scope'),
+    );
+
+    await expect(
+      usage(['wait', 'request-3'], { interval: '1ms', timeout: '100ms' }),
+    ).rejects.toThrow('err called');
+
+    expect(requestSpy).toHaveBeenCalledTimes(1);
+    expect(errSpy).toHaveBeenCalledWith(
+      'usage receipt wait failed',
+      expect.stringContaining('HTTP 403'),
+    );
+    requestSpy.mockRestore();
+  });
 });

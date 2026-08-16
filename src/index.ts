@@ -98,6 +98,9 @@ COMMANDS
     --force                         Replace an existing file-based apiKey
   balance                           Show current account balance
   usage <request-id>                Show a finalized per-request cost receipt
+  usage wait <request-id>           Wait until a request receipt is finalized
+    --interval <duration>           Poll interval (default: 1s)
+    --timeout <duration>            Max wait duration (default: 30s)
   earnings [summary]                Show spendable balance and provider earnings
   earnings list                    List provider earning records
   earnings transfer <usd> --idempotency-key <key>
@@ -145,6 +148,7 @@ EXAMPLES
   xapi-to config set apiKey=xapi_abc123
   xapi-to earnings
   xapi-to usage c7fe24d5-e1d4-4bc1-a9bb-e16df8ab93b0
+  xapi-to usage wait c7fe24d5-e1d4-4bc1-a9bb-e16df8ab93b0 --timeout 1m
   xapi-to earnings transfer 1 --idempotency-key reinvest-001
   xapi-to health
 `;

@@ -322,6 +322,7 @@ xapi-to register xapito                                 # positional shorthand f
 xapi-to register --force                                # replace an existing file-based key
 xapi-to balance                                         # show USD balance
 xapi-to usage <request-id>                              # finalized cost + balance-after receipt
+xapi-to usage wait <request-id> --timeout 1m            # poll until a streaming receipt is finalized
 xapi-to earnings                                        # spendable balance + provider earnings
 xapi-to earnings list --status SETTLED --limit 20       # provider earning records
 xapi-to earnings transfer 1 --idempotency-key reinvest-001 # reinvest settled earnings
