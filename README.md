@@ -321,6 +321,7 @@ xapi-to register --referral-code xapito                 # register with an invit
 xapi-to register xapito                                 # positional shorthand for --referral-code
 xapi-to register --force                                # replace an existing file-based key
 xapi-to balance                                         # show USD balance
+xapi-to usage <request-id>                              # finalized cost + balance-after receipt
 xapi-to earnings                                        # spendable balance + provider earnings
 xapi-to earnings list --status SETTLED --limit 20       # provider earning records
 xapi-to earnings transfer 1 --idempotency-key reinvest-001 # reinvest settled earnings

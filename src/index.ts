@@ -34,6 +34,7 @@ const { CONFIG_HELP } = cfgCmds;
 import * as regCmds from './commands/register.ts';
 import * as topupCmds from './commands/topup.ts';
 import * as balanceCmds from './commands/balance.ts';
+import * as usageCmds from './commands/usage.ts';
 import * as earningsCmds from './commands/earnings.ts';
 import * as oauthCmds from './commands/oauth.ts';
 import * as taskCmds from './commands/task.ts';
@@ -96,6 +97,7 @@ COMMANDS
     --referral-code <code>          Register with an inviter's referral code (also: --referralCode, or as positional arg)
     --force                         Replace an existing file-based apiKey
   balance                           Show current account balance
+  usage <request-id>                Show a finalized per-request cost receipt
   earnings [summary]                Show spendable balance and provider earnings
   earnings list                    List provider earning records
   earnings transfer <usd> --idempotency-key <key>
@@ -142,6 +144,7 @@ EXAMPLES
   xapi-to services --format table
   xapi-to config set apiKey=xapi_abc123
   xapi-to earnings
+  xapi-to usage c7fe24d5-e1d4-4bc1-a9bb-e16df8ab93b0
   xapi-to earnings transfer 1 --idempotency-key reinvest-001
   xapi-to health
 `;
@@ -249,6 +252,7 @@ async function main() {
     // ── Account commands ──
     case 'register':   return regCmds.register(rest, flags);
     case 'balance':    return balanceCmds.balance(rest, flags);
+    case 'usage':      return usageCmds.usage(rest, flags);
     case 'earnings':   return earningsCmds.earnings(rest, flags);
     case 'topup':      return topupCmds.topup(rest, flags);
     case 'health':     return cfgCmds.configHealth(rest, flags);

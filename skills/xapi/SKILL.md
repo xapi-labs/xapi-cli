@@ -434,6 +434,9 @@ npx xapi-to config show
 # Check balance
 npx xapi-to balance
 
+# Read the finalized cost of one request (use X-XAPI-Request-Id or the final xapi.usage SSE event)
+npx xapi-to usage <request-id>
+
 # Provider economy (requires earnings:read)
 npx xapi-to earnings
 npx xapi-to earnings list --status SETTLED --limit 20
