@@ -425,6 +425,7 @@ npx xapi-to balance
 
 # Read the finalized cost of one request (use X-XAPI-Request-Id or the final xapi.usage SSE event)
 npx xapi-to usage <request-id>
+npx xapi-to usage wait <request-id> --timeout 1m
 
 # Provider economy (requires earnings:read)
 npx xapi-to earnings
