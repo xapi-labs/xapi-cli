@@ -44,6 +44,21 @@ describe('client.request', () => {
   });
 
   describe('retry', () => {
+    it('honors a caller abort signal without retrying', async () => {
+      let calls = 0;
+      fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(((_url: any, opts: any) => {
+        calls++;
+        return new Promise((_resolve, reject) => {
+          opts.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        });
+      }) as any);
+      const controller = new AbortController();
+      const pending = request('https://action.xapi.to/x', { method: 'GET', signal: controller.signal }, 5_000, 2);
+      controller.abort();
+      await expect(pending).rejects.toThrow(/aborted/i);
+      expect(calls).toBe(1);
+    });
+
     it('does NOT retry by default (fail-safe for non-idempotent writes)', async () => {
       let calls = 0;
       fetchSpy = mockFetch(async () => {

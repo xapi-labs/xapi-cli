@@ -116,6 +116,10 @@ export async function request<T>(
   let attempt = 0;
   while (true) {
     const controller = new AbortController();
+    const callerSignal = options.signal;
+    const abortFromCaller = () => controller.abort();
+    if (callerSignal?.aborted) controller.abort();
+    else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
     try {
@@ -185,6 +189,7 @@ export async function request<T>(
       throw e;
     } finally {
       clearTimeout(timer);
+      callerSignal?.removeEventListener('abort', abortFromCaller);
     }
   }
 }

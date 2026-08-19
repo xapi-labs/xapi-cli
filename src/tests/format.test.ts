@@ -37,4 +37,14 @@ describe('output formatting', () => {
     expect(printed).toContain('"tweet.read"');
     expect(printed).not.toContain('[object Object]');
   });
+
+  it('marks truncated table cells instead of silently cutting identifiers', () => {
+    consoleSpy = spyOn(console, 'log').mockImplementation(() => {});
+
+    output([{ id: 'x'.repeat(80) }], 'table');
+
+    const printed = consoleSpy.mock.calls.map((call: any[]) => String(call[0])).join('\n');
+    expect(printed).toContain('…');
+    expect(printed).not.toContain('x'.repeat(80));
+  });
 });

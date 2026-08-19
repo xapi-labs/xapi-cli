@@ -7,8 +7,22 @@
     "xapi": "dist/index.js",
     "xapi-to": "dist/index.js"
   },
+  "exports": {
+    ".": "./dist/index.js",
+    "./openai-sandbox": {
+      "types": "./dist/openai-sandbox-client.d.ts",
+      "import": "./dist/openai-sandbox-client.js"
+    }
+  },
   "files": [
     "dist",
+    "examples",
+    "scripts/openai-sandbox-agent-e2e.ts",
+    "scripts/sandbox-playground-e2e.mjs",
+    "src/client.ts",
+    "src/config.ts",
+    "src/openai-sandbox-client.ts",
+    "src/sandbox-client.ts",
     "README.md",
     "skills"
   ],
@@ -19,15 +33,23 @@
     "url": "git+https://github.com/xapi-labs/xapi-cli.git"
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --target node18 --clean --out-dir dist --tsconfig tsconfig.build.json",
+    "build": "tsup src/index.ts src/openai-sandbox-client.ts --format esm --target node18 --clean --out-dir dist --tsconfig tsconfig.build.json --dts",
     "typecheck": "tsc --noEmit",
     "start": "node dist/index.js",
     "dev": "XAPI_ACTION_HOST=localhost:3003 bun run src/index.ts",
     "prepublishOnly": "npm run build",
-    "test": "bun test src/tests"
+    "test": "bun test src/tests",
+    "demo:sandbox": "npm run build && node examples/sandbox-api-cli-openai.mjs",
+    "example:sandbox:openai": "bun run examples/openai-agents-sandbox-local.ts",
+    "test:sandbox:playground": "npm run build && node scripts/sandbox-playground-e2e.mjs",
+    "test:sandbox:openai": "bun run scripts/openai-sandbox-agent-e2e.ts"
   },
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "@openai/agents": "0.15.0",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/bun": "^1.3.9",

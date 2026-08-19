@@ -11,6 +11,7 @@ import { join } from 'path';
 
 export const XAPI_ACTION_HOST = process.env.XAPI_ACTION_HOST || 'action.xapi.to'; // action service (capabilities + APIs)
 export const XAPI_API_HOST = process.env.XAPI_API_HOST || 'api.xapi.to';          // auth + agent API
+export const XAPI_SANDBOX_HOST = process.env.XAPI_SANDBOX_HOST || 'sandbox.xapi.to'; // sandbox control plane
 
 /** Returns https:// for remote hosts, http:// for localhost/loopback */
 export function scheme(host: string): string {
@@ -91,6 +92,7 @@ export function assertAllowedHost(hostOrUrl: string): void {
 
 export interface XapiConfig {
   actionHost: string;
+  sandboxHost?: string;
   apiKey?: string;
 }
 
@@ -122,6 +124,7 @@ export function getConfig(): XapiConfig {
   const file = loadFileConfig();
   return {
     actionHost: XAPI_ACTION_HOST,
+    sandboxHost: XAPI_SANDBOX_HOST,
     apiKey: process.env.XAPI_KEY || process.env.XAPI_API_KEY || file.apiKey,
   };
 }
@@ -147,6 +150,7 @@ export function showConfig(): Record<string, unknown> {
   const cfg = getConfig();
   return {
     actionHost: cfg.actionHost,
+    sandboxHost: cfg.sandboxHost,
     apiKey: cfg.apiKey ? `${cfg.apiKey.slice(0, 8)}...` : undefined,
     source: {
       apiKey: getApiKeySource(),

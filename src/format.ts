@@ -69,6 +69,13 @@ function formatCell(value: unknown): string {
   return String(value);
 }
 
+function fitCell(value: unknown, width: number): string {
+  const rendered = formatCell(value);
+  if (rendered.length <= width) return rendered.padEnd(width);
+  if (width <= 1) return '…'.slice(0, width);
+  return `${rendered.slice(0, width - 1)}…`;
+}
+
 function printTable(rows: Record<string, unknown>[]): void {
   if (rows.length === 0) {
     console.log('(empty)');
@@ -83,7 +90,7 @@ function printTable(rows: Record<string, unknown>[]): void {
   console.log(header);
   console.log(sep);
   for (const row of rows) {
-    const line = keys.map((k, i) => formatCell(row[k]).slice(0, widths[i]).padEnd(widths[i])).join('  ');
+    const line = keys.map((k, i) => fitCell(row[k], widths[i])).join('  ');
     console.log(line);
   }
 }
@@ -91,7 +98,12 @@ function printTable(rows: Record<string, unknown>[]): void {
 export function err(msg: string, detail?: unknown): never {
   if (process.stderr.isTTY) {
     console.error(`Error: ${msg}`);
-    if (detail !== undefined) console.error(`  ${detail}`);
+    if (detail !== undefined) {
+      const rendered = detail && typeof detail === 'object'
+        ? JSON.stringify(detail, null, 2)
+        : String(detail);
+      console.error(rendered.split('\n').map((line) => `  ${line}`).join('\n'));
+    }
   } else {
     const out: Record<string, unknown> = { error: msg };
     if (detail !== undefined) out.detail = detail;

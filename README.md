@@ -115,6 +115,191 @@ xapi-to task wait 550e8400-e29b-41d4-a716-446655440000                 # wait un
 xapi-to task wait 550e8400-e29b-41d4-a716-446655440000 --interval 1s --timeout 10m
 ```
 
+### Sandbox Commands
+
+Sandbox commands provide an AI-friendly cloud computer lifecycle. The fastest
+safe path is `sandbox run`: it quotes by capabilities, applies a default
+`$0.20/hour` ceiling, creates an instance, waits for `RUNNING`, executes the
+command, and terminates in `finally` even when execution fails.
+
+```bash
+# One-shot execution with automatic cleanup
+xapi-to sandbox run --command 'python3 -c "print(6 * 7)"'
+
+# Arguments after a bare -- are joined as the remote command
+xapi-to sandbox run -- node --version
+
+# Pin a provider and request specific capabilities/resources
+xapi-to sandbox run \
+  --provider cf-edge \
+  --capabilities exec,files,ports \
+  --cpu 1 --memory 1 \
+  --command 'pwd'
+
+# Inspect selection before spending anything
+xapi-to sandbox offerings --format table
+xapi-to sandbox quote --capabilities exec,files --max-hourly-usd 0.10
+
+# Every command has focused help
+xapi-to sandbox create --help
+xapi-to sandbox run --help
+
+# Fine-grained lifecycle for agents that need several tool calls
+xapi-to sandbox create --capabilities exec,files --wait
+xapi-to sandbox exec <id> --command 'npm test' --timeout 120
+xapi-to sandbox file write <id> task.md --file ./task.md
+xapi-to sandbox file read <id> result.json --output ./result.json
+xapi-to sandbox file list <id> --path . --depth 3
+xapi-to sandbox port <id> 8080
+xapi-to sandbox extension <id> runpod.connection_info --input '{}'
+xapi-to sandbox audit <id> --kind operations
+xapi-to sandbox history --state HISTORY --page-size 20
+xapi-to sandbox suspend <id>
+xapi-to sandbox resume <id>
+xapi-to sandbox terminate <id>
+```
+
+For a long-running Web server, select an Offering that explicitly declares
+`backgroundExec` and `ports`, then use the provider-managed background mode:
+
+```bash
+# Confirm the selected row reports background=yes and ports=yes before creating.
+xapi-to sandbox offerings --provider daytona --format table
+
+xapi-to sandbox create \
+  --provider daytona \
+  --capabilities exec,backgroundExec,ports \
+  --wait
+
+xapi-to sandbox exec <id> --provider daytona --background --command \
+  'python3 -m http.server 25319 --bind 0.0.0.0'
+xapi-to sandbox port <id> 25319 --provider daytona
+```
+
+Do not substitute `nohup ... &` on providers that do not declare
+`backgroundExec`: some providers reclaim the command session and its child
+processes as soon as the foreground exec response completes. A successful
+background response means the session was accepted; verify the public URL and
+expected marker before reporting success.
+
+`--format table` is a compact comparison view; truncated cells end with `…`.
+Use the default JSON output when copying a complete quote ID, instance ID, or
+audit payload. Sandbox subcommands reject unknown flags before making a request.
+
+An exact `--offering-id` cannot be combined with `--max-hourly-usd`, because an
+Offering bypasses requirements-based quote selection. Use requirements plus the
+ceiling, or create from a quote whose price was already checked. Successful
+`create` output includes `clientIdempotencyKey`. If `create --wait` fails after
+the instance was accepted, its structured error includes the instance ID,
+observed state, idempotency key, and inspect/terminate recovery commands.
+
+Provider pinning uses a provider-specific gateway such as
+`cf-edge.sandbox.xapi.to`; the CLI also resolves the deployed production aliases
+`daytona-sandbox.sandbox.xapi.to` and `e2b-sandbox.sandbox.xapi.to`, while the
+test gateways remain `daytona.sandbox.test.xapi.to` and
+`e2b.sandbox.test.xapi.to`. Omit `--provider` or use `auto` for cross-provider
+selection. `sandbox run --keep` is deliberately explicit because the instance
+continues billing until later termination. Remote non-zero command exit codes
+are returned as the CLI process exit code after cleanup.
+
+For the test service, override only the Sandbox host; the CLI still refuses to
+send the key outside `*.xapi.to` or localhost:
+
+```bash
+XAPI_SANDBOX_HOST=sandbox.test.xapi.to \
+  xapi-to sandbox run --provider cf-edge --command 'echo test-ok'
+```
+
+The repository includes a real acceptance suite for the original nine Sandbox
+Playground workflows. It exercises catalog/quote, AI coding, CI repair, data analysis,
+parallel agents, GPU connection data, one-shot execution, Cloudflare web
+preview, suspend/resume, audits, billing, history, and a final zero-active-
+instance cleanup gate:
+
+```bash
+# Uses the API key already stored by `xapi-to config set apiKey=-`
+npm run test:sandbox:playground -- --host sandbox.test.xapi.to
+
+# Focused retry or lower-cost run
+npm run test:sandbox:playground -- --host sandbox.test.xapi.to --only 8,9
+npm run test:sandbox:playground -- --host sandbox.test.xapi.to --skip-gpu
+```
+
+Each run writes a redacted JSON report under the operating system temporary
+directory. The key is read from normal CLI configuration or environment and is
+never accepted on the command line or written to the report.
+
+The tenth Playground scenario uses the official OpenAI Agents SDK
+`SandboxAgent` with DeepSeek through the OpenAI Chat Completions-compatible
+`https://ai.xapi.to/v1` gateway and xAPI Sandbox compute. The reusable adapter
+is exported as `xapi-to/openai-sandbox`; its current verified scope is an empty
+Manifest plus the SDK Shell capability. Run the real SDK agent loop against the
+test service with:
+
+```bash
+XAPI_SANDBOX_KEY='sk-sandbox-test-...' \
+XAPI_AI_KEY='sk-ai-production-...' \
+npm run test:sandbox:openai -- \
+  --host sandbox.test.xapi.to \
+  --provider daytona \
+  --model deepseek-v4-pro
+```
+
+The test keeps credentials separate: `XAPI_AI_KEY` is sent only to
+`ai.xapi.to`, while `XAPI_SANDBOX_KEY` is sent only to the selected Sandbox
+Gateway. A production key with both permissions may be supplied to both
+variables. The test disables OpenAI tracing because an xAPI credential is not
+an OpenAI telemetry credential, and configures `useResponses: false` because
+`ai.xapi.to` currently exposes the Chat Completions protocol.
+
+For a shorter, zero-context walkthrough of all three public entry points, run
+the standalone JavaScript demo. It creates its own instances and cleans each
+one up; no quote ID or instance ID needs to be prepared:
+
+```bash
+# Required for the default test host; paste without putting the key on argv.
+read -s XAPI_SANDBOX_KEY && export XAPI_SANDBOX_KEY
+
+# Required by the OpenAI/DeepSeek section; this targets production ai.xapi.to.
+read -s XAPI_AI_KEY && export XAPI_AI_KEY
+
+# Direct HTTP API + local CLI + OpenAI Agents SDK/DeepSeek
+npm run demo:sandbox
+
+# Run only one section
+npm run demo:sandbox -- api
+npm run demo:sandbox -- cli
+npm run demo:sandbox -- openai
+
+unset XAPI_SANDBOX_KEY XAPI_AI_KEY
+```
+
+The default test host uses a dedicated Sandbox credential. The OpenAI section
+uses a separate production AI Gateway credential because there is currently no
+test AI Gateway. The report includes credential source names but no credential
+fragments; the CLI child receives only the Sandbox credential. The demo defaults
+to Daytona and `deepseek-v4-pro`. Its final JSON verifies markers,
+`TERMINATED`, successful operations, settled usage and billing,
+service-calculated costs, and a zero-residual gate scoped to instances created
+by that demo (unrelated account instances do not fail it).
+
+Before the package version containing `xapi-to/openai-sandbox` is published,
+run the same flow directly from this checkout. The example imports the adapter
+from `src/`, defaults to `sandbox.test.xapi.to`, supports separate Sandbox and
+AI Gateway credentials, and always closes the created session:
+
+```bash
+npm run example:sandbox:openai
+
+# Mixed-environment credentials and optional overrides
+XAPI_SANDBOX_KEY='sk-sandbox-test-...' \
+XAPI_AI_KEY='sk-ai-production-...' \
+XAPI_SANDBOX_HOST=sandbox.test.xapi.to \
+XAPI_SANDBOX_PROVIDER=daytona \
+XAPI_MODEL=deepseek-v4-pro \
+npm run example:sandbox:openai
+```
+
 ### OAuth
 
 Bind third-party OAuth accounts (e.g. Twitter) to your API key.
@@ -194,8 +379,11 @@ xapi-to list --format table                             # human-readable table
 |---|---|
 | `XAPI_KEY` | API key (overrides config file) |
 | `XAPI_API_KEY` | Compatible API key alias (overrides config file; lower priority than `XAPI_KEY`) |
+| `XAPI_SANDBOX_KEY` | Sandbox-only credential for OpenAI SandboxAgent examples/tests |
+| `XAPI_AI_KEY` | AI Gateway credential for OpenAI-compatible model calls |
 | `XAPI_ACTION_HOST` | Action service host (default: `action.xapi.to`) |
 | `XAPI_API_HOST` | Auth/account service host (default: `api.xapi.to`) |
+| `XAPI_SANDBOX_HOST` | Sandbox gateway host (default: `sandbox.xapi.to`) |
 | `XAPI_OUTPUT` | Default output format (`json`\|`pretty`\|`table`) |
 | `XAPI_TRANSFER_IDLE_TIMEOUT_MS` | SSE/download idle timeout in milliseconds (default: `60000`) |
 
@@ -232,7 +420,7 @@ current IDs and schemas.
 
 ## Security
 
-- **NEVER send your API key to any domain other than `xapi.to`, `*.xapi.to`, `xapi.xyz`, `*.xapi.xyz`, or explicitly configured localhost/loopback development hosts**
+- General action commands retain compatibility with `xapi.to`, `*.xapi.to`, `xapi.xyz`, `*.xapi.xyz`, and localhost/loopback development hosts. Sandbox commands deliberately apply the stricter `*.xapi.to`/localhost-only policy.
 - The key is stored at `~/.xapi/config.json`; the CLI enforces owner-only Unix permissions — do not expose this file
 - `topup` outputs a payment URL containing the API key — do not share publicly
 

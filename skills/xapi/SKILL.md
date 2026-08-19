@@ -1,6 +1,6 @@
 ---
 name: xapi
-description: Access real-time external data via the xapi CLI — Twitter/X (including resolving and downloading tweet videos), Douyin/TikTok, Reddit, LinkedIn, Weibo, on-chain crypto data (price, holders, wallets, DEX, CEX), web/news/image/video/scholar search, AI text/image/video/speech generation and transcription, and SMS verification. Configure the Anthropic/OpenAI-compatible xAPI AI Gateway or the xAPI WebSocket Gateway for realtime voice, streaming ASR/TTS, and provider-native bidirectional sessions. Use when the user mentions xapi, wants to call a third-party API, asks what external services are available, or needs to connect an AI or realtime client to xAPI.
+description: Access real-time external data and managed cloud sandboxes via the xapi CLI — Twitter/X, social platforms, crypto, web/news search, AI generation, SMS verification, and auditable ephemeral compute. Configure the xAPI AI or WebSocket Gateways, or use sandbox run for automatic quote/create/execute/cleanup. Use when the user mentions xapi, external services, or sandbox compute.
 metadata: {"openclaw":{"emoji":"x","requires":{"anyBins":["npx"]},"primaryEnv":"XAPI_KEY"}}
 ---
 
@@ -61,6 +61,17 @@ xapi offers two types of APIs under a unified interface:
 2. **Third-party APIs** (`--source api`) — Proxied services, discovered via `list`, `search`, or `services`
 
 Both types use the same discovery and call workflow. Use `--source capability` or `--source api` on commands that expose source filtering.
+
+## Managed Sandbox Compute
+Read `guides/sandbox.md` before creating a billable instance. For a one-shot
+command, prefer `sandbox run`; it quotes, applies a price ceiling, waits,
+executes, and terminates in `finally`:
+```bash
+npx xapi-to sandbox run --command 'python3 -c "print(6 * 7)"'
+```
+Use granular commands only for multi-step work. Keep the instance ID, terminate
+in cleanup, and verify terminal state/cost afterward. Do not use `--keep` unless
+the user explicitly wants a reusable, continuing-to-bill instance.
 
 ## Usage Workflow
 
@@ -475,6 +486,7 @@ When the user's task involves these workflows, read the corresponding guide file
 - **`guides/ai.md`** — AI (人工智能): synchronous or SSE-streamed text, embeddings, asynchronous image/video generation with `task wait`, text-to-speech, and speech-to-text
 - **`guides/ai_gateway.md`** — xAPI AI Gateway: Claude Code and Anthropic/OpenAI SDK setup, model discovery, routing strategies, streaming, fallback, routing/billing headers, direct media endpoints, and known limitations
 - **`guides/ws_gateway.md`** — xAPI WebSocket Gateway: OpenAI Realtime, streaming ASR/TTS, simultaneous interpretation, podcast generation, service/path routing, browser authentication, native binary protocols, limits, billing, close codes, and reconnects
+- **`guides/sandbox.md`** — managed Sandbox compute: AI tool selection, one-shot and multi-step lifecycles, provider pinning, files, Cloudflare Web previews, suspension, GPU jobs, parallel agents, cleanup recovery, audit/history, and billing verification
 - **`guides/sms.md`** — SMS verification: buy virtual phone numbers, receive verification codes, finish/cancel orders (5SIM)
 
 ## Security
