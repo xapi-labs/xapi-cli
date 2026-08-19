@@ -4,12 +4,13 @@
  *
  * Usage:
  *   xapi-to list [--source capability|api] [--page N] [--page-size N] [--category X]
- *   xapi-to search <query> [--source capability|api] [--category X] [--page N] [--page-size N]
+ *   xapi-to search <query> [--source capability|api] [--category X] [--include-all-versions]
  *   xapi-to categories [--source capability|api]
  *   xapi-to services [--page N] [--page-size N] [--category X]
  *   xapi-to get <id> [--code curl|py|js|ts|go]
  *   xapi-to get-batch <id> [id ...]
  *   xapi-to call <id> --input '{"k":"v"}' [--code curl|py|js|ts|go]
+ *   xapi-to sandbox run --command <shell>
  *
  *   xapi-to config show
  *   xapi-to config set apiKey=<key>
@@ -23,6 +24,7 @@
  * Env vars:
  *   XAPI_KEY       API key
  *   XAPI_ACTION_HOST   Action service host (default: action.xapi.to)
+ *   XAPI_SANDBOX_HOST  Sandbox gateway host (default: sandbox.xapi.to)
  *   XAPI_OUTPUT        default output format (json|pretty|table)
  */
 
@@ -34,6 +36,7 @@ import * as topupCmds from './commands/topup.ts';
 import * as balanceCmds from './commands/balance.ts';
 import * as oauthCmds from './commands/oauth.ts';
 import * as taskCmds from './commands/task.ts';
+import * as sandboxCmds from './commands/sandbox.ts';
 const { OAUTH_HELP } = oauthCmds;
 import { parseArgs } from './args.ts';
 
@@ -50,7 +53,7 @@ COMMANDS
     --page N  --page-size N         Pagination
     --category <name>               Filter by category
     --service-id <id>               Filter by service
-  search <query>                    Search actions by keyword
+  search <query>                    Search actions by keyword (--all-versions: 含非默认但仍在跑的大版本)
     --source capability|api         Filter by source type
     --category <name>               Filter by category
     --page N  --page-size N         Pagination
@@ -76,6 +79,12 @@ COMMANDS
     --interval <duration>            Poll interval, e.g. 2s (default: 2s)
     --timeout <duration>             Max wait duration, e.g. 10m
     --max-attempts <number>          Max poll attempts
+
+  sandbox <command>                  Managed cloud sandbox lifecycle
+    run --command <shell>            Quote, create, execute, and auto-terminate
+    offerings|quote|list|history|get|create|wait|exec
+    file|port|extension|audit|suspend|resume|terminate
+    Run "xapi-to sandbox --help" for selection and safety flags
 
   oauth bind [--provider twitter]   Bind Twitter OAuth to your API key
   oauth status                      List current OAuth bindings
@@ -103,6 +112,7 @@ ENV VARS
   XAPI_API_KEY      Compatible API key alias
   XAPI_ACTION_HOST   Action service host (default: action.xapi.to)
   XAPI_API_HOST      Auth/account service host (default: api.xapi.to)
+  XAPI_SANDBOX_HOST  Sandbox gateway host (default: sandbox.xapi.to)
   XAPI_OUTPUT        Default output format
   XAPI_TRANSFER_IDLE_TIMEOUT_MS  SSE/download idle timeout (default: 60000)
 
@@ -122,6 +132,7 @@ EXAMPLES
   xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}' --code python
   xapi-to task poll 550e8400-e29b-41d4-a716-446655440000
   xapi-to task wait 550e8400-e29b-41d4-a716-446655440000 --interval 2s --timeout 10m
+  xapi-to sandbox run --command 'python3 -c "print(6*7)"'
   xapi-to categories
   xapi-to services --format table
   xapi-to config set apiKey=xapi_abc123
@@ -172,6 +183,38 @@ async function main() {
         case 'wait': return taskCmds.taskWait(subRest, flags);
         default:
           console.error(JSON.stringify({ error: `unknown task command: ${subCmd}`, hint: 'valid commands: poll, wait' }));
+          process.exit(1);
+      }
+      break;
+    }
+    case 'sandbox': {
+      if (rest.length === 0) {
+        console.log(sandboxCmds.SANDBOX_HELP);
+        process.exit(0);
+      }
+      const [subCmd, ...subRest] = rest;
+      switch (subCmd) {
+        case 'offerings': return sandboxCmds.sandboxOfferings(subRest, flags);
+        case 'quote': return sandboxCmds.sandboxQuote(subRest, flags);
+        case 'list': return sandboxCmds.sandboxList(subRest, flags);
+        case 'history': return sandboxCmds.sandboxHistory(subRest, flags);
+        case 'get': return sandboxCmds.sandboxGet(subRest, flags);
+        case 'create': return sandboxCmds.sandboxCreate(subRest, flags);
+        case 'wait': return sandboxCmds.sandboxWait(subRest, flags);
+        case 'exec': return sandboxCmds.sandboxExec(subRest, flags);
+        case 'file': return sandboxCmds.sandboxFile(subRest, flags);
+        case 'port': return sandboxCmds.sandboxPort(subRest, flags);
+        case 'extension': return sandboxCmds.sandboxExtension(subRest, flags);
+        case 'audit': return sandboxCmds.sandboxAudit(subRest, flags);
+        case 'suspend': return sandboxCmds.sandboxState('suspend', subRest, flags);
+        case 'resume': return sandboxCmds.sandboxState('resume', subRest, flags);
+        case 'terminate': return sandboxCmds.sandboxState('terminate', subRest, flags);
+        case 'run': return sandboxCmds.sandboxRun(subRest, flags);
+        default:
+          console.error(JSON.stringify({
+            error: `unknown sandbox command: ${subCmd}`,
+            hint: 'run xapi-to sandbox --help',
+          }));
           process.exit(1);
       }
       break;
