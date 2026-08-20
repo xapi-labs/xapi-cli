@@ -45,6 +45,7 @@ SELECTION FLAGS
   --cpu N  --memory N  --volume N  Minimum resources
   --gpu-count N  --gpu-model NAME   GPU requirements
   --regions a,b                     Allowed regions
+  --min-runtime 24h                 Minimum documented continuous runtime
   --requirements <json>             Complete requirements object
   --max-hourly-usd N                Price ceiling (sandbox run default: 0.20)
 
@@ -92,6 +93,7 @@ SELECTION
   --cpu N  --memory N  --volume N  Minimum resources
   --gpu-count N  --gpu-model NAME   GPU requirements
   --regions a,b                     Allowed regions
+  --min-runtime 24h                 Minimum documented continuous runtime
   --requirements <json>             Complete requirements object
   --max-hourly-usd N                Hard hourly price ceiling
 
@@ -190,7 +192,7 @@ command failure, SIGINT, or SIGTERM.`,
 const COMMON_FLAGS = ['help', 'host', 'provider', 'format'] as const;
 const SELECTION_FLAGS = [
   'capabilities', 'cpu', 'memory', 'volume', 'gpu-count', 'gpu-model',
-  'regions', 'requirements', 'max-hourly-usd',
+  'regions', 'min-runtime', 'requirements', 'max-hourly-usd',
 ] as const;
 const POLL_FLAGS = ['wait-timeout', 'interval'] as const;
 
@@ -332,10 +334,10 @@ function positiveInteger(raw: string | undefined, name: string): number | undefi
 function durationMs(raw: string | undefined, fallback: number, name: string): number {
   if (raw === undefined) return fallback;
   if (raw === 'true') err(`--${name} requires a value`);
-  const match = raw.trim().toLowerCase().match(/^(\d+)(ms|s|m|h)?$/);
-  if (!match || Number(match[1]) <= 0) err(`--${name} must be a duration like 500ms, 2s, 5m, or 1h`);
+  const match = raw.trim().toLowerCase().match(/^(\d+)(ms|s|m|h|d)?$/);
+  if (!match || Number(match[1]) <= 0) err(`--${name} must be a duration like 500ms, 2s, 5m, 1h, or 1d`);
   const value = Number(match[1]);
-  return value * ({ ms: 1, s: 1_000, m: 60_000, h: 3_600_000 }[match[2] || 'ms']!);
+  return value * ({ ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2] || 'ms']!);
 }
 
 function jsonObject(raw: string, name: string): Record<string, unknown> {
@@ -376,6 +378,7 @@ export function requirementsFromFlags(
   const volume = positiveNumber(flagValue(flags, 'volume'), 'volume');
   const gpuCount = positiveInteger(flagValue(flags, 'gpu-count'), 'gpu-count');
   const gpuModel = flagValue(flags, 'gpu-model');
+  const minRuntime = flagValue(flags, 'min-runtime');
   if (gpuModel && gpuCount === undefined && !(Number(requirements.gpu?.count) > 0)) {
     err('--gpu-model requires --gpu-count (or requirements.gpu.count)');
   }
@@ -390,6 +393,11 @@ export function requirementsFromFlags(
       ...(gpuCount !== undefined ? { count: gpuCount } : {}),
       ...(gpuModel ? { model: gpuModel } : {}),
     };
+  }
+  if (minRuntime !== undefined) {
+    requirements.minContinuousRuntimeSeconds = Math.ceil(
+      durationMs(minRuntime, 0, 'min-runtime') / 1_000,
+    );
   }
   return requirements;
 }
@@ -562,7 +570,7 @@ export async function sandboxCreate(args: string[], flags: Record<string, string
   const maxHourly = flagValue(flags, 'max-hourly-usd');
   const requirementFlags = [
     'requirements', 'capabilities', 'cpu', 'memory', 'volume', 'gpu-count',
-    'gpu-model', 'regions',
+    'gpu-model', 'regions', 'min-runtime',
   ].filter((name) => flagValue(flags, name) !== undefined);
   if (quoteId && offeringId) err('--quote-id and --offering-id are mutually exclusive');
   if ((quoteId || offeringId) && requirementFlags.length) {
