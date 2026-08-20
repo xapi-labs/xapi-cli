@@ -7,32 +7,45 @@ not an ordinary per-call action, so cleanup and audit are part of task success.
 
 ## Contents
 
+- [Product boundary](#product-boundary)
 - [Choose the shortest safe lifecycle](#choose-the-shortest-safe-lifecycle)
 - [Authentication and gateway selection](#authentication-and-gateway-selection)
 - [Inspect offerings and quote first](#inspect-offerings-and-quote-first)
 - [One-shot execution](#one-shot-execution)
-- [Multi-step agent lifecycle](#multi-step-agent-lifecycle)
+- [Multi-step client lifecycle](#multi-step-client-lifecycle)
 - [Files and artifacts](#files-and-artifacts)
 - [Web preview and background processes](#web-preview-and-background-processes)
 - [Suspend and resume](#suspend-and-resume)
 - [GPU jobs](#gpu-jobs)
-- [Parallel agents](#parallel-agents)
-- [OpenAI SandboxAgent with xAPI DeepSeek](#openai-sandboxagent-with-xapi-deepseek)
+- [Parallel isolated instances](#parallel-isolated-instances)
+- [OpenAI SandboxAgent integration example](#openai-sandboxagent-integration-example)
 - [Audit, history, and billing](#audit-history-and-billing)
-- [Run the real Playground acceptance suite](#run-the-real-playground-acceptance-suite)
+- [Run the real Playground recipe acceptance suite](#run-the-real-playground-recipe-acceptance-suite)
 - [Failure and interruption recovery](#failure-and-interruption-recovery)
 - [AI operating rules](#ai-operating-rules)
 
+## Product boundary
+
+xAPI is the Sandbox resource and capability provider. The CLI is a thin client
+for discovery, quote, lifecycle, exec, files, ports, provider extensions,
+history, audit, and billing. It does not implement prompts, model loops, memory,
+multi-agent orchestration, job DAGs, queues, or human approval workflows.
+
+Agent, CI, browser, and data examples in this guide are client-side recipes that
+compose Sandbox primitives. They are not additional Gateway workflow APIs.
+Provider-native features remain valid Sandbox extensions when the live Offering
+declares their schemas, limits, state effects, and billing behavior.
+
 ## Choose the shortest safe lifecycle
 
-| Need | Preferred command | Cleanup behavior |
-|---|---|---|
-| Run one command and get stdout | `sandbox run` | Terminates automatically |
-| Several exec/file calls | `create` + primitives | Agent must terminate |
-| Inspect price/capabilities | `offerings`, `quote` | No instance created |
-| Publish a temporary port | `port` after starting a server | Terminate afterward |
-| Pause a reusable workspace | `suspend` | Storage may keep billing |
-| Inspect prior work/cost | `history`, `get`, `audit` | Read-only |
+| Need                           | Preferred command              | Cleanup behavior         |
+| ------------------------------ | ------------------------------ | ------------------------ |
+| Run one command and get stdout | `sandbox run`                  | Terminates automatically |
+| Several exec/file calls        | `create` + primitives          | Agent must terminate     |
+| Inspect price/capabilities     | `offerings`, `quote`           | No instance created      |
+| Publish a temporary port       | `port` after starting a server | Terminate afterward      |
+| Pause a reusable workspace     | `suspend`                      | Storage may keep billing |
+| Inspect prior work/cost        | `history`, `get`, `audit`      | Read-only                |
 
 Prefer `sandbox run` whenever the task fits one remote shell command. A shorter
 lifecycle reduces orphan risk and returns one machine-readable JSON result.
@@ -79,6 +92,7 @@ npx xapi-to sandbox quote \
   --capabilities exec,files \
   --cpu 2 \
   --memory 4 \
+  --min-runtime 24h \
   --max-hourly-usd 0.20 \
   --format pretty
 ```
@@ -121,9 +135,9 @@ shells and AI runners can detect failure without parsing stdout.
 `--keep` suppresses automatic termination. Use it only after the user explicitly
 asks to retain the instance and understands that billing continues.
 
-## Multi-step agent lifecycle
+## Multi-step client lifecycle
 
-Use granular commands when an agent must alternate between files and commands.
+Use granular commands when a client must alternate between files and commands.
 Capture the instance ID without logging credentials:
 
 ```bash
@@ -205,15 +219,17 @@ port response contains `headers`, include them in external requests; they can
 carry a provider preview token. Do not emulate this mode with `nohup ... &` on
 an Offering that does not declare `backgroundExec`.
 
-Cloudflare currently uses its provider-specific command/preview behavior rather
-than the standard background session capability. Pin `cf-edge` only when the
-user explicitly wants Cloudflare. Port `8080` is the currently verified preview
-path for the deployed bridge:
+Cloudflare declares the standard background command surface and maps it to its
+native managed process API. Pin `cf-edge` only when the user explicitly wants
+Cloudflare. For a one-day workspace, require `--min-runtime 24h` and explicitly
+enable `cloudflare.set_keep_alive`; the runtime requirement filters offerings,
+while keepAlive prevents the default ten-minute idle reset:
 
 ```bash
 box_json="$(npx xapi-to sandbox create \
   --provider cf-edge \
-  --capabilities exec,files,ports \
+  --capabilities exec,backgroundExec,files,ports,lifecycle.keep_alive \
+  --min-runtime 24h \
   --wait)"
 box_id="$(printf '%s' "$box_json" | jq -r '.id')"
 port=8080
@@ -225,11 +241,11 @@ npx xapi-to sandbox file write "$box_id" index.html \
   --provider cf-edge \
   --content '<!doctype html><h1>xAPI preview</h1>'
 
-npx xapi-to sandbox exec "$box_id" --provider cf-edge --command \
-  "nohup python3 -m http.server $port >/tmp/server.log 2>&1 & \
-   for i in 1 2 3 4 5 6 7 8 9 10; do \
-     curl -sf http://127.0.0.1:$port/ && exit 0; sleep 1; done; \
-   cat /tmp/server.log >&2; exit 1"
+npx xapi-to sandbox extension "$box_id" cloudflare.set_keep_alive \
+  --provider cf-edge --input '{"keepAlive":true}'
+
+npx xapi-to sandbox exec "$box_id" --provider cf-edge --background --command \
+  "python3 -m http.server $port --directory /workspace"
 
 npx xapi-to sandbox port "$box_id" "$port" --provider cf-edge
 ```
@@ -241,6 +257,37 @@ minutes). If it still fails, verify localhost again, record the URL/error, and
 terminate instead of leaving the instance billing. The URL stops working after
 termination. Quick Tunnels are for previews; use a stable, supported named
 tunnel or application deployment for production traffic.
+
+Cloudflare extensions also expose managed process logs/readiness, persistent
+shell sessions, stateful Python/JavaScript/TypeScript code contexts, Git
+checkout, file-change cursors, bucket mounts, and R2 backup/restore. Inspect
+`capabilities.extensionIds` before calling them. A default idle reset starts a
+fresh container and does not retain files, processes, sessions, or interpreter
+state. `keepAlive` removes that idle cutoff but does not guarantee that platform
+maintenance can never restart the host. Use R2 backup or external storage for
+state that must survive restarts, disable keepAlive in `finally`, and terminate.
+
+If the Offering declares `cloudflare.browser.*`, Cloudflare Browser Run can be
+used through the same generic extension command. Prefer a Quick Action for
+read-only page understanding before paying for a multi-step browser session:
+
+```bash
+npx xapi-to sandbox extension "$box_id" cloudflare.browser.snapshot \
+  --provider cf-edge \
+  --input '{"url":"https://example.com/","formats":["screenshot","markdown","accessibilityTree"]}'
+
+npx xapi-to sandbox extension "$box_id" cloudflare.browser.automate \
+  --provider cf-edge \
+  --input '{"url":"https://demo.playwright.dev/todomvc/","actions":[{"type":"fill","selector":".new-todo","value":"xAPI task"},{"type":"press","selector":".new-todo","key":"Enter"}],"extract":[{"name":"todos","selector":".todo-list li label","all":true}],"screenshot":{"type":"png","fullPage":true}}'
+```
+
+Browser Run and the Sandbox container do not share a filesystem. Write the
+returned page data into the sandbox through `sandbox file write` if a later
+container command must analyze it. Browser operations have separate operation
+prices; inspect the quote instead of assuming the container hourly cap includes
+them. The current automation extension is one-shot and closes the browser.
+Persistent CDP/Live View/HITL are not supported until xAPI owns and authorizes
+the session and proxies its WebSocket without exposing Cloudflare credentials.
 
 ## Suspend and resume
 
@@ -290,58 +337,65 @@ npx xapi-to sandbox terminate <id> --provider runpod
 GPU work is usually more expensive. Quote first, set a deliberate ceiling, use
 a command timeout, and terminate immediately after artifacts are retrieved.
 
-## Parallel agents
+## Parallel isolated instances
 
-Give each agent a separate instance. Do not share a mutable workspace when the
-goal is isolation. Use unique idempotency keys and record every instance ID.
+Give each concurrent worker or agent a separate instance. Do not share a mutable
+workspace when the goal is isolation. Use unique idempotency keys and record every instance ID.
 Run cleanup for all IDs even if one agent fails; then verify `sandbox list` has
 no active instance from the job.
 
 Limit concurrency based on budget. Parallel creation multiplies reservation and
 running cost, even when the individual hourly quote is small.
 
-## OpenAI SandboxAgent with xAPI DeepSeek
+## OpenAI SandboxAgent integration example
 
 The OpenAI Agents SDK keeps the model provider and sandbox provider separate.
 Use the SDK's OpenAI-compatible model provider for DeepSeek through
 `https://ai.xapi.to/v1`, and the xAPI adapter for Sandbox compute:
 
+The Agents SDK owns the model loop, tool choice, prompt, and conversation state.
+xAPI owns only the Sandbox resource, execution, lifecycle, audit, and billing.
+
 ```ts
-import { OpenAIProvider, Runner } from '@openai/agents';
-import { Manifest, SandboxAgent, shell } from '@openai/agents/sandbox';
-import { XapiAgentsSandboxClient } from 'xapi-to/openai-sandbox';
+import { OpenAIProvider, Runner } from "@openai/agents";
+import { Manifest, SandboxAgent, shell } from "@openai/agents/sandbox";
+import { XapiAgentsSandboxClient } from "xapi-to/openai-sandbox";
 
 const sandboxApiKey = process.env.XAPI_SANDBOX_KEY;
 const aiApiKey = process.env.XAPI_AI_KEY;
-if (!sandboxApiKey) throw new Error('XAPI_SANDBOX_KEY is required');
-if (!aiApiKey) throw new Error('XAPI_AI_KEY is required');
+if (!sandboxApiKey) throw new Error("XAPI_SANDBOX_KEY is required");
+if (!aiApiKey) throw new Error("XAPI_AI_KEY is required");
 
 const sandbox = new XapiAgentsSandboxClient({
   apiKey: sandboxApiKey,
-  sandboxHost: 'sandbox.test.xapi.to',
-  provider: 'daytona',
-  model: 'deepseek-v4-pro',
+  sandboxHost: "sandbox.test.xapi.to",
+  provider: "daytona",
+  model: "deepseek-v4-pro",
 });
 const modelProvider = new OpenAIProvider({
   apiKey: aiApiKey,
-  baseURL: 'https://ai.xapi.to/v1',
+  baseURL: "https://ai.xapi.to/v1",
   useResponses: false,
   strictFeatureValidation: true,
 });
 const runner = new Runner({ modelProvider, tracingDisabled: true });
 const agent = new SandboxAgent({
-  name: 'xAPI DeepSeek sandbox agent',
-  model: 'deepseek-v4-pro',
+  name: "xAPI DeepSeek sandbox agent",
+  model: "deepseek-v4-pro",
   defaultManifest: new Manifest({ root: sandbox.workspaceRoot }),
   capabilities: [shell()],
-  instructions: 'Use shell to complete and verify the task.',
+  instructions: "Use shell to complete and verify the task.",
 });
 
 try {
-  const result = await runner.run(agent, 'Write SDK_OK=42 to result.txt and read it.', {
-    maxTurns: 8,
-    sandbox: { client: sandbox },
-  });
+  const result = await runner.run(
+    agent,
+    "Write SDK_OK=42 to result.txt and read it.",
+    {
+      maxTurns: 8,
+      sandbox: { client: sandbox },
+    },
+  );
   console.log(result.finalOutput);
 } finally {
   await sandbox.lastSession?.close();
@@ -406,9 +460,9 @@ For acceptance, verify:
 
 Use the returned billing data rather than recomputing cost from wall-clock time.
 
-## Run the real Playground acceptance suite
+## Run the real Playground recipe acceptance suite
 
-From an xapi-cli development checkout, run the same nine real workflows shown
+From an xapi-cli development checkout, run the same nine client recipes shown
 in the Web Playground. The suite uses normal CLI configuration, never accepts a
 key on argv, records audit/billing evidence, terminates every tracked instance
 in `finally`, and fails if any instance created after its baseline remains
