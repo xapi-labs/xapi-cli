@@ -434,18 +434,6 @@ npx xapi-to config show
 # Check balance
 npx xapi-to balance
 
-# Read the finalized cost of one request (use X-XAPI-Request-Id or the final xapi.usage SSE event)
-npx xapi-to usage <request-id>
-npx xapi-to usage wait <request-id> --timeout 1m
-
-# Provider economy (requires earnings:read)
-npx xapi-to earnings
-npx xapi-to earnings list --status SETTLED --limit 20
-
-# Reinvest settled provider earnings into spendable balance (requires earnings:transfer)
-# This is one-way. Reuse the idempotency key only when retrying the same amount.
-npx xapi-to earnings transfer 1 --idempotency-key reinvest-001
-
 # Top up account
 npx xapi-to topup --method stripe --amount 10
 npx xapi-to topup --method x402
@@ -500,6 +488,7 @@ When the user's task involves these workflows, read the corresponding guide file
 - **`guides/ws_gateway.md`** — xAPI WebSocket Gateway: OpenAI Realtime, streaming ASR/TTS, simultaneous interpretation, podcast generation, service/path routing, browser authentication, native binary protocols, limits, billing, close codes, and reconnects
 - **`guides/sandbox.md`** — managed Sandbox compute: AI tool selection, one-shot and multi-step lifecycles, provider pinning, files, Cloudflare Web previews, suspension, GPU jobs, parallel agents, cleanup recovery, audit/history, and billing verification
 - **`guides/sms.md`** — SMS verification: buy virtual phone numbers, receive verification codes, finish/cancel orders (5SIM)
+- **`guides/provider.md`** — Provider management: create/update services, About/changelog, version lifecycle, metrics/events and request receipts, Skill upload/linking, rollback/delete, earnings transfer
 
 ## Security
 

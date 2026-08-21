@@ -39,6 +39,8 @@ import * as earningsCmds from './commands/earnings.ts';
 import * as oauthCmds from './commands/oauth.ts';
 import * as taskCmds from './commands/task.ts';
 import * as sandboxCmds from './commands/sandbox.ts';
+import * as providerCmds from './commands/provider.ts';
+import * as skillCmds from './commands/skill.ts';
 const { OAUTH_HELP } = oauthCmds;
 import { parseArgs } from './args.ts';
 
@@ -87,6 +89,16 @@ COMMANDS
     offerings|quote|list|history|get|create|wait|exec
     file|port|extension|audit|suspend|resume|terminate
     Run "xapi-to sandbox --help" for selection and safety flags
+
+  provider <command>                 Manage provider services, releases, metrics, events, and linked skills
+    list|get|create|update|versions|version|major|revision
+    publish|rollback|default-major|deprecate|restore|review|diff
+    metrics|events|skill|delete
+    Run "xapi-to provider --help" for metadata and lifecycle flags
+
+  skill <command>                    Upload and submit service usage skills
+    spec|submit|status|wait
+    Run "xapi-to skill --help" for local directory and GitHub workflows
 
   oauth bind [--provider twitter]   Bind Twitter OAuth to your API key
   oauth status                      List current OAuth bindings
@@ -150,6 +162,10 @@ EXAMPLES
   xapi-to usage c7fe24d5-e1d4-4bc1-a9bb-e16df8ab93b0
   xapi-to usage wait c7fe24d5-e1d4-4bc1-a9bb-e16df8ab93b0 --timeout 1m
   xapi-to earnings transfer 1 --idempotency-key reinvest-001
+  xapi-to provider update svc_123 --about-file ./ABOUT.md --website https://example.com
+  xapi-to provider publish svc_123 rev_456 --changelog-file ./CHANGELOG.md
+  xapi-to skill submit --dir ./skills/my-service
+  xapi-to provider skill link svc_123 11111111-1111-4111-8111-111111111111
   xapi-to health
 `;
 
@@ -186,6 +202,8 @@ async function main() {
     case 'get':        return actionCmds.actionGet(rest, flags);
     case 'get-batch':  return actionCmds.actionBatchGet(rest, flags);
     case 'call':       return actionCmds.actionCall(rest, flags);
+    case 'provider':   return providerCmds.provider(rest, flags);
+    case 'skill':      return skillCmds.skill(rest, flags);
     case 'task': {
       if (rest.length === 0) {
         console.log(taskCmds.taskHelp());

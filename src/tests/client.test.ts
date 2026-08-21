@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
-import { request, actionCall, actionSearch, actionStream, deleteOAuthBinding, listOAuthProviders } from '../client.ts';
+import { request, actionCall, actionSearch, actionStream, apiKeyApiRequest, deleteOAuthBinding, listOAuthProviders } from '../client.ts';
 
 const OK = () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
 
@@ -294,6 +294,24 @@ describe('client.request', () => {
   });
 
   describe('per-endpoint retry policy', () => {
+    it('apiKeyApiRequest sends the scoped key and JSON body to the control plane', async () => {
+      fetchSpy = mockFetch(OK);
+
+      await apiKeyApiRequest('api.xapi.to', 'sk-provider', '/api/test', {
+        method: 'PATCH',
+        body: { aboutMarkdown: '# About' },
+      });
+
+      const [url, options] = fetchSpy.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://api.xapi.to/api/test');
+      expect(options.method).toBe('PATCH');
+      expect(options.headers).toEqual({
+        'XAPI-KEY': 'sk-provider',
+        'Content-Type': 'application/json',
+      });
+      expect(options.body).toBe(JSON.stringify({ aboutMarkdown: '# About' }));
+    });
+
     it('deleteOAuthBinding (DELETE) does NOT retry — avoids a spurious 404 after a lost success', async () => {
       let calls = 0;
       fetchSpy = mockFetch(async () => {

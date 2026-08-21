@@ -26,6 +26,13 @@ export interface ClientOptions {
   apiKey?: string;
 }
 
+export interface ApiKeyApiRequestOptions {
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  body?: unknown;
+  timeoutMs?: number;
+  retries?: number;
+}
+
 export class HttpError extends Error {
   constructor(
     public readonly status: number,
@@ -198,6 +205,30 @@ function headers(apiKey?: string): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
   if (apiKey) h['XAPI-Key'] = apiKey;
   return h;
+}
+
+/** Call a scoped API-Key control-plane endpoint without exchanging for a JWT. */
+export function apiKeyApiRequest<T>(
+  apiHost: string,
+  apiKey: string,
+  path: string,
+  options: ApiKeyApiRequestOptions = {},
+): Promise<T> {
+  const method = options.method ?? 'GET';
+  const requestHeaders: Record<string, string> = { 'XAPI-KEY': apiKey };
+  if (options.body !== undefined) requestHeaders['Content-Type'] = 'application/json';
+  return request<T>(
+    `${scheme(apiHost)}://${apiHost}${path}`,
+    {
+      method,
+      headers: requestHeaders,
+      ...(options.body !== undefined
+        ? { body: JSON.stringify(options.body) }
+        : {}),
+    },
+    options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    options.retries ?? 0,
+  );
 }
 
 function baseUrl(opts: ClientOptions): string {

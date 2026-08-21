@@ -335,6 +335,38 @@ xapi-to topup --method x402                             # x402 (USDC on Base)
 `earnings transfer` requires `earnings:transfer`. Transfers are one-way and
 idempotent: reuse a key only when retrying the same amount.
 
+### Provider Management
+
+Provider commands use scoped `XAPI-KEY` routes for service and release
+management without a JWT exchange:
+
+```bash
+xapi-to provider list
+xapi-to provider create --file ./service.json
+xapi-to provider update <service-id> --about-file ./ABOUT.md --website https://example.com
+xapi-to provider versions <service-id>
+xapi-to provider revision start <service-id> 1
+xapi-to provider version update <service-id> <version-id> --file ./contract.json
+xapi-to provider diff <service-id> 1
+xapi-to provider publish <service-id> <revision-id> --changelog-file ./CHANGELOG.md
+xapi-to provider metrics <service-id> --days 7
+xapi-to provider events --after '<opaque-next-cursor>'
+```
+
+Service usage tutorials are Skill packages. Scaffold one from the serving
+contract, submit it for review, wait for publication, then link it:
+
+```bash
+xapi-to provider skill scaffold <service-id> --output ./my-skill/SKILL.md
+xapi-to skill submit --dir ./my-skill
+xapi-to skill wait <submission-id> --timeout 10m
+xapi-to provider skill link <service-id> <skill-id>
+xapi-to provider skill fingerprint <service-id> --skill-version-id <version-id>
+```
+
+Run `xapi-to provider --help` and `xapi-to skill --help` for the complete
+lifecycle, rollback, deletion, GitHub import, scope, and safety options.
+
 ### Config
 
 ```bash
