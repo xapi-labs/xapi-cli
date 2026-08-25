@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.20](https://github.com/xapi-labs/xapi-cli/compare/v0.1.19...v0.1.20) (2026-08-25)
+
+
+### Features
+
+* **sandbox:** add managed sandbox CLI workflows ([bb31e74](https://github.com/xapi-labs/xapi-cli/commit/bb31e74e11a231f50ba2fdd56c4ed67bfcf98f88))
+* **search:** --all-versions 开关（搜索含非默认但在跑的大版本） ([d8b2e9b](https://github.com/xapi-labs/xapi-cli/commit/d8b2e9b0f23c220244466792288a0d4982c80cd3))
+* **skill:** add Serper v7 workflows and mini-batch guidance ([c066307](https://github.com/xapi-labs/xapi-cli/commit/c066307f2fb8a0b3a4746fcb25f67d3853b4374d))
+
 ## [0.1.19](https://github.com/xapi-labs/xapi-cli/compare/v0.1.18...v0.1.19) (2026-08-10)
 
 
