@@ -373,7 +373,7 @@ npx xapi-to call web.search --input '{"q":"hello world"}'
 npx xapi-to call serper.search --input '{"body":{"q":"hello world"}}'
 ```
 
-This ensures correct types (strings, numbers, booleans) are preserved.
+Read `guides/serper.md` before using direct `serper.*` actions; it covers all current v7 actions, mini-batches, Reviews, billing, and the `web.search.*` boundary.
 
 ## Code Generation (`--code`)
 
@@ -450,7 +450,7 @@ Beyond built-in capabilities, xapi proxies **dozens** of third-party API service
 - **LinkedIn** (`linkedin`) — LinkedIn API (person profiles & career history, company pages, posts & comments, job search). For career history, see `guides/linkedin.md` first — the profile endpoint silently omits `experience`/`education` for ordinary profiles
 - **Weibo** (`weibo-app`) — Weibo API (user profiles, feeds, search, trending)
 - **5SIM SMS** (`5sim-sms`) — SMS verification (virtual numbers, activation codes)
-- **Serper API** (`serper`) — Google Search API
+- **Serper API** (`serper`) — 12 provider-native Google Search actions including web, images, news, maps, places, video, shopping, scholar, patents, autocomplete, Lens, and reviews. Eleven support mini-batch; Reviews does not. Read `guides/serper.md` before calling them
 - **OpenRouter API** (`openrouter`) — Multi-model AI gateway (chat, embeddings, audio transcription/speech, video)
 
 The full catalog also spans many other categories — crypto/on-chain data, CEX market data, stocks & macro, social platforms, news, weather, and more. Discover them with `search` / `services`.
@@ -482,6 +482,7 @@ When the user's task involves these workflows, read the corresponding guide file
 - **`guides/xiaohongshu.md`** — 小红书 (Xiaohongshu): user profiles, notes, comments, search, topics, products, creator inspiration
 - **`guides/weibo.md`** — Weibo (微博): hot search, content search, user profiles, post details, comments, reposts, media
 - **`guides/google_search.md`** — Google Search: web, realtime, news, image, video, scholar, maps, places, shopping
+- **`guides/serper.md`** — direct Serper v7 API: 12 provider-native actions, object-or-array mini-batches, Reviews pagination and batch exception, Lens, dynamic per-credit billing, and the current Webpage service boundary
 - **`guides/crypto.md`** — Crypto (加密货币): on-chain token price/overview/holders/security/OHLCV, wallet analytics, DEX pairs, CEX spot prices by symbol, news — covers contract-address vs symbol addressing and multi-chain
 - **`guides/ai.md`** — AI (人工智能): synchronous or SSE-streamed text, embeddings, asynchronous image/video generation with `task wait`, text-to-speech, and speech-to-text
 - **`guides/ai_gateway.md`** — xAPI AI Gateway: Claude Code and Anthropic/OpenAI SDK setup, model discovery, routing strategies, streaming, fallback, routing/billing headers, direct media endpoints, and known limitations

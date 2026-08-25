@@ -86,8 +86,14 @@ xapi-to services --category Social --page-size 10       # filter and paginate
 xapi-to get twitter.tweet_detail                        # get action schema
 xapi-to get-batch twitter.tweet_detail crypto.token.price # get several schemas
 xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'  # execute
+xapi-to call serper.search --input '{"body":[{"q":"OpenAI"},{"q":"Cloudflare"}]}' # Serper mini-batch
 xapi-to call ai.text.chat.fast --input '{"messages":[{"role":"user","content":"Hi"}]}' --stream
 ```
+
+Direct `serper.*` actions use a nested `body`. Eleven current v7 actions accept
+one request object or a mini-batch array; `serper.reviews` accepts only one
+object. See the bundled [Serper guide](skills/xapi/guides/serper.md) for the
+Action list, examples, and dynamic per-credit billing.
 
 Search uses `--sort default|relevance|price`. `default` is the recommended
 order: it considers keyword coverage and match quality first, then favors
