@@ -155,6 +155,45 @@ describe('sandbox client', () => {
     expect(calls).toBe(3);
   });
 
+  it('aborts an in-flight state read when the wait deadline expires', async () => {
+    let calls = 0;
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(((_url: any, init: any) => {
+      calls++;
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('aborted', 'AbortError')),
+          { once: true },
+        );
+      });
+    }) as any);
+    await expect(client.sandboxWait(
+      { sandboxHost: 'sandbox.test.xapi.to', apiKey: 'sk-test' },
+      'box-1',
+      ['RUNNING'],
+      20,
+      1,
+    )).rejects.toThrow(/within 20ms/);
+    expect(calls).toBe(1);
+  });
+
+  it('does not accept a desired state returned after the wait deadline', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return new Response(JSON.stringify({ id: 'box-1', observedState: 'RUNNING' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as any);
+    await expect(client.sandboxWait(
+      { sandboxHost: 'sandbox.test.xapi.to', apiKey: 'sk-test' },
+      'box-1',
+      ['RUNNING'],
+      5,
+      1,
+    )).rejects.toThrow(/within 5ms/);
+  });
+
   it('interrupts a state wait promptly so callers can clean up', async () => {
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       id: 'box-1', observedState: 'PROVISIONING',

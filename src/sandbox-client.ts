@@ -263,24 +263,43 @@ export async function sandboxWait(
   signal?: AbortSignal,
 ): Promise<SandboxDetail> {
   const deadline = Date.now() + timeoutMs;
+  const deadlineController = new AbortController();
+  const abortFromCaller = () => deadlineController.abort();
+  const deadlineTimer = setTimeout(() => deadlineController.abort(), Math.max(0, timeoutMs));
+  if (signal?.aborted) deadlineController.abort();
+  else signal?.addEventListener('abort', abortFromCaller, { once: true });
   let last: SandboxDetail | undefined;
-  while (Date.now() < deadline) {
-    if (signal?.aborted) throw new Error(`sandbox wait interrupted while waiting for ${wanted.join(' or ')}`);
-    last = await sandboxGet(opts, id, signal);
-    const state = String(last.observedState || '');
-    if (wanted.includes(state)) return last;
-    if (['FAILED', 'TERMINATED'].includes(state) && !wanted.includes(state)) {
-      throw new Error(`sandbox ${id} entered ${state} while waiting for ${wanted.join(' or ')}`);
+  try {
+    while (Date.now() < deadline) {
+      if (signal?.aborted) throw new Error(`sandbox wait interrupted while waiting for ${wanted.join(' or ')}`);
+      try {
+        last = await sandboxGet(opts, id, deadlineController.signal);
+      } catch (error) {
+        if (signal?.aborted) {
+          throw new Error(`sandbox wait interrupted while waiting for ${wanted.join(' or ')}`);
+        }
+        if (Date.now() >= deadline) break;
+        throw error;
+      }
+      if (Date.now() >= deadline) break;
+      const state = String(last.observedState || '');
+      if (wanted.includes(state)) return last;
+      if (['FAILED', 'TERMINATED'].includes(state) && !wanted.includes(state)) {
+        throw new Error(`sandbox ${id} entered ${state} while waiting for ${wanted.join(' or ')}`);
+      }
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          clearTimeout(timer);
+          signal?.removeEventListener('abort', done);
+          resolve();
+        };
+        const timer = setTimeout(done, Math.min(intervalMs, Math.max(0, deadline - Date.now())));
+        signal?.addEventListener('abort', done, { once: true });
+      });
     }
-    await new Promise<void>((resolve) => {
-      const done = () => {
-        clearTimeout(timer);
-        signal?.removeEventListener('abort', done);
-        resolve();
-      };
-      const timer = setTimeout(done, Math.min(intervalMs, Math.max(0, deadline - Date.now())));
-      signal?.addEventListener('abort', done, { once: true });
-    });
+  } finally {
+    clearTimeout(deadlineTimer);
+    signal?.removeEventListener('abort', abortFromCaller);
   }
   throw new Error(
     `sandbox ${id} did not enter ${wanted.join(' or ')} within ${timeoutMs}ms` +

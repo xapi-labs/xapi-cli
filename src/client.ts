@@ -100,8 +100,28 @@ function parseRetryAfterMs(res: Response): number | undefined {
   return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function abortError(signal?: AbortSignal | null): Error {
+  const reason = signal?.reason;
+  return reason instanceof Error
+    ? reason
+    : new DOMException('The operation was aborted', 'AbortError');
+}
+
+function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError(signal));
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onAbort = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(abortError(signal));
+    };
+    timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 export async function request<T>(
@@ -138,7 +158,7 @@ export async function request<T>(
         if (isRetryableStatus(res.status) && attempt < retries) {
           await res.text().catch(() => ''); // drain body so the socket can be reused
           clearTimeout(timer);
-          await sleep(backoffDelayMs(attempt, retryAfterMs));
+          await sleep(backoffDelayMs(attempt, retryAfterMs), callerSignal);
           attempt++;
           continue;
         }
@@ -174,7 +194,7 @@ export async function request<T>(
       if (timedOut) {
         const timeoutError = new RequestTimeoutError(timeoutMs);
         if (attempt < retries) {
-          await sleep(backoffDelayMs(attempt));
+          await sleep(backoffDelayMs(attempt), callerSignal);
           attempt++;
           continue;
         }
@@ -182,7 +202,7 @@ export async function request<T>(
       }
       if (isRetryableNetworkError(e) && attempt < retries) {
         clearTimeout(timer);
-        await sleep(backoffDelayMs(attempt));
+        await sleep(backoffDelayMs(attempt), callerSignal);
         attempt++;
         continue;
       }
