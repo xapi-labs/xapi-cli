@@ -34,9 +34,13 @@ const { CONFIG_HELP } = cfgCmds;
 import * as regCmds from './commands/register.ts';
 import * as topupCmds from './commands/topup.ts';
 import * as balanceCmds from './commands/balance.ts';
+import * as usageCmds from './commands/usage.ts';
+import * as earningsCmds from './commands/earnings.ts';
 import * as oauthCmds from './commands/oauth.ts';
 import * as taskCmds from './commands/task.ts';
 import * as sandboxCmds from './commands/sandbox.ts';
+import * as providerCmds from './commands/provider.ts';
+import * as skillCmds from './commands/skill.ts';
 const { OAUTH_HELP } = oauthCmds;
 import { parseArgs } from './args.ts';
 
@@ -86,6 +90,16 @@ COMMANDS
     file|port|extension|audit|suspend|resume|terminate
     Run "xapi-to sandbox --help" for selection and safety flags
 
+  provider <command>                 Manage provider services, releases, metrics, events, and linked skills
+    list|get|create|update|versions|version|major|revision
+    publish|rollback|default-major|deprecate|restore|review|diff
+    metrics|events|skill|delete
+    Run "xapi-to provider --help" for metadata and lifecycle flags
+
+  skill <command>                    Upload and submit service usage skills
+    spec|submit|status|wait
+    Run "xapi-to skill --help" for local directory and GitHub workflows
+
   oauth bind [--provider twitter]   Bind Twitter OAuth to your API key
   oauth status                      List current OAuth bindings
   oauth unbind <binding-id>         Remove an OAuth binding
@@ -95,6 +109,14 @@ COMMANDS
     --referral-code <code>          Register with an inviter's referral code (also: --referralCode, or as positional arg)
     --force                         Replace an existing file-based apiKey
   balance                           Show current account balance
+  usage <request-id>                Show a finalized per-request cost receipt
+  usage wait <request-id>           Wait until a request receipt is finalized
+    --interval <duration>           Poll interval (default: 1s)
+    --timeout <duration>            Max wait duration (default: 30s)
+  earnings [summary]                Show spendable balance and provider earnings
+  earnings list                    List provider earning records
+  earnings transfer <usd> --idempotency-key <key>
+                                    Reinvest settled earnings into xapi balance
   topup [--amount <usd>] [--method stripe|x402]   Generate payment URL
 
   health                            Check backend connectivity
@@ -136,6 +158,14 @@ EXAMPLES
   xapi-to categories
   xapi-to services --format table
   xapi-to config set apiKey=xapi_abc123
+  xapi-to earnings
+  xapi-to usage c7fe24d5-e1d4-4bc1-a9bb-e16df8ab93b0
+  xapi-to usage wait c7fe24d5-e1d4-4bc1-a9bb-e16df8ab93b0 --timeout 1m
+  xapi-to earnings transfer 1 --idempotency-key reinvest-001
+  xapi-to provider update svc_123 --about-file ./ABOUT.md --website https://example.com
+  xapi-to provider publish svc_123 rev_456 --changelog-file ./CHANGELOG.md
+  xapi-to skill submit --dir ./skills/my-service
+  xapi-to provider skill link svc_123 11111111-1111-4111-8111-111111111111
   xapi-to health
 `;
 
@@ -172,6 +202,8 @@ async function main() {
     case 'get':        return actionCmds.actionGet(rest, flags);
     case 'get-batch':  return actionCmds.actionBatchGet(rest, flags);
     case 'call':       return actionCmds.actionCall(rest, flags);
+    case 'provider':   return providerCmds.provider(rest, flags);
+    case 'skill':      return skillCmds.skill(rest, flags);
     case 'task': {
       if (rest.length === 0) {
         console.log(taskCmds.taskHelp());
@@ -242,6 +274,8 @@ async function main() {
     // ── Account commands ──
     case 'register':   return regCmds.register(rest, flags);
     case 'balance':    return balanceCmds.balance(rest, flags);
+    case 'usage':      return usageCmds.usage(rest, flags);
+    case 'earnings':   return earningsCmds.earnings(rest, flags);
     case 'topup':      return topupCmds.topup(rest, flags);
     case 'health':     return cfgCmds.configHealth(rest, flags);
 

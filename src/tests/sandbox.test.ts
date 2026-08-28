@@ -60,12 +60,14 @@ describe('sandbox commands', () => {
     });
     expect(requirementsFromFlags({
       capabilities: 'exec, files', cpu: '2', memory: '4', 'gpu-count': '1', 'gpu-model': 'L4', regions: 'us,eu',
+      'min-runtime': '24h',
     })).toEqual({
       capabilities: ['exec', 'files'],
       cpu: { min: 2 },
       memoryGiB: { min: 4 },
       gpu: { count: 1, model: 'L4' },
       regions: ['us', 'eu'],
+      minContinuousRuntimeSeconds: 86400,
     });
     expect(requirementsFromFlags({
       requirements: '{"capabilities":["exec","files"],"cpu":{"min":4}}',

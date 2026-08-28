@@ -466,8 +466,6 @@ The full catalog also spans many other categories — crypto/on-chain data, CEX 
 
 The CLI retries idempotent metadata reads and `task poll` for transient timeouts, network failures, `408`, `429`, and `502`–`504`. It does not automatically retry arbitrary `call` actions because the upstream may already have completed a write; confirm the result before manually retrying posts, payments, or other mutations. Ordinary JSON execution has a 60-second request ceiling. HTTP SSE streams and raw downloads instead use a 60-second no-data timeout, reset whenever a chunk arrives; override it with `XAPI_TRANSFER_IDLE_TIMEOUT_MS` when an upstream legitimately pauses longer.
 
-## Tips
-
 - Use `--page` and `--page-size` for pagination on `list`, `search`, and `services`.
 
 ## Specialized Guides
@@ -489,6 +487,7 @@ When the user's task involves these workflows, read the corresponding guide file
 - **`guides/ws_gateway.md`** — xAPI WebSocket Gateway: OpenAI Realtime, streaming ASR/TTS, simultaneous interpretation, podcast generation, service/path routing, browser authentication, native binary protocols, limits, billing, close codes, and reconnects
 - **`guides/sandbox.md`** — managed Sandbox compute: AI tool selection, one-shot and multi-step lifecycles, provider pinning, files, Cloudflare Web previews, suspension, GPU jobs, parallel agents, cleanup recovery, audit/history, and billing verification
 - **`guides/sms.md`** — SMS verification: buy virtual phone numbers, receive verification codes, finish/cancel orders (5SIM)
+- **`guides/provider.md`** — Provider management: create/update services, About/changelog, version lifecycle, metrics/events and request receipts, Skill upload/linking, rollback/delete, earnings transfer
 
 ## Security
 

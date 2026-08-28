@@ -41,4 +41,19 @@ describe('bundled xAPI Sandbox skill guide', () => {
     expect(guide).toContain('backgroundExec');
     expect(guide).not.toContain('sk-');
   });
+
+  it('keeps Agent orchestration outside the xAPI Sandbox product boundary', () => {
+    for (const responsibility of [
+      'discovery, quote, lifecycle, exec, files, ports',
+      'history, audit, and billing',
+    ]) expect(guide).toContain(responsibility);
+    for (const excluded of [
+      'prompts, model loops, memory',
+      'multi-agent orchestration',
+      'job DAGs',
+      'human approval workflows',
+    ]) expect(guide).toContain(excluded);
+    expect(guide).toContain('client-side recipes');
+    expect(guide).toContain('not additional Gateway workflow APIs');
+  });
 });

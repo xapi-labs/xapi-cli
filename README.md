@@ -327,10 +327,51 @@ xapi-to register --referral-code xapito                 # register with an invit
 xapi-to register xapito                                 # positional shorthand for --referral-code
 xapi-to register --force                                # replace an existing file-based key
 xapi-to balance                                         # show USD balance
+xapi-to usage <request-id>                              # finalized cost + balance-after receipt
+xapi-to usage wait <request-id> --timeout 1m            # poll until a streaming receipt is finalized
+xapi-to earnings                                        # spendable balance + provider earnings
+xapi-to earnings list --status SETTLED --limit 20       # provider earning records
+xapi-to earnings transfer 1 --idempotency-key reinvest-001 # reinvest settled earnings
 xapi-to topup                                           # generate payment URL
 xapi-to topup --method stripe --amount 10               # stripe, $10
 xapi-to topup --method x402                             # x402 (USDC on Base)
 ```
+
+`earnings` summary/list require the `earnings:read` scope on the current key;
+`earnings transfer` requires `earnings:transfer`. Transfers are one-way and
+idempotent: reuse a key only when retrying the same amount.
+
+### Provider Management
+
+Provider commands use scoped `XAPI-KEY` routes for service and release
+management without a JWT exchange:
+
+```bash
+xapi-to provider list
+xapi-to provider create --file ./service.json
+xapi-to provider update <service-id> --about-file ./ABOUT.md --website https://example.com
+xapi-to provider versions <service-id>
+xapi-to provider revision start <service-id> 1
+xapi-to provider version update <service-id> <version-id> --file ./contract.json
+xapi-to provider diff <service-id> 1
+xapi-to provider publish <service-id> <revision-id> --changelog-file ./CHANGELOG.md
+xapi-to provider metrics <service-id> --days 7
+xapi-to provider events --after '<opaque-next-cursor>'
+```
+
+Service usage tutorials are Skill packages. Scaffold one from the serving
+contract, submit it for review, wait for publication, then link it:
+
+```bash
+xapi-to provider skill scaffold <service-id> --output ./my-skill/SKILL.md
+xapi-to skill submit --dir ./my-skill
+xapi-to skill wait <submission-id> --timeout 10m
+xapi-to provider skill link <service-id> <skill-id>
+xapi-to provider skill fingerprint <service-id> --skill-version-id <version-id>
+```
+
+Run `xapi-to provider --help` and `xapi-to skill --help` for the complete
+lifecycle, rollback, deletion, GitHub import, scope, and safety options.
 
 ### Config
 

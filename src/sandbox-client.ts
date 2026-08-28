@@ -26,6 +26,7 @@ export interface SandboxRequirements {
   gpu?: { count?: number; model?: string };
   regions?: string[];
   capabilities?: string[];
+  minContinuousRuntimeSeconds?: number;
   [key: string]: unknown;
 }
 
