@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.21](https://github.com/xapi-labs/xapi-cli/compare/v0.1.20...v0.1.21) (2026-08-28)
+
+
+### Bug Fixes
+
+* **sandbox:** enforce hard wait deadlines during polling ([794ca16](https://github.com/xapi-labs/xapi-cli/commit/794ca16455e4bc6cbc1dccdec006652e5a16d437))
+* **sandbox:** enforce hard wait deadlines during polling ([be18c7e](https://github.com/xapi-labs/xapi-cli/commit/be18c7e498697306974b6b973cfa38430db7fff7))
+
 ## [0.1.20](https://github.com/xapi-labs/xapi-cli/compare/v0.1.19...v0.1.20) (2026-08-25)
 
 
