@@ -683,7 +683,11 @@ export async function initiateOAuth(
   );
 }
 
-export async function listOAuthBindings(jwtToken: string, apiHost: string) {
+export async function listOAuthBindings(
+  jwtToken: string,
+  apiHost: string,
+  signal?: AbortSignal,
+) {
   return request<Array<{
     id: string;
     apiKeyId: string;
@@ -696,7 +700,7 @@ export async function listOAuthBindings(jwtToken: string, apiHost: string) {
     provider: { id: string; name: string; type: string };
   }>>(
     `${scheme(apiHost)}://${apiHost}/api/oauth/bindings`,
-    { method: 'GET', headers: jwtHeaders(jwtToken) },
+    { method: 'GET', headers: jwtHeaders(jwtToken), signal },
     DEFAULT_TIMEOUT_MS,
     IDEMPOTENT_RETRIES,
   );

@@ -212,6 +212,146 @@ describe('oauth commands', () => {
   });
 
   describe('pollForBinding', () => {
+    it('does not start a poll after the deadline', async () => {
+      const listBindingsSpy = spyOn(client, 'listOAuthBindings').mockResolvedValue([] as any);
+
+      try {
+        const binding = await pollForBinding(
+          MOCK_KEY_ID,
+          'prov-1',
+          MOCK_JWT,
+          new Date(),
+          new Set(),
+          0,
+          10,
+        );
+
+        expect(binding).toBeNull();
+        expect(listBindingsSpy).not.toHaveBeenCalled();
+      } finally {
+        listBindingsSpy.mockRestore();
+      }
+    });
+
+    it('cancels an in-flight poll when the deadline expires', async () => {
+      let aborted = false;
+      const listBindingsSpy = spyOn(client, 'listOAuthBindings').mockImplementation(
+        async (_jwtToken, _apiHost, signal) => {
+          await new Promise<never>((_resolve, reject) => {
+            if (signal?.aborted) {
+              aborted = true;
+              reject(new DOMException('aborted', 'AbortError'));
+              return;
+            }
+            signal?.addEventListener('abort', () => {
+              aborted = true;
+              reject(new DOMException('aborted', 'AbortError'));
+            }, { once: true });
+          });
+          return [] as any;
+        },
+      );
+
+      try {
+        const binding = await pollForBinding(
+          MOCK_KEY_ID,
+          'prov-1',
+          MOCK_JWT,
+          new Date(),
+          new Set(),
+          20,
+          1,
+        );
+
+        expect(binding).toBeNull();
+        expect(aborted).toBe(true);
+        expect(listBindingsSpy).toHaveBeenCalledWith(
+          MOCK_JWT,
+          expect.any(String),
+          expect.any(AbortSignal),
+        );
+      } finally {
+        listBindingsSpy.mockRestore();
+      }
+    });
+
+    it('does not accept a binding returned after the deadline', async () => {
+      const listBindingsSpy = spyOn(client, 'listOAuthBindings').mockImplementation(
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          return [mockBindings[0]] as any;
+        },
+      );
+
+      try {
+        const binding = await pollForBinding(
+          MOCK_KEY_ID,
+          'prov-1',
+          MOCK_JWT,
+          new Date(),
+          new Set(),
+          10,
+          1,
+        );
+
+        expect(binding).toBeNull();
+        expect(listBindingsSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        listBindingsSpy.mockRestore();
+      }
+    });
+
+    it('surfaces non-retryable polling errors immediately', async () => {
+      const listBindingsSpy = spyOn(client, 'listOAuthBindings')
+        .mockRejectedValue(new client.HttpError(401, 'unauthorized'));
+
+      try {
+        await expect(
+          pollForBinding(
+            MOCK_KEY_ID,
+            'prov-1',
+            MOCK_JWT,
+            new Date(),
+            new Set(),
+            100,
+            1,
+          ),
+        ).rejects.toThrow('HTTP 401');
+        expect(listBindingsSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        listBindingsSpy.mockRestore();
+      }
+    });
+
+    it('continues polling after transient errors', async () => {
+      const listBindingsSpy = spyOn(client, 'listOAuthBindings')
+        .mockRejectedValueOnce(new TypeError('fetch failed'))
+        .mockResolvedValueOnce([
+          {
+            ...mockBindings[0],
+            createdAt: '2026-06-03T00:00:01.000Z',
+            updatedAt: '2026-06-03T00:00:01.000Z',
+          },
+        ] as any);
+
+      try {
+        const binding = await pollForBinding(
+          MOCK_KEY_ID,
+          'prov-1',
+          MOCK_JWT,
+          new Date('2026-06-03T00:00:00.000Z'),
+          new Set(),
+          100,
+          1,
+        );
+
+        expect(binding?.id).toBe('bind-uuid-1');
+        expect(listBindingsSpy).toHaveBeenCalledTimes(2);
+      } finally {
+        listBindingsSpy.mockRestore();
+      }
+    });
+
     it('ignores existing bindings from before the current authorization', async () => {
       const listBindingsSpy = spyOn(client, 'listOAuthBindings')
         .mockResolvedValueOnce([

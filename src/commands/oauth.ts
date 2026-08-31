@@ -24,6 +24,7 @@ import {
   initiateOAuth,
   listOAuthBindings,
   deleteOAuthBinding,
+  isRetryableRequestError,
 } from '../client.ts';
 import type { OAuthProvider, ScopeDefinition } from '../client.ts';
 import { output, err } from '../format.ts';
@@ -67,6 +68,69 @@ function bindingChangedAfter(
   return changedAt >= startedAtMs;
 }
 
+const POLL_DEADLINE = Symbol('oauth poll deadline');
+
+/** Wait for an interval without sleeping past the polling deadline. */
+function waitForPollInterval(ms: number, signal: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve(false);
+      return;
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const onAbort = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      cleanup();
+      resolve(false);
+    };
+
+    timer = setTimeout(() => {
+      cleanup();
+      resolve(true);
+    }, Math.max(0, ms));
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
+/** Resolve when an operation finishes or when the poll deadline aborts it. */
+function resolveOnPollAbort<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+): Promise<T | typeof POLL_DEADLINE> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(POLL_DEADLINE);
+    };
+    const resolveOperation = (value: T) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+    const rejectOperation = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(resolveOperation, rejectOperation);
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+  });
+}
+
 export async function pollForBinding(
   apiKeyId: string,
   providerId: string,
@@ -79,28 +143,50 @@ export async function pollForBinding(
   const deadline = Date.now() + timeoutMs;
   const isTTY = process.stdout.isTTY;
   const startedAtMs = startedAt.getTime() - 5000;
+  const controller = new AbortController();
+  const deadlineTimer = setTimeout(
+    () => controller.abort(),
+    Math.max(0, deadline - Date.now()),
+  );
 
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, intervalMs));
+  try {
+    while (Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      const intervalElapsed = await waitForPollInterval(
+        Math.min(Math.max(0, intervalMs), remaining),
+        controller.signal,
+      );
+      if (!intervalElapsed || Date.now() >= deadline || controller.signal.aborted) break;
 
-    try {
-      const bindings = await listOAuthBindings(jwtToken, XAPI_API_HOST);
-      const match = Array.isArray(bindings)
-        ? bindings.find((b) =>
-            b.apiKeyId === apiKeyId &&
-            b.providerId === providerId &&
-            bindingChangedAfter(b, startedAtMs, existingBindingIds)
-          )
-        : null;
-      if (match) return match;
-    } catch {
-      // transient error — keep polling
+      try {
+        const bindings = await resolveOnPollAbort(
+          listOAuthBindings(jwtToken, XAPI_API_HOST, controller.signal),
+          controller.signal,
+        );
+        if (bindings === POLL_DEADLINE || Date.now() >= deadline) break;
+
+        const match = Array.isArray(bindings)
+          ? bindings.find((b) =>
+              b.apiKeyId === apiKeyId &&
+              b.providerId === providerId &&
+              bindingChangedAfter(b, startedAtMs, existingBindingIds)
+            )
+          : null;
+        if (match) return match;
+      } catch (e) {
+        if (controller.signal.aborted || Date.now() >= deadline) break;
+        if (!isRetryableRequestError(e)) throw e;
+        // Transient errors are retried until the deadline.
+      }
+
+      if (isTTY) {
+        const remaining = Math.ceil((deadline - Date.now()) / 1000);
+        process.stdout.write(`\r  Waiting for authorization... (${remaining}s remaining)  `);
+      }
     }
-
-    if (isTTY) {
-      const remaining = Math.ceil((deadline - Date.now()) / 1000);
-      process.stdout.write(`\r  Waiting for authorization... (${remaining}s remaining)  `);
-    }
+  } finally {
+    clearTimeout(deadlineTimer);
+    controller.abort();
   }
 
   if (process.stdout.isTTY) process.stdout.write('\n');
