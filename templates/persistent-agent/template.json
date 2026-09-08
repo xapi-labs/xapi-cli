@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "persistent-agent",
+  "version": "1.0.0",
+  "name": "Persistent DeepSeek Agent",
+  "description": "Production-oriented Agent with Durable Object state, KV, D1, R2, Queue, Workflow, cron routes, authentication, and a remote smoke test.",
+  "productTemplate": "agent",
+  "defaultResources": [
+    { "type": "kv_namespace", "bindingName": "CACHE" },
+    { "type": "d1_database", "bindingName": "DB" },
+    { "type": "r2_bucket", "bindingName": "FILES" },
+    { "type": "durable_object", "bindingName": "AGENT_STATE", "className": "AgentState" },
+    { "type": "queue", "bindingName": "TASK_QUEUE" },
+    { "type": "workflow", "bindingName": "AGENT_WORKFLOW" }
+  ],
+  "defaultSecrets": ["APP_TOKEN", "MODEL_KEY"],
+  "packageScripts": {
+    "test:remote": "node scripts/smoke.mjs"
+  },
+  "files": [
+    { "source": "src/index.ts", "target": "src/index.ts" },
+    { "source": "migrations/0001_init.sql", "target": "migrations/0001_init.sql" },
+    { "source": "scripts/smoke.mjs", "target": "scripts/smoke.mjs" },
+    { "source": "TEMPLATE.md", "target": "TEMPLATE.md" }
+  ]
+}

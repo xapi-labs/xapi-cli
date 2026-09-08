@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "agent",
+  "version": "1.0.0",
+  "name": "DeepSeek Agent",
+  "description": "Simple stateless Agent endpoint using DeepSeek through ai.xapi.to.",
+  "productTemplate": "agent",
+  "defaultResources": [],
+  "defaultSecrets": ["MODEL_KEY"],
+  "packageScripts": {},
+  "files": [
+    { "source": "src/index.ts", "target": "src/index.ts" }
+  ]
+}

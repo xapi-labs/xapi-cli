@@ -11,6 +11,7 @@
  *   xapi-to get-batch <id> [id ...]
  *   xapi-to call <id> --input '{"k":"v"}' [--code curl|py|js|ts|go]
  *   xapi-to sandbox run --command <shell>
+ *   xapi-to workers list
  *
  *   xapi-to config show
  *   xapi-to config set apiKey=<key>
@@ -37,6 +38,7 @@ import * as balanceCmds from './commands/balance.ts';
 import * as oauthCmds from './commands/oauth.ts';
 import * as taskCmds from './commands/task.ts';
 import * as sandboxCmds from './commands/sandbox.ts';
+import * as workersCmds from './commands/workers.ts';
 const { OAUTH_HELP } = oauthCmds;
 import { parseArgs } from './args.ts';
 
@@ -86,6 +88,10 @@ COMMANDS
     file|port|extension|audit|suspend|resume|terminate
     Run "xapi-to sandbox --help" for selection and safety flags
 
+  workers <command>                  Deploy and manage hosted Cloudflare Workers
+    list|get|create|deploy|budget|audit|bindings|provider-status|delete
+    Run "xapi-to workers --help" for budgets, environments, and deploy flags
+
   oauth bind [--provider twitter]   Bind Twitter OAuth to your API key
   oauth status                      List current OAuth bindings
   oauth unbind <binding-id>         Remove an OAuth binding
@@ -133,6 +139,7 @@ EXAMPLES
   xapi-to task poll 550e8400-e29b-41d4-a716-446655440000
   xapi-to task wait 550e8400-e29b-41d4-a716-446655440000 --interval 2s --timeout 10m
   xapi-to sandbox run --command 'python3 -c "print(6*7)"'
+  xapi-to workers list --format table
   xapi-to categories
   xapi-to services --format table
   xapi-to config set apiKey=xapi_abc123
@@ -219,6 +226,9 @@ async function main() {
       }
       break;
     }
+
+    case 'workers':
+      return workersCmds.workersCommand(rest, flags);
 
     // ── OAuth commands ──
     case 'oauth': {

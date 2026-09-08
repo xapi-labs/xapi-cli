@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xapi.to/schemas/worker-project.v1.json",
+  "title": "xAPI Worker project",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "worker", "wrangler", "build", "environments"],
+  "properties": {
+    "$schema": {
+      "const": "https://xapi.to/schemas/worker-project.v1.json"
+    },
+    "version": { "const": 1 },
+    "workerId": { "type": "string", "format": "uuid" },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "slug"],
+      "properties": {
+        "name": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "slug": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{1,47}[a-z0-9]$"
+        },
+        "description": { "type": "string", "maxLength": 500 },
+        "template": { "enum": ["worker", "agent"], "default": "worker" }
+      }
+    },
+    "wrangler": { "$ref": "#/$defs/projectPath" },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "output"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "output": { "$ref": "#/$defs/projectPath" }
+      }
+    },
+    "environments": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["preview", "production"],
+      "properties": {
+        "preview": { "$ref": "#/$defs/environment" },
+        "production": { "$ref": "#/$defs/environment" }
+      }
+    }
+  },
+  "$defs": {
+    "projectPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!/)(?![A-Za-z]:[\\\\/])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\\\u0000]+$"
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dailyBudgetUsd"],
+      "properties": {
+        "dailyBudgetUsd": { "type": "number", "minimum": 0.1, "maximum": 100 },
+        "healthCheck": {
+          "type": "string",
+          "pattern": "^/(?!/)[^\\s]*$",
+          "maxLength": 500,
+          "default": "/health"
+        },
+        "resources": {
+          "type": "array",
+          "maxItems": 100,
+          "default": [],
+          "items": { "$ref": "#/$defs/resource" }
+        },
+        "secrets": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "default": [],
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{0,63}$"
+          }
+        }
+      }
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "bindingName"],
+      "properties": {
+        "type": {
+          "enum": [
+            "kv_namespace",
+            "d1_database",
+            "r2_bucket",
+            "durable_object",
+            "queue",
+            "workflow"
+          ]
+        },
+        "bindingName": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{0,63}$"
+        },
+        "className": {
+          "type": "string",
+          "pattern": "^[A-Za-z_$][A-Za-z0-9_$]{0,127}$"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "durable_object" } } },
+          "then": { "required": ["className"] },
+          "else": { "not": { "required": ["className"] } }
+        }
+      ]
+    }
+  }
+}
