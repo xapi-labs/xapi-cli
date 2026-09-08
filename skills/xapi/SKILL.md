@@ -1,7 +1,8 @@
 ---
 name: xapi
-description: Access real-time external data and managed cloud sandboxes via the xapi CLI — Twitter/X, social platforms, domain purchase and DNS, normalized crypto, BlockPI RPC, Binance Web3 API, web/news search, AI generation, SMS verification, and auditable ephemeral compute. Configure the xAPI AI or WebSocket Gateways, or use sandbox run for automatic quote/create/execute/cleanup. Use when the user mentions xapi, external services, or sandbox compute.
-metadata: {"openclaw":{"emoji":"x","requires":{"anyBins":["npx"]},"primaryEnv":"XAPI_KEY"}}
+description: Access real-time external data, managed cloud sandboxes, and hosted Workers via the xapi CLI — Twitter/X, social platforms, domain purchase and DNS, normalized crypto, BlockPI RPC, Binance Web3 API, web/news search, AI generation, SMS verification, and auditable compute. Configure xAPI AI or WebSocket Gateways, run ephemeral Sandbox jobs, or deploy JavaScript and persistent Agents to xAPI Workers.
+metadata:
+  { "openclaw": { "emoji": "x", "requires": { "anyBins": ["npx"] }, "primaryEnv": "XAPI_KEY" } }
 ---
 
 # xapi CLI Skill
@@ -23,21 +24,16 @@ Before calling any API, you need an API key:
 ```bash
 # Register a new account (apiKey is saved automatically)
 npx xapi-to register
-
 # Replace an already-saved file key only when intentionally creating a new account
 npx xapi-to register --force
-
 # Register with an inviter's referral code (server-side referral and promotion terms may change)
 # please replace xapito to your actual referral code
 npx xapi-to register --referral-code xapito
 npx xapi-to register xapito          # positional shorthand
-
 # Or set an existing key
 npx xapi-to config set apiKey=<your-key>
-
 # Safer for shared terminals: paste the key on stdin, then press Ctrl-D
 npx xapi-to config set apiKey=-
-
 # Verify connectivity
 npx xapi-to config health
 ```
@@ -63,15 +59,18 @@ xapi offers two types of APIs under a unified interface:
 Both types use the same discovery and call workflow. Use `--source capability` or `--source api` on commands that expose source filtering.
 
 ## Managed Sandbox Compute
-Read `guides/sandbox.md` before creating a billable instance. For a one-shot
-command, prefer `sandbox run`; it quotes, applies a price ceiling, waits,
-executes, and terminates in `finally`:
+
+Read `guides/sandbox.md` before creating a billable instance. For a one-shot command, prefer `sandbox run`; it quotes, applies a price ceiling, waits, executes, and terminates in `finally`:
+
 ```bash
 npx xapi-to sandbox run --command 'python3 -c "print(6 * 7)"'
 ```
-Use granular commands only for multi-step work. Keep the instance ID, terminate
-in cleanup, and verify terminal state/cost afterward. Do not use `--keep` unless
-the user explicitly wants a reusable, continuing-to-bill instance.
+
+Use granular commands only for multi-step work. Keep the instance ID, terminate in cleanup, and verify terminal state/cost afterward. Do not use `--keep` unless the user explicitly wants a reusable, continuing-to-bill instance.
+
+## Hosted Workers
+
+Read `guides/workers.md` before creating, importing, planning, pushing, promoting, rolling back, attaching Cloudflare resources, scheduling tasks, or inspecting logs. Workers are continuously addressable JavaScript applications; Sandbox is ephemeral arbitrary compute. Prefer the project workflow: `workers init`, `workers plan --env preview`, `workers push --env preview`, then `workers promote --to production`. Use `init --from-wrangler` for an existing Cloudflare Worker. Git is optional. `push` builds and uploads an immutable Artifact, uses stable recovery keys, and never silently deletes stateful resources or Secrets; an optional platform-owned ephemeral Sandbox build can produce the same Artifact type. Rollback restores code and compatibility settings, never KV/D1/R2/DO/Queue/Workflow/schedule data or Secret values. Run the provider capability check before provisioning so missing permissions such as D1 Edit are reported precisely. KV, D1, R2, Durable Object, Queue, Workflow, Secret, schedule, managed-domain, observability, and billing data are environment- or Worker-scoped; never assume preview and production share state. Queue messages use the documented route envelope, are delivered at least once, and require an idempotent target route. Only `ACTIVE` means deployment succeeded.
 
 ## Usage Workflow
 
@@ -228,13 +227,13 @@ Use `--code <target>` with `get` or `call` to generate ready-to-use code snippet
 
 Supported targets and aliases:
 
-| Target | Aliases | Default library | Variants |
-|--------|---------|----------------|----------|
-| `curl` | — | curl | — |
-| `python` | `py` | requests | `python.requests`, `python.httpx`, `py.requests`, `py.httpx` |
-| `javascript` | `js` | fetch | `javascript.fetch`, `javascript.axios`, `js.fetch`, `js.axios` |
-| `typescript` | `ts` | fetch | `typescript.fetch`, `ts.fetch` |
-| `go` | — | net/http | — |
+| Target       | Aliases | Default library | Variants                                                       |
+| ------------ | ------- | --------------- | -------------------------------------------------------------- |
+| `curl`       | —       | curl            | —                                                              |
+| `python`     | `py`    | requests        | `python.requests`, `python.httpx`, `py.requests`, `py.httpx`   |
+| `javascript` | `js`    | fetch           | `javascript.fetch`, `javascript.axios`, `js.fetch`, `js.axios` |
+| `typescript` | `ts`    | fetch           | `typescript.fetch`, `ts.fetch`                                 |
+| `go`         | —       | net/http        | —                                                              |
 
 ```bash
 # Generate a curl command from API schema (template with empty values)
@@ -333,6 +332,7 @@ When the user's task involves these workflows, read the corresponding guide file
 - **`guides/ai_gateway.md`** — xAPI AI Gateway: Claude Code and Anthropic/OpenAI SDK setup, model discovery, routing strategies, streaming, fallback, routing/billing headers, direct media endpoints, and known limitations
 - **`guides/ws_gateway.md`** — xAPI WebSocket Gateway: OpenAI Realtime, streaming ASR/TTS, simultaneous interpretation, podcast generation, service/path routing, browser authentication, native binary protocols, limits, billing, close codes, and reconnects
 - **`guides/sandbox.md`** — managed Sandbox compute: AI tool selection, one-shot and multi-step lifecycles, provider pinning, files, Cloudflare Web previews, suspension, GPU jobs, parallel agents, cleanup recovery, audit/history, and billing verification
+- **`guides/workers.md`** — xAPI-hosted Cloudflare Workers: new-project and Wrangler import flows, plan/push/promote/rollback, no-Git and CI operation, Worker vs Sandbox selection, managed KV/D1/R2/DO/Queue/Workflow and Secrets, persistent schedules, managed DNS/TLS, Tail observability, usage settlement and hard budget/balance guards, Artifact deployment, API-key instance visibility, audit, and deletion
 - **`guides/sms.md`** — SMS verification: buy virtual phone numbers, receive verification codes, finish/cancel orders (5SIM)
 - **`guides/provider.md`** — Provider management: create/update services, About/changelog, version lifecycle, metrics/events and request receipts, Skill upload/linking, rollback/delete, earnings transfer
 
