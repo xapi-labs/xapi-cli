@@ -9,7 +9,7 @@ Always inspect the live schema and price before calling:
 
 ```bash
 npx xapi-to get rpc.network
-npx xapi-to list --source api --service-id 11a478df-6928-4bfb-8212-cf8eb2ae5249
+npx xapi-to search "BlockPI RPC" --source api --page-size 100
 ```
 
 The catalog currently lists each action at `$0.000003/call`; treat `get` as the
@@ -31,6 +31,12 @@ npx xapi-to call rpc.network --input '{
 The required outer fields are `method`, `pathParams`, and `body`.
 `pathParams.network` selects the registered BlockPI network. The body requires
 `jsonrpc: "2.0"` and the JSON-RPC `method`; `id` and `params` are optional.
+
+The generic route fails closed with HTTP 503 when the server-side partner key
+is unavailable; it never silently sends a raw RPC call without that credential.
+The legacy convenience routes have a different availability contract and may
+fall back to their configured public RPC endpoints. Diagnose the two route
+families separately instead of treating every BlockPI 503 as a bad request.
 
 For example, read an address balance without exposing any provider key:
 

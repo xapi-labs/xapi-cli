@@ -11,11 +11,12 @@ actions, schemas, and upstream behavior.
 
 ## Discovery and shared limit
 
-The current service ID is `02a6d64c-dd64-4ff3-aa0b-d1d2eccdec67`:
+Discover the service ID instead of persisting a database UUID in automation:
 
 ```bash
+npx xapi-to services --category Crypto --page-size 100
 npx xapi-to list --source api \
-  --service-id 02a6d64c-dd64-4ff3-aa0b-d1d2eccdec67 --page-size 100
+  --service-id <binance-web3-api-service-id> --page-size 100
 npx xapi-to get binance-web3-api.api_v1_dex_market_token_search
 ```
 
@@ -97,13 +98,12 @@ Never pass a private key or seed phrase to xAPI.
 
 ## Current POST schema gap
 
-At the time this guide was verified, none of the 19 current POST actions
-exposed a `body` in its live `get` schema. Eighteen exposed only the fixed
-`method: "POST"`; the one exception, `token_basic-info`, also exposes required
-query `params` (`binanceChainId` and `tokenContractAddress`) and can be called
-with those declared fields. The missing body affects balance-by-token, token
-price/info, transaction simulation/broadcast/gas estimation, RFQ order
-submission, and all 11 DeFi POST actions.
+At the time this guide was verified, the serving XAPI action catalog omitted
+the `body` from all 18 body-bearing POST operations even though the provider's
+current import payload contained those schemas. The nineteenth POST operation,
+`token_basic-info`, is intentionally query-only and exposes required `params`
+(`binanceChainId` and `tokenContractAddress`). This mismatch is serving-contract
+drift, not evidence that the official operations take no input.
 
 Do not copy a Binance-native request body or invent a `body`. For an action that
 needs request content, wait until `npx xapi-to get <action-id>` exposes it and
@@ -111,9 +111,57 @@ report the service-schema gap instead. The query-only token basic-info action
 may be called exactly as its live `params` schema declares. Once fixed, the
 live xAPI schema—not this snapshot—is authoritative.
 
+## Provider errors
+
+Binance may return a successful HTTP response with a nonzero business code.
+Treat `code: 0` as success and preserve the upstream code/message on failure.
+In particular:
+
+- `40304` means a regional compliance restriction; changing parameters or
+  retrying cannot bypass it.
+- `40104` means the configured upstream API key lacks permission for that
+  product; DeFi access requires explicit enablement.
+
+Do not automatically retry either error or misreport it as an xAPI-key failure.
+
 ## Current action catalog (58)
 
-### DEX aggregation (9)
+### General Data (13)
+
+- `binance-web3-api.api_v1_dex_market_candles`
+- `binance-web3-api.api_v1_dex_market_memepump_tokenDevInfo`
+- `binance-web3-api.api_v1_dex_market_price`
+- `binance-web3-api.api_v1_dex_market_price-info`
+- `binance-web3-api.api_v1_dex_market_supported_chain`
+- `binance-web3-api.api_v1_dex_market_token_advanced-info`
+- `binance-web3-api.api_v1_dex_market_token_basic-info`
+- `binance-web3-api.api_v1_dex_market_token_holder`
+- `binance-web3-api.api_v1_dex_market_token_hot-token`
+- `binance-web3-api.api_v1_dex_market_token_search`
+- `binance-web3-api.api_v1_dex_market_token_top-liquidity`
+- `binance-web3-api.api_v1_dex_market_token_top-trader`
+- `binance-web3-api.api_v1_dex_market_trades`
+
+### Address Portfolio (7)
+
+- `binance-web3-api.api_v1_dex_market_address-tracker_trades`
+- `binance-web3-api.api_v1_dex_market_leaderboard_list`
+- `binance-web3-api.api_v1_dex_market_portfolio_dex-history`
+- `binance-web3-api.api_v1_dex_market_portfolio_overview`
+- `binance-web3-api.api_v1_dex_market_portfolio_recent-pnl`
+- `binance-web3-api.api_v1_dex_market_portfolio_supported_chain`
+- `binance-web3-api.api_v1_dex_market_portfolio_token_latest-pnl`
+
+### RWA Data (6)
+
+- `binance-web3-api.api_v1_dex_market_rwa_platforms`
+- `binance-web3-api.api_v1_dex_market_rwa_price`
+- `binance-web3-api.api_v1_dex_market_rwa_search`
+- `binance-web3-api.api_v1_dex_market_rwa_tokens`
+- `binance-web3-api.api_v1_dex_market_rwa_underlying-market`
+- `binance-web3-api.api_v1_dex_market_rwa_underlying-profile`
+
+### Trading API (9)
 
 - `binance-web3-api.api_v1_dex_aggregator_approve-transaction`
 - `binance-web3-api.api_v1_dex_aggregator_history`
@@ -125,54 +173,25 @@ live xAPI schema—not this snapshot—is authoritative.
 - `binance-web3-api.api_v1_dex_aggregator_swap-instruction`
 - `binance-web3-api.api_v1_dex_aggregator_order_submit`
 
-### Wallet balances (3)
+### Transaction API (7)
+
+- `binance-web3-api.api_v1_dex_post-transaction_orders`
+- `binance-web3-api.api_v1_dex_pre-transaction_block-height`
+- `binance-web3-api.api_v1_dex_pre-transaction_broadcast-transaction`
+- `binance-web3-api.api_v1_dex_pre-transaction_gas-limit`
+- `binance-web3-api.api_v1_dex_pre-transaction_gas-price`
+- `binance-web3-api.api_v1_dex_pre-transaction_simulate`
+- `binance-web3-api.api_v1_dex_pre-transaction_supported_chain`
+
+### Wallet API (5)
 
 - `binance-web3-api.api_v1_dex_balance_all-token-balances-by-address`
 - `binance-web3-api.api_v1_dex_balance_supported_chain`
 - `binance-web3-api.api_v1_dex_balance_token-balances-by-address`
-
-### Market, address profile, and RWA data (26)
-
-- `binance-web3-api.api_v1_dex_market_address-tracker_trades`
-- `binance-web3-api.api_v1_dex_market_candles`
-- `binance-web3-api.api_v1_dex_market_leaderboard_list`
-- `binance-web3-api.api_v1_dex_market_memepump_tokenDevInfo`
-- `binance-web3-api.api_v1_dex_market_portfolio_dex-history`
-- `binance-web3-api.api_v1_dex_market_portfolio_overview`
-- `binance-web3-api.api_v1_dex_market_portfolio_recent-pnl`
-- `binance-web3-api.api_v1_dex_market_portfolio_supported_chain`
-- `binance-web3-api.api_v1_dex_market_portfolio_token_latest-pnl`
-- `binance-web3-api.api_v1_dex_market_rwa_platforms`
-- `binance-web3-api.api_v1_dex_market_rwa_price`
-- `binance-web3-api.api_v1_dex_market_rwa_search`
-- `binance-web3-api.api_v1_dex_market_rwa_tokens`
-- `binance-web3-api.api_v1_dex_market_rwa_underlying-market`
-- `binance-web3-api.api_v1_dex_market_rwa_underlying-profile`
-- `binance-web3-api.api_v1_dex_market_supported_chain`
-- `binance-web3-api.api_v1_dex_market_token_advanced-info`
-- `binance-web3-api.api_v1_dex_market_token_holder`
-- `binance-web3-api.api_v1_dex_market_token_hot-token`
-- `binance-web3-api.api_v1_dex_market_token_search`
-- `binance-web3-api.api_v1_dex_market_token_top-liquidity`
-- `binance-web3-api.api_v1_dex_market_token_top-trader`
-- `binance-web3-api.api_v1_dex_market_trades`
-- `binance-web3-api.api_v1_dex_market_price`
-- `binance-web3-api.api_v1_dex_market_price-info`
-- `binance-web3-api.api_v1_dex_market_token_basic-info`
-
-### Transaction data, building, and broadcast (9)
-
-- `binance-web3-api.api_v1_dex_post-transaction_orders`
 - `binance-web3-api.api_v1_dex_post-transaction_transaction-detail-by-txhash`
 - `binance-web3-api.api_v1_dex_post-transaction_transactions-by-address`
-- `binance-web3-api.api_v1_dex_pre-transaction_block-height`
-- `binance-web3-api.api_v1_dex_pre-transaction_gas-price`
-- `binance-web3-api.api_v1_dex_pre-transaction_supported_chain`
-- `binance-web3-api.api_v1_dex_pre-transaction_broadcast-transaction`
-- `binance-web3-api.api_v1_dex_pre-transaction_gas-limit`
-- `binance-web3-api.api_v1_dex_pre-transaction_simulate`
 
-### DeFi data and transaction building (11)
+### DeFi Data and Transaction (11)
 
 - `binance-web3-api.api_v1_defi_data_investment_detail`
 - `binance-web3-api.api_v1_defi_data_investment_list`

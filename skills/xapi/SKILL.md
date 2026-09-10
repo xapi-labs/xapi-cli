@@ -1,6 +1,6 @@
 ---
 name: xapi
-description: Access real-time external data and managed cloud sandboxes via the xapi CLI — Twitter/X, social platforms, domains and DNS, crypto and Web3, web/news search, AI generation, SMS verification, and auditable ephemeral compute. Configure the xAPI AI or WebSocket Gateways, or use sandbox run for automatic quote/create/execute/cleanup. Use when the user mentions xapi, external services, or sandbox compute.
+description: Access real-time external data and managed cloud sandboxes via the xapi CLI — Twitter/X, social platforms, domain purchase and DNS, normalized crypto, BlockPI RPC, Binance Web3 API, web/news search, AI generation, SMS verification, and auditable ephemeral compute. Configure the xAPI AI or WebSocket Gateways, or use sandbox run for automatic quote/create/execute/cleanup. Use when the user mentions xapi, external services, or sandbox compute.
 metadata: {"openclaw":{"emoji":"x","requires":{"anyBins":["npx"]},"primaryEnv":"XAPI_KEY"}}
 ---
 
@@ -155,211 +155,58 @@ npx xapi-to call x-official.2_tweets --method POST --input '{"body":{"text":"Hel
 
 Always use `--input` with JSON for passing parameters.
 
-### Twitter / X (9 APIs)
+### Capability routing
+
+- Twitter/X reads and writes → `guides/twitter.md`; use the specialized social guide when applicable.
+- Domain search, purchase, and DNS management → `guides/domains.md` before any purchase or write.
+- Normalized token, wallet, DEX, CEX, and crypto-news data → `guides/crypto.md`.
+- General/news/image/video/scholar/maps/places/shopping search → `guides/google_search.md`.
+- AI text, embeddings, image/video/audio generation, and transcription → `guides/ai.md`.
+
+Common read-only examples:
 
 ```bash
-# Get user profile
-npx xapi-to call twitter.user_by_screen_name --input '{"screen_name":"elonmusk"}'
-
-# Get user's tweets
-npx xapi-to call twitter.user_tweets --input '{"user_id":"44196397"}'
-
-# Get user's tweets and replies (timeline includes replies)
-npx xapi-to call twitter.user_tweets_and_replies --input '{"user_id":"44196397"}'
-
-# Get tweet details and replies; video media include the highest-bitrate MP4 in video_url
-npx xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
-
-# Get user's media posts
-npx xapi-to call twitter.user_media --input '{"user_id":"44196397"}'
-
-# Get followers / following
-npx xapi-to call twitter.followers --input '{"user_id":"44196397"}'
-npx xapi-to call twitter.following --input '{"user_id":"44196397"}'
-
-# Search tweets
-npx xapi-to call twitter.search --input '{"raw_query":"bitcoin","count":20}'
-
-# Advanced search filters (provider x)
-npx xapi-to call twitter.search --input '{"raw_query":"AI","from":"OpenAI","since":"2026-08-01","min_likes":100,"count":20}'
-
-# Get retweeters of a tweet
-npx xapi-to call twitter.retweeters --input '{"tweet_id":"1234567890"}'
-```
-
-Note: Twitter user_id is a numeric ID. To get it, first call `twitter.user_by_screen_name` with the username, then extract `rest_id` from the response.
-
-Note: All `twitter.*` capabilities accept an optional `provider` — `"x"` (fapi.uk, default) or `"twitter"` (legacy upstream). Responses are normalized to an identical structure across providers, so you normally don't need to set it; pass `"provider":"twitter"` only to force the legacy upstream.
-
-Note: Timeline, reply, media, follower/following, retweeter, and search responses expose pagination cursors. Pass the previous response's bottom cursor back as `cursor`; see `guides/twitter.md` for the exact response field used by each endpoint.
-
-Note: For long-form **X Articles**, `twitter.tweet_detail` automatically returns the full article in `tweet.article`, including `text`, `markdown`, cover image, links, and timestamps. No raw GraphQL call is needed.
-
-Note: To download tweet videos, use the bundled `scripts/download_tweet_videos.sh` workflow documented in `guides/twitter.md`. It consumes `twitter.tweet_detail`'s normalized `media[].video_url`, handles multiple and nested quoted/retweeted videos, preserves automatic `x` → `twitter` failover, validates MP4 content, and publishes downloads atomically. Do not treat `media[].url` or `preview_url` as video files; they are preview images.
-
-### Crypto (17 registered APIs; 16 recommended)
-
-Two addressing models:
-
-- **On-chain by contract address** (`crypto.token.*`, `crypto.wallet.*`, `crypto.tx.*`, `crypto.dex.*`) — the `token`/`address`/`pair` field is a **contract/wallet address**, plus a `chain`. Supported chains: `eth`, `bsc` (default), `solana`, `base`, `arbitrum`, `polygon`, `optimism`, `avalanche`.
-- **By symbol** (`crypto.cex.*`) — for coins without a contract address (e.g. "how much is BTC?"), use the CEX endpoints with a `symbol`.
-
-```bash
-# --- Token by contract address ---
-
-# Price + 24h market data (aggregates multiple providers with fallback)
-npx xapi-to call crypto.token.price --input '{"token":"0x55d398326f99059ff775485246999027b3197955","chain":"bsc"}'
-
-# Full overview: metadata + price + market in one call (preferred over metadata)
-npx xapi-to call crypto.token.overview --input '{"token":"0x55d398326f99059ff775485246999027b3197955","chain":"bsc"}'
-
-# OHLCV candles (interval: 1m/5m/1h/1d…, default 1d)
-npx xapi-to call crypto.token.ohlcv --input '{"token":"0x...","chain":"bsc","interval":"1h","limit":100}'
-
-# Top holders / top traders / security (honeypot, tax, etc.)
-npx xapi-to call crypto.token.holders --input '{"token":"0x...","chain":"bsc"}'
-npx xapi-to call crypto.token.holders --input '{"token":"0x...","chain":"bsc","cursor":"<next_cursor>"}'
-npx xapi-to call crypto.token.top_traders --input '{"token":"0x...","chain":"bsc"}'
-npx xapi-to call crypto.token.security --input '{"token":"0x...","chain":"bsc"}'
-
-# Trending tokens on a chain
-npx xapi-to call crypto.token.trending --input '{"chain":"bsc","limit":20}'
-
-# Search tokens by name / symbol / address
-npx xapi-to call crypto.token.search --input '{"query":"PEPE"}'
-
-# --- Wallet / transaction / DEX pair ---
-npx xapi-to call crypto.wallet.balance --input '{"address":"0x...","chain":"bsc"}'
-npx xapi-to call crypto.wallet.pnl --input '{"address":"0x...","chain":"bsc"}'
-npx xapi-to call crypto.wallet.history --input '{"address":"0x...","chain":"bsc","limit":50}'
-npx xapi-to call crypto.tx.detail --input '{"txHash":"0x...","chain":"bsc"}'
-npx xapi-to call crypto.dex.pair --input '{"pair":"0x...","chain":"bsc"}'
-
-# --- CEX by symbol (no contract address needed) ---
-
-# Spot price of a coin by symbol
-npx xapi-to call crypto.cex.price --input '{"symbol":"BTC"}'
-
-# CEX OHLCV candles
-npx xapi-to call crypto.cex.ohlcv --input '{"symbol":"BTC","interval":"1d","limit":100}'
-
-# --- News ---
-npx xapi-to call crypto.news --input '{"symbol":"BTC","limit":20}'
-```
-
-Note: `crypto.token.metadata` is **deprecated** — use `crypto.token.overview` instead (it returns metadata + price + market in one call).
-Note: All `crypto.token.*`/`crypto.wallet.*`/etc. accept an optional `provider` to pin a specific upstream and disable automatic fallback.
-Note: `crypto.token.holders`, `crypto.wallet.balance`, and `crypto.wallet.history` return an opaque `next_cursor` when another page is available. Pass it back unchanged as `cursor`; it pins pagination to the provider that issued it.
-
-### Web Search (9 APIs)
-
-```bash
-# General web search
+npx xapi-to call twitter.user_by_screen_name --input '{"screen_name":"OpenAI"}'
 npx xapi-to call web.search --input '{"q":"latest AI news"}'
-
-# Realtime web search with time filter
-npx xapi-to call web.search.realtime --input '{"q":"breaking news","timeRange":"day"}'
-
-# News search
-npx xapi-to call web.search.news --input '{"q":"crypto regulation"}'
-
-# Image search
-npx xapi-to call web.search.image --input '{"q":"aurora borealis"}'
-
-# Video search
-npx xapi-to call web.search.video --input '{"q":"machine learning tutorial"}'
-
-# Academic / scholar search
-npx xapi-to call web.search.scholar --input '{"q":"transformer architecture"}'
-
-# Maps search
-npx xapi-to call web.search.maps --input '{"q":"coffee shop near Times Square"}'
-
-# Places search (businesses with details)
-npx xapi-to call web.search.places --input '{"q":"best ramen in Tokyo"}'
-
-# Shopping search
-npx xapi-to call web.search.shopping --input '{"q":"mechanical keyboard"}'
+npx xapi-to call crypto.cex.price --input '{"symbol":"BTC"}'
 ```
 
-### AI Text Processing (6 APIs)
+### Crypto and Web3 selection
+
+Use built-in `crypto.*` for normalized multi-provider market, token, wallet,
+DEX, CEX, and news data. Use a specialized service instead when the user asks
+for its provider-native behavior:
+
+- BlockPI network RPC or an arbitrary EVM JSON-RPC method → `guides/blockpi.md`.
+- Binance-native chain IDs, address analytics, RWA, aggregation, transaction,
+  wallet, or DeFi data → `guides/binance_web3.md`.
+
+Do not redirect an explicit BlockPI or Binance Web3 request to `crypto.*` merely
+because both are in the Crypto category.
+
+### Search selection
+
+Use normalized `web.search.*` capabilities for ordinary web, realtime, news,
+image, video, scholar, maps, places, or shopping results; read
+`guides/google_search.md`. Use direct `serper.*` actions only for provider-native
+fields, mini-batches, Lens, Reviews, or other Serper-specific behavior; read
+`guides/serper.md`.
+
+### AI, async tasks, and gateways
+
+Read `guides/ai.md` for text, embeddings, synchronous/SSE calls, speech,
+transcription, and asynchronous image/video generation. Use `task wait` for an
+async capability's returned task ID:
 
 ```bash
-# Fast chat completion
-npx xapi-to call ai.text.chat.fast --input '{"messages":[{"role":"user","content":"Explain quantum computing in one sentence"}]}'
-
-# Reasoning chat (more thorough)
-npx xapi-to call ai.text.chat.reasoning --input '{"messages":[{"role":"user","content":"Analyze the pros and cons of microservices"}]}'
-
-# Auto chat — pass a model explicitly, gateway auto-routes to the best upstream with fallback
-npx xapi-to call ai.text.chat.auto --input '{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"Hello"}]}'
-
-# Summarize text
-npx xapi-to call ai.text.summarize --input '{"text":"<long text here>"}'
-
-# Rewrite text
-npx xapi-to call ai.text.rewrite --input '{"text":"<text>","mode":"formalize"}'
-
-# Generate embeddings
-npx xapi-to call ai.embedding.generate --input '{"input":"hello world"}'
-```
-
-### AI Image & Video Generation (2 APIs — asynchronous)
-
-```bash
-# Submit image generation (returns an async task)
-npx xapi-to call ai.image.generate --input '{"prompt":"A serene mountain landscape at sunset, digital art","model":"gpt-image-2"}'
-
-# Submit video generation through OpenRouter (+ optional reference image)
-npx xapi-to call ai.video.generate --input '{"prompt":"A cat playing piano in a jazz bar, cinematic"}'
-```
-
-Both capabilities return `{ "task_id": "...", "status": "pending", "poll_url": "..." }`. Wait for the result with `xapi-to task wait` (see below). Video generation uses provider `openrouter` and defaults to model `bytedance/seedance-2.0-fast`.
-
-### AI Speech Generation & Transcription (2 APIs)
-
-```bash
-# Text to speech (synchronous; returns a base64-encoded binary envelope)
-npx xapi-to call ai.audio.generate --input '{"text":"Hello world","model":"hexgrad/kokoro-82m","voice":"af_bella","format":"mp3"}'
-
-# Speech to text (audio.data is raw base64 without a data URI prefix)
-npx xapi-to call ai.audio.transcribe --input '{"audio":{"data":"<base64-audio>","format":"wav"},"model":"openai/whisper-large-v3"}'
-```
-
-### AI Gateway — Anthropic/OpenAI-compatible HTTP
-
-Use CLI capabilities for one-off agent calls. Use the public AI Gateway when configuring Claude Code, Anthropic/OpenAI SDKs, or applications that expect standard AI API protocols:
-
-- Anthropic base URL: `https://ai.xapi.to/<strategy>`
-- OpenAI base URL: `https://ai.xapi.to/<strategy>/v1`
-- Strategies: `default`, `cost`, `speed`, `quality`
-- Authentication: use the xAPI key as `x-api-key`, `Authorization: Bearer`, or `XAPI-Key`
-
-Read `guides/ai_gateway.md` before configuring a client. It covers supported endpoints, current strategy behavior, streaming, fallback, routing/billing headers, direct media endpoints, and compatibility limitations.
-
-### WebSocket Gateway — realtime and streaming audio
-
-Use the WebSocket Gateway for persistent, full-duplex sessions such as OpenAI Realtime, streaming ASR, bidirectional TTS, simultaneous interpretation, and podcast generation:
-
-- Unified base: `wss://ai.xapi.to/<endpoint-path>`
-- Current paths include `/v1/realtime`, `/v1/asr`, `/v1/tts`, `/v1/ast`, and `/v1/podcast`
-- Service-specific form: `wss://<service-slug>.p.xapi.to/<endpoint-path>`
-- Server authentication: `XAPI-Key`, `Authorization: Bearer`, or `x-api-key`
-
-Read `guides/ws_gateway.md` before opening a session. It explains path selection, browser-safe authentication, OpenAI Realtime usage, provider-native binary protocols, connection limits, billing, close codes, and reconnect behavior.
-
-### Async Tasks
-
-Some capabilities (currently `ai.image.generate` and `ai.video.generate`) run asynchronously and return a `task_id`. Prefer `task wait` to poll until a terminal status:
-
-```bash
+npx xapi-to call ai.text.chat.fast \
+  --input '{"messages":[{"role":"user","content":"Hello"}]}'
 npx xapi-to task wait <task_id> --interval 2s --timeout 10m
-
-# Poll exactly once when the caller manages scheduling itself
-npx xapi-to task poll <task_id>
 ```
 
-`task wait` also accepts `--max-attempts`; duration flags support `ms`, `s`, `m`, and `h`. Status values are `pending` | `processing` | `succeeded` | `failed` | `expired`. It prints the terminal payload and exits nonzero for `failed` or `expired`.
+For application integrations, read `guides/ai_gateway.md` before configuring an
+Anthropic/OpenAI-compatible client. Read `guides/ws_gateway.md` before opening a
+persistent Realtime, ASR, TTS, interpretation, or podcast WebSocket session.
 
 ## Input Format
 
@@ -456,7 +303,7 @@ Beyond built-in capabilities, xapi proxies **dozens** of third-party API service
 
 The full catalog also spans many other categories — crypto/on-chain data, CEX market data, stocks & macro, social platforms, news, weather, and more. Discover them with `search` / `services`.
 
-> For crypto data, prefer the built-in `crypto.*` capabilities above (they aggregate multiple upstreams with automatic fallback).
+> For ordinary normalized crypto data, prefer built-in `crypto.*`. For an explicit BlockPI, Binance Web3, raw RPC, provider-native, transaction-building, or DeFi request, use the matching specialized guide and service.
 
 ## Error Handling
 
