@@ -1,6 +1,6 @@
 ---
 name: xapi
-description: Access real-time external data and managed cloud sandboxes via the xapi CLI — Twitter/X, social platforms, crypto, web/news search, AI generation, SMS verification, and auditable ephemeral compute. Configure the xAPI AI or WebSocket Gateways, or use sandbox run for automatic quote/create/execute/cleanup. Use when the user mentions xapi, external services, or sandbox compute.
+description: Access real-time external data and managed cloud sandboxes via the xapi CLI — Twitter/X, social platforms, domains and DNS, crypto and Web3, web/news search, AI generation, SMS verification, and auditable ephemeral compute. Configure the xAPI AI or WebSocket Gateways, or use sandbox run for automatic quote/create/execute/cleanup. Use when the user mentions xapi, external services, or sandbox compute.
 metadata: {"openclaw":{"emoji":"x","requires":{"anyBins":["npx"]},"primaryEnv":"XAPI_KEY"}}
 ---
 
@@ -57,7 +57,7 @@ Use these flags where the command documents them:
 
 xapi offers two types of APIs under a unified interface:
 
-1. **Capabilities** (`--source capability`) — Built-in APIs with known IDs (Twitter, crypto, AI, web search, news)
+1. **Capabilities** (`--source capability`) — Built-in APIs with known IDs (Twitter, domains/DNS, crypto, AI, web search, news)
 2. **Third-party APIs** (`--source api`) — Proxied services, discovered via `list`, `search`, or `services`
 
 Both types use the same discovery and call workflow. Use `--source capability` or `--source api` on commands that expose source filtering.
@@ -452,6 +452,7 @@ Beyond built-in capabilities, xapi proxies **dozens** of third-party API service
 - **5SIM SMS** (`5sim-sms`) — SMS verification (virtual numbers, activation codes)
 - **Serper API** (`serper`) — 12 provider-native Google Search actions including web, images, news, maps, places, video, shopping, scholar, patents, autocomplete, Lens, and reviews. Eleven support mini-batch; Reviews does not. Read `guides/serper.md` before calling them
 - **OpenRouter API** (`openrouter`) — Multi-model AI gateway (chat, embeddings, audio transcription/speech, video)
+- **Web3 infrastructure** — BlockPI RPC (`rpc`, 13 actions) and Binance Web3 API (`binance-web3-api`, 58 actions); read `guides/blockpi.md` or `guides/binance_web3.md` before calling them
 
 The full catalog also spans many other categories — crypto/on-chain data, CEX market data, stocks & macro, social platforms, news, weather, and more. Discover them with `search` / `services`.
 
@@ -464,9 +465,7 @@ The full catalog also spans many other categories — crypto/on-chain data, CEX 
 - **Insufficient balance** → Run `npx xapi-to topup --method stripe --amount 10`
 - **Unknown API ID** → Use `search` or `list` to find the correct ID, then `get` to check parameters
 
-The CLI retries idempotent metadata reads and `task poll` for transient timeouts, network failures, `408`, `429`, and `502`–`504`. It does not automatically retry arbitrary `call` actions because the upstream may already have completed a write; confirm the result before manually retrying posts, payments, or other mutations. Ordinary JSON execution has a 60-second request ceiling. HTTP SSE streams and raw downloads instead use a 60-second no-data timeout, reset whenever a chunk arrives; override it with `XAPI_TRANSFER_IDLE_TIMEOUT_MS` when an upstream legitimately pauses longer.
-
-- Use `--page` and `--page-size` for pagination on `list`, `search`, and `services`.
+The CLI retries idempotent metadata reads and `task poll` for transient timeouts, network failures, `408`, `429`, and `502`–`504`. It does not automatically retry arbitrary `call` actions because the upstream may already have completed a write; confirm the result before manually retrying posts, payments, or other mutations. Ordinary JSON execution has a 60-second request ceiling. HTTP SSE streams and raw downloads instead use a 60-second no-data timeout, reset whenever a chunk arrives; override it with `XAPI_TRANSFER_IDLE_TIMEOUT_MS` when an upstream legitimately pauses longer. Use `--page` and `--page-size` for pagination on `list`, `search`, and `services`.
 
 ## Specialized Guides
 
@@ -482,6 +481,7 @@ When the user's task involves these workflows, read the corresponding guide file
 - **`guides/google_search.md`** — Google Search: web, realtime, news, image, video, scholar, maps, places, shopping
 - **`guides/serper.md`** — direct Serper v7 API: 12 provider-native actions, object-or-array mini-batches, Reviews pagination and batch exception, Lens, dynamic per-credit billing, and the current Webpage service boundary
 - **`guides/crypto.md`** — Crypto (加密货币): on-chain token price/overview/holders/security/OHLCV, wallet analytics, DEX pairs, CEX spot prices by symbol, news — covers contract-address vs symbol addressing and multi-chain
+- **`guides/domains.md`**, **`guides/blockpi.md`**, **`guides/binance_web3.md`** — domain purchase and DNS writes, BlockPI EVM JSON-RPC, and the official Binance Web3 API catalog; read the matching guide before any purchase, mutation, transaction build, signing, or broadcast
 - **`guides/ai.md`** — AI (人工智能): synchronous or SSE-streamed text, embeddings, asynchronous image/video generation with `task wait`, text-to-speech, and speech-to-text
 - **`guides/ai_gateway.md`** — xAPI AI Gateway: Claude Code and Anthropic/OpenAI SDK setup, model discovery, routing strategies, streaming, fallback, routing/billing headers, direct media endpoints, and known limitations
 - **`guides/ws_gateway.md`** — xAPI WebSocket Gateway: OpenAI Realtime, streaming ASR/TTS, simultaneous interpretation, podcast generation, service/path routing, browser authentication, native binary protocols, limits, billing, close codes, and reconnects
