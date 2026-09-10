@@ -53,4 +53,17 @@ describe('bundled provider guide', () => {
       expect(guide).toContain(command);
     }
   });
+
+  it('documents service rate-limit management and quota identity', () => {
+    for (const text of [
+      '--rate-limit-requests',
+      '--rate-limit-period-seconds',
+      '--clear-rate-limit',
+      'User x Service',
+      'PROXY',
+      'all API keys',
+    ]) {
+      expect(guide).toContain(text);
+    }
+  });
 });

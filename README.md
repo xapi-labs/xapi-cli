@@ -350,6 +350,8 @@ management without a JWT exchange:
 xapi-to provider list
 xapi-to provider create --file ./service.json
 xapi-to provider update <service-id> --about-file ./ABOUT.md --website https://example.com
+xapi-to provider update <service-id> --rate-limit-requests 100 --rate-limit-period-seconds 60
+xapi-to provider update <service-id> --clear-rate-limit
 xapi-to provider versions <service-id>
 xapi-to provider revision start <service-id> 1
 xapi-to provider version update <service-id> <version-id> --file ./contract.json
@@ -358,6 +360,10 @@ xapi-to provider publish <service-id> <revision-id> --changelog-file ./CHANGELOG
 xapi-to provider metrics <service-id> --days 7
 xapi-to provider events --after '<opaque-next-cursor>'
 ```
+
+Service rate limits are optional and supported only for proxied services. Both
+numeric flags are required when setting a limit; the quota is shared by all API
+keys belonging to the same user for that service.
 
 Service usage tutorials are Skill packages. Scaffold one from the serving
 contract, submit it for review, wait for publication, then link it:

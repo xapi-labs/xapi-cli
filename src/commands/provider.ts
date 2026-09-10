@@ -18,8 +18,8 @@ export const PROVIDER_HELP = `xapi-to provider - Manage provider services and th
 USAGE
   xapi-to provider list
   xapi-to provider get <service-id> [--version <version>]
-  xapi-to provider create --file <service.json>
-  xapi-to provider update <service-id> [metadata flags]
+  xapi-to provider create --file <service.json> [rate-limit flags]
+  xapi-to provider update <service-id> [metadata/rate-limit flags]
   xapi-to provider versions <service-id>
   xapi-to provider version update <service-id> <version-id> --file <contract.json> [--replace]
   xapi-to provider major create <service-id>
@@ -51,6 +51,14 @@ METADATA FLAGS
   --clear-website                  Clear website
   --logo-url <url>                 Service logo URL
   --category <category>            Marketplace category
+
+SERVICE RATE-LIMIT FLAGS
+  --rate-limit-requests <count>          Allowed requests per period (1-1000000)
+  --rate-limit-period-seconds <seconds>  Period length in seconds (1-86400)
+  --clear-rate-limit                     Disable the service rate limit
+
+Set both numeric flags together. Limits apply only to PROXY services and use
+one shared quota for each user and service, including all API keys of that user.
 
 SCOPES
   list/get/versions/review/diff/skill context: service:read
@@ -94,6 +102,32 @@ function positiveInt(raw: string | undefined, name: string, max?: number): numbe
 
 function boolFlag(flags: Record<string, string>, name: string): boolean {
   return ['true', '1', 'yes'].includes((flags[name] || '').toLowerCase());
+}
+
+function applyRateLimitFlags(
+  body: Record<string, unknown>,
+  flags: Record<string, string>,
+): Record<string, unknown> {
+  const requests = flags['rate-limit-requests'];
+  const periodSeconds = flags['rate-limit-period-seconds'];
+  const clear = boolFlag(flags, 'clear-rate-limit');
+
+  if (clear && (requests !== undefined || periodSeconds !== undefined)) {
+    err('--clear-rate-limit cannot be combined with --rate-limit-requests or --rate-limit-period-seconds');
+  }
+  if ((requests === undefined) !== (periodSeconds === undefined)) {
+    err('--rate-limit-requests and --rate-limit-period-seconds must be provided together');
+  }
+
+  if (clear) {
+    body.rateLimitConfig = null;
+  } else if (requests !== undefined) {
+    body.rateLimitConfig = {
+      requests: positiveInt(requests, '--rate-limit-requests', 1_000_000),
+      periodSeconds: positiveInt(periodSeconds, '--rate-limit-period-seconds', 86_400),
+    };
+  }
+  return body;
 }
 
 async function readText(path: string, flagName: string): Promise<string> {
@@ -160,8 +194,9 @@ async function metadataBody(flags: Record<string, string>): Promise<Record<strin
   }
   if (boolFlag(flags, 'clear-about')) body.aboutMarkdown = null;
   if (boolFlag(flags, 'clear-website')) body.website = null;
+  applyRateLimitFlags(body, flags);
   if (Object.keys(body).length === 0) {
-    err('no provider metadata supplied', 'Pass --file or at least one metadata flag.');
+    err('no provider settings supplied', 'Pass --file or at least one metadata or rate-limit flag.');
   }
   return body;
 }
@@ -204,15 +239,18 @@ export async function provider(args: string[], flags: Record<string, string>) {
         break;
       }
 
-      case 'create':
+      case 'create': {
+        const body = await readJsonObject(required(flags.file, 'xapi-to provider create --file <service.json>'));
+        applyRateLimitFlags(body, flags);
         result = await apiKeyApiRequest(XAPI_API_HOST, apiKey, `${BASE}/services`, {
           method: 'POST',
-          body: await readJsonObject(required(flags.file, 'xapi-to provider create --file <service.json>')),
+          body,
         });
         break;
+      }
 
       case 'update': {
-        const id = required(rest[0], 'xapi-to provider update <service-id> [metadata flags]');
+        const id = required(rest[0], 'xapi-to provider update <service-id> [metadata/rate-limit flags]');
         result = await apiKeyApiRequest(XAPI_API_HOST, apiKey, servicePath(id), {
           method: 'PATCH',
           body: await metadataBody(flags),
