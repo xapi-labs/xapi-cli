@@ -122,6 +122,113 @@ xapi-to task wait 550e8400-e29b-41d4-a716-446655440000                 # wait un
 xapi-to task wait 550e8400-e29b-41d4-a716-446655440000 --interval 1s --timeout 10m
 ```
 
+### Provider: Import → Configure → Submit → Wait
+
+`provider` manages APIs owned by your account. It uses `XAPI_API_HOST`
+(default `api.xapi.to`) and the same saved or environment API key as other
+commands. In the xAPI Console API Keys settings, grant `service:create`,
+`service:read`, `service:update`, and `service:publish`. Legacy `allowRegister`
+only grants creation, not the remaining lifecycle permissions. Missing
+permissions return a nonzero exit with the required scope.
+
+Start from [examples/provider/openapi.json](examples/provider/openapi.json),
+replace its upstream URL, service details, and endpoint contract, then run:
+
+```bash
+# Inspect current rules; no API key required
+xapi-to provider spec-rules --format pretty
+
+# Import a raw OpenAPI 3.0.3 JSON object (not a {openApiSpec: ...} envelope)
+xapi-to provider import --file openapi.json > imported.json
+
+# Use the serviceId and revisionId from imported.json (jq is optional)
+PROVIDER_SERVICE_ID=$(jq -er '.serviceId' imported.json)
+PROVIDER_REVISION_ID=$(jq -er '.revisionId' imported.json)
+
+# Save version configuration to move the draft revision to SANDBOX.
+# config.json can be {"description":"Initial release"} when the imported
+# endpoints, authentication, and pricing are already complete.
+xapi-to provider update "$PROVIDER_SERVICE_ID" \
+  --revision "$PROVIDER_REVISION_ID" --file config.json
+
+# Submit the specified revision, then wait for the actual publication result
+xapi-to provider submit "$PROVIDER_SERVICE_ID" \
+  --revision "$PROVIDER_REVISION_ID" --changelog "Initial release"
+xapi-to provider wait "$PROVIDER_SERVICE_ID" \
+  --revision "$PROVIDER_REVISION_ID" --interval 2s --timeout 10m
+
+# Inspect owned services, configuration, version overview, or review reports
+xapi-to provider list --format table
+xapi-to provider get "$PROVIDER_SERVICE_ID" --format pretty
+xapi-to provider versions "$PROVIDER_SERVICE_ID" --format pretty
+xapi-to provider review "$PROVIDER_SERVICE_ID" --revision "$PROVIDER_REVISION_ID"
+```
+
+When scripting these steps, stop on nonzero exit (for example, use `set -e`).
+Import returns the backend validation/preview plus `serviceId`, `revisionId`,
+and `state`. An HTTP 201 with `success: false` is a validation failure and exits
+nonzero; its structured validation errors are preserved. Registration creates
+a new service each time. If a response is lost, inspect `provider list` before
+retrying to avoid duplicate services.
+
+For an authenticated upstream, store credentials in a local JSON object such
+as `{"Authorization":"Bearer YOUR_UPSTREAM_KEY"}` and pass
+`--private-headers-file private-headers.json` to `provider import`. Keep this
+file out of version control. `--file -` and `--private-headers-file -` accept
+stdin, but only one input can consume stdin per command. Files must be JSON;
+YAML and URL imports are not supported in this command group.
+
+`provider update --revision <id>` reads a version configuration object, using the backend
+fields `description`, `baseUrl`, `baseUrls`, `authType`, `privateHeaders`,
+`authConfig`, `openApiSpec`, `endpoints`, and `status`. Prefer structured
+`privateHeaders` for upstream credentials. Endpoint fields include billing
+configuration such as `billingType` and `costPerCall`. Update does not accept
+a raw OpenAPI document; the nested backend field is `openApiSpec: {spec: ...}`.
+Saving that field alone does not re-import endpoint definitions; configure
+`endpoints` explicitly when changing the contract.
+
+- `--mode merge` (default) sends PATCH and preserves omitted fields/endpoints.
+  Existing endpoint edits require `id`, e.g.
+  `{"endpoints":[{"id":"ENDPOINT_ID","costPerCall":"0.002"}]}`.
+- `--allow-new-endpoints` explicitly permits ID-less merge entries to create
+  endpoints. Repeating such a merge can create duplicates.
+- `--mode replace` sends PUT. If `endpoints` is provided, it replaces the
+  endpoint list; include every endpoint you intend to keep. Omitted fields
+  otherwise follow backend PUT semantics. Use full configuration for replacement.
+
+`get` retains its existing service response; `--version v1.0` selects the
+configuration returned by the backend. Find endpoint IDs in
+`currentVersion.endpoints`; `provider versions` returns working revision IDs
+in `majors[].working.id`. For an already-published API, use the existing
+`provider revision start <service-id> <major>` command to create a working revision.
+`provider update` without `--revision` continues to update service metadata
+and rate limits. Existing `version update`, `publish`, and positional `review`
+commands remain available. The `submit` and `review --revision` forms are
+additional onboarding commands.
+
+Updates to `IN_REVIEW`, `PUBLISHED`, or `SUSPENDED` revisions return a conflict;
+the backend enforces this check under a transaction lock. When updating
+`privateHeaders`, send the complete desired map: it replaces the old map and
+rebuilds the derived authentication configuration. An empty map without an
+explicit `authConfig` clears those credentials. Omitting both fields preserves them.
+
+`submit` returns `{serviceId, revisionId, submission}`. A successful submission
+does not guarantee publication. `wait` checks the requested revision, succeeds
+only for `PUBLISHED`, and outputs the review report with `success` and `reason`.
+Rejection, a draft/sandbox/suspended revision, or a legacy manual-review hold
+exit nonzero. Pending review continues until publication, the timeout (default
+10 minutes), or optional `--max-attempts`. Timeout and attempt-limit results
+include the last received report; polling can be resumed with the same IDs.
+The deadline also bounds in-flight HTTP requests and retry delays.
+
+Reads retry transient errors; writes are never automatically retried. The CLI
+redacts credential fields and known credential values from provider output.
+Redacted reads are for inspection and must not be submitted unchanged as
+configuration. After an ambiguous write failure, use `list`, `get`, or `review`
+to inspect the result before repeating the operation. No npm release is implied
+by a local source checkout; use `bun run src/index.ts provider ...` or build and
+run `node dist/index.js provider ...` while testing unreleased changes.
+
 ### Sandbox Commands
 
 Sandbox commands provide an AI-friendly cloud computer lifecycle. The fastest

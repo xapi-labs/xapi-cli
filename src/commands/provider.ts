@@ -3,6 +3,8 @@
 import { mkdir, open, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { apiKeyApiRequest } from '../client.ts';
+import { providerOnboarding, PROVIDER_ONBOARDING_HELP } from './provider-onboarding.ts';
+import { redactProvider } from '../provider-client.ts';
 import {
   getConfig,
   requireApiKey,
@@ -16,6 +18,11 @@ const BASE = '/api/api-services/agent';
 export const PROVIDER_HELP = `xapi-to provider - Manage provider services and their content
 
 USAGE
+  xapi-to provider spec-rules
+  xapi-to provider import --file <openapi.json> [--private-headers-file <path>]
+  xapi-to provider update <service-id> --revision <id> --file <contract.json>
+  xapi-to provider submit <service-id> --revision <id> [--changelog <text>]
+  xapi-to provider wait <service-id> --revision <id> [--interval 2s] [--timeout 10m]
   xapi-to provider list
   xapi-to provider get <service-id> [--version <version>]
   xapi-to provider create --file <service.json> [rate-limit flags]
@@ -215,9 +222,12 @@ async function writeExclusive(path: string, content: string, force: boolean) {
 
 export async function provider(args: string[], flags: Record<string, string>) {
   if (flags.help || args.length === 0) {
-    console.log(PROVIDER_HELP);
+    console.log(PROVIDER_HELP + "\n" + PROVIDER_ONBOARDING_HELP);
     return;
   }
+  const onboardingCommand = ['spec-rules', 'import', 'submit', 'wait'].includes(args[0]);
+  const revisionAlias = ['update', 'review'].includes(args[0]) && flags.revision !== undefined;
+  if (onboardingCommand || revisionAlias) return providerOnboarding(args, flags);
   const cfg = getConfig();
   requireApiKey(cfg);
   const apiKey = cfg.apiKey!;
@@ -407,7 +417,7 @@ export async function provider(args: string[], flags: Record<string, string>) {
         err(`unknown provider command: ${command}`, 'Run "xapi-to provider --help".');
     }
 
-    output(result, flags.format as any);
+    output(redactProvider(result, [apiKey]), flags.format as any);
   } catch (error: any) {
     err('provider request failed', error.message);
   }
