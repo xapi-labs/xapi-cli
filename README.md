@@ -25,10 +25,16 @@ Paste into Cursor, Claude Code, or any agent that supports skills:
 npx skills add xapi-labs/xapi-cli
 ```
 
-This installs the bundled [`xapi` skill](skills/xapi), which teaches the agent
+Select the bundled [`xapi` skill](skills/xapi) to teach the agent
 how to call social, search, crypto, and AI data through this CLI. Then just ask
 — "what's the price of BTC" — and it takes it from there. Set up a key first;
 see [Quick Start](#quick-start).
+
+Workers projects can also install the standalone [`xapi-workers` skill](skills/xapi-workers/SKILL.md), covering deployment, all six managed resource types, complete consumption queries and cleanup:
+
+```bash
+npx skills add xapi-labs/xapi-cli --skill xapi-workers
+```
 
 ## Quick Start
 

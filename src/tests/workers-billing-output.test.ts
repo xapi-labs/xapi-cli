@@ -249,3 +249,22 @@ Resource totals
     expect(rendered).not.toContain("undefined");
   });
 });
+
+it("distinguishes current customer accrual from platform funding without interpreting legacy totals", () => {
+  const rendered = formatWorkerBillingResponse("overview", { ...envelope, data: {
+    customerAccruedUsd: "0.00060795", platformRiskUsd: "0.00000001",
+    settledUsd: "0.00060796", fundingBreakdownComplete: true,
+    settlementMeaning: "NET_ACCRUAL_NOT_FINAL_PROVIDER_INVOICE",
+    resourceTotals: [{ kind: "r2", customerAccruedUsd: "0.00021096", settledUsd: "9.99" }],
+  } });
+  expect(rendered).toContain("Customer accrued        $0.00060795");
+  expect(rendered).toContain("Platform funded         $0.00000001");
+  expect(rendered).toContain("NET_ACCRUAL_NOT_FINAL_PROVIDER_INVOICE");
+  expect(rendered).toContain("$0.00021096");
+  expect(rendered).not.toContain("$9.99");
+  const unknown = formatWorkerBillingResponse("overview", { ...envelope, data: {
+    customerAccruedUsd: null, settledUsd: "9.99",
+  } });
+  expect(unknown).toContain("Customer accrued        —");
+  expect(unknown).not.toContain("$9.99");
+});

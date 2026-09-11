@@ -90,12 +90,13 @@ function prices(data: RecordValue): string[] {
 }
 
 function overview(data: RecordValue): string[] {
+  const customer = Object.hasOwn(data, "customerAccruedUsd");
   const resourceTotals = array(data.resourceTotals).map((item) => {
     const total = record(item);
     return [
       value(total.kind),
       value(total.resourceCount),
-      usd(total.settledUsd),
+      usd(customer ? total.customerAccruedUsd : total.settledUsd),
       usd(total.reservedUsd),
       usd(total.estimatedUsd),
       usd(total.exposureUsd),
@@ -107,7 +108,17 @@ function overview(data: RecordValue): string[] {
     row("Lifecycle", data.lifecycleState),
     row("Daily budget", usd(data.dailyBudgetUsd)),
     row("Budget remaining", usd(data.budgetRemainingUsd)),
-    row("Settled", usd(data.settledUsd)),
+    row(
+      customer ? "Customer accrued" : "Settled",
+      usd(customer ? data.customerAccruedUsd : data.settledUsd),
+    ),
+    ...(customer
+      ? [
+          row("Platform funded", usd(data.platformRiskUsd)),
+          row("Funding complete", data.fundingBreakdownComplete),
+          row("Meaning", data.settlementMeaning),
+        ]
+      : []),
     row("Reserved", usd(data.reservedUsd)),
     row("Estimated", usd(data.estimatedUsd)),
     row("Exposure", usd(data.exposureUsd)),
@@ -122,7 +133,7 @@ function overview(data: RecordValue): string[] {
       [
         "Resource",
         "Count",
-        "Settled",
+        customer ? "Accrued" : "Settled",
         "Reserved",
         "Estimated",
         "Exposure",
