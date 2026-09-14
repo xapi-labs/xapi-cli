@@ -351,6 +351,28 @@ xapi workers logs <worker-id> --env production --tail --since 10m
 xapi workers logs <worker-id> --env production --request-id <request-id>
 ```
 
+Web projects can declare their browser build separately from Worker modules.
+The CLI preserves supported Wrangler `assets` settings and uploads the files
+through xAPI as Cloudflare native static assets:
+
+```json
+{
+  "assets": {
+    "directory": "dist/client",
+    "binding": "ASSETS",
+    "notFoundHandling": "single-page-application",
+    "runWorkerFirst": ["/api/*"]
+  }
+}
+```
+
+`workers plan` shows whether the selected environment has a dedicated hostname.
+When `webAppReady` is false, production promotion asks you to review the base
+path, root-relative routes, and OAuth callbacks without blocking applications
+that deliberately support path-prefix hosting. The current JSON Artifact
+transport accepts 12 MiB of decoded Worker modules and static assets per
+deployment.
+
 Templates are versioned packages shipped with the CLI, not remote code fetched
 during `init`. `persistent-agent` includes buildable source plus KV, D1, R2,
 Durable Object, Queue, and Workflow declarations. `push` provisions the

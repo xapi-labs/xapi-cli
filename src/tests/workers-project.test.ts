@@ -95,6 +95,23 @@ describe("Worker project configuration", () => {
     expect(() => loadWorkerProject(root)).toThrow("build.output");
   });
 
+  test("accepts Cloudflare-native static asset routing", () => {
+    const root = fixture({
+      assets: {
+        directory: "dist/client",
+        binding: "ASSETS",
+        htmlHandling: "auto-trailing-slash",
+        runWorkerFirst: ["/api/*", "!/api/docs/*"],
+      },
+    });
+    expect(loadWorkerProject(root).config.assets).toEqual({
+      directory: "dist/client",
+      binding: "ASSETS",
+      htmlHandling: "auto-trailing-slash",
+      runWorkerFirst: ["/api/*", "!/api/docs/*"],
+    });
+  });
+
   test("rejects credential fields and credential-shaped values", () => {
     const fieldRoot = fixture({ apiKey: "placeholder" });
     expect(() => loadWorkerProject(fieldRoot)).toThrow(

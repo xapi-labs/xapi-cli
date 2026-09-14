@@ -105,6 +105,7 @@ export interface WorkerPushResult {
   artifact: { id: string; contentSha256: string; sizeBytes: number };
   deployment: { id: string; status: "ACTIVE"; idempotencyKey: string };
   publicUrl: string;
+  routing?: { mode?: string; webAppReady: boolean; publicOrigin?: string; publicBasePath?: string };
   health: { url: string; status: number; attempts: number };
   commands: { logs: string; promote: string };
 }
@@ -251,7 +252,20 @@ function validateBundle(project: LoadedWorkerProject): LoadedWorkerArtifact {
     "build.output",
   );
   try {
-    return loadWorkerArtifact(path, project.config.build.main);
+    return loadWorkerArtifact(
+      path,
+      project.config.build.main,
+      project.config.assets
+        ? {
+            ...project.config.assets,
+            directory: resolveWorkerProjectPath(
+              project,
+              project.config.assets.directory,
+              "assets.directory",
+            ),
+          }
+        : undefined,
+    );
   } catch (error) {
     if (error instanceof WorkerArtifactError) {
       throw new WorkerPushError(error.message);
@@ -903,6 +917,7 @@ export async function pushWorkerProject(
           new Promise((resolve) => setTimeout(resolve, milliseconds))),
     );
     const publicUrl = text(environmentOf(finalWorker, "preview").publicUrl)!;
+    const finalEnvironment = environmentOf(finalWorker, "preview");
     return {
       schemaVersion: 1,
       status: "ACTIVE",
@@ -924,6 +939,12 @@ export async function pushWorkerProject(
         idempotencyKey: deployed.idempotencyKey,
       },
       publicUrl,
+      ...(linkedProject.config.assets ? { routing: {
+        mode: text(finalEnvironment.routingMode),
+        webAppReady: finalEnvironment.webAppReady === true,
+        publicOrigin: text(finalEnvironment.publicOrigin),
+        publicBasePath: text(finalEnvironment.publicBasePath),
+      } } : {}),
       health,
       commands: {
         logs: `xapi workers logs ${workerState.id} --env preview`,

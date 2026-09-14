@@ -12,6 +12,11 @@ import { parse } from "acorn";
 const MAX_LEGACY_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_BUNDLE_CONTENT_BYTES = 10 * 1024 * 1024;
 const MAX_BUNDLE_MODULES = 200;
+const MAX_ASSET_FILES = 100_000;
+const MAX_ASSET_FILE_BYTES = 25 * 1024 * 1024;
+// The current xAPI JSON Artifact endpoint has a 20 MiB request-body ceiling.
+// Base64 expansion leaves 12 MiB for decoded Worker modules plus assets.
+const MAX_XAPI_ARTIFACT_CONTENT_BYTES = 12 * 1024 * 1024;
 const SAFE_MODULE_PATH =
   /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._@+/-]{1,240}$/;
 
@@ -30,10 +35,36 @@ export interface WorkerArtifactBundleModule {
   contentType: WorkerModuleContentType;
 }
 
+export interface WorkerArtifactAsset {
+  path: string;
+  content: string;
+  encoding: "base64";
+  contentType: string;
+}
+
+export interface WorkerArtifactAssets {
+  files: WorkerArtifactAsset[];
+  binding?: string;
+  config?: {
+    htmlHandling?: "auto-trailing-slash" | "force-trailing-slash" | "drop-trailing-slash" | "none";
+    notFoundHandling?: "none" | "404-page" | "single-page-application";
+    runWorkerFirst?: boolean | string[];
+  };
+}
+
+export interface WorkerStaticAssetsInput {
+  directory: string;
+  binding?: string;
+  htmlHandling?: "auto-trailing-slash" | "force-trailing-slash" | "drop-trailing-slash" | "none";
+  notFoundHandling?: "none" | "404-page" | "single-page-application";
+  runWorkerFirst?: boolean | string[];
+}
+
 export interface WorkerArtifactBundle {
   version: 1;
   mainModule: string;
   modules: WorkerArtifactBundleModule[];
+  assets?: WorkerArtifactAssets;
 }
 
 export type WorkerArtifactUploadInput =
@@ -170,6 +201,79 @@ function moduleContentType(path: string): WorkerModuleContentType | undefined {
   return undefined;
 }
 
+function assetContentType(path: string): string {
+  const extension = posix.extname(path).toLowerCase();
+  return ({
+    ".avif": "image/avif", ".css": "text/css", ".csv": "text/csv",
+    ".gif": "image/gif", ".html": "text/html", ".ico": "image/x-icon",
+    ".jpeg": "image/jpeg", ".jpg": "image/jpeg", ".js": "text/javascript",
+    ".json": "application/json", ".map": "application/json", ".mjs": "text/javascript",
+    ".pdf": "application/pdf", ".png": "image/png", ".svg": "image/svg+xml",
+    ".txt": "text/plain", ".wasm": "application/wasm", ".webmanifest": "application/manifest+json",
+    ".webp": "image/webp", ".woff": "font/woff", ".woff2": "font/woff2",
+    ".xml": "application/xml", ".zip": "application/zip",
+  } as Record<string, string>)[extension] || "application/octet-stream";
+}
+
+function collectAssetFiles(input: WorkerStaticAssetsInput): WorkerArtifactAssets {
+  const root = resolve(input.directory);
+  if (!existsSync(root)) throw new WorkerArtifactError(`Static assets directory does not exist: ${root}`);
+  if (lstatSync(root).isSymbolicLink() || !statSync(root).isDirectory()) {
+    throw new WorkerArtifactError("Static assets path must be a directory and not a symbolic link");
+  }
+  const files: WorkerArtifactAsset[] = [];
+  const walk = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolute = resolve(directory, entry.name);
+      const relativePath = portableRelativePath(root, absolute);
+      const info = lstatSync(absolute);
+      if (info.isSymbolicLink()) throw new WorkerArtifactError(`Static assets must not contain symbolic links: ${relativePath}`);
+      if (info.isDirectory()) { walk(absolute); continue; }
+      if (!info.isFile()) throw new WorkerArtifactError(`Static assets contain an unsupported filesystem entry: ${relativePath}`);
+      if (!relativePath || relativePath.includes("\\") || relativePath.split("/").includes("..") || /[\u0000-\u001f\u007f]/.test(relativePath)) {
+        throw new WorkerArtifactError(`Static asset path is invalid: ${relativePath}`);
+      }
+      if (info.size > MAX_ASSET_FILE_BYTES) throw new WorkerArtifactError(`Static asset exceeds Cloudflare's 25 MiB per-file limit: ${relativePath}`);
+      const bytes = readFileSync(absolute);
+      files.push({ path: `/${relativePath}`, content: bytes.toString("base64"), encoding: "base64", contentType: assetContentType(relativePath) });
+      if (files.length > MAX_ASSET_FILES) throw new WorkerArtifactError(`Static assets exceed Cloudflare's ${MAX_ASSET_FILES} file limit`);
+    }
+  };
+  walk(root);
+  if (!files.length) throw new WorkerArtifactError("Static assets directory is empty");
+  const config = {
+    ...(input.htmlHandling ? { htmlHandling: input.htmlHandling } : {}),
+    ...(input.notFoundHandling ? { notFoundHandling: input.notFoundHandling } : {}),
+    ...(input.runWorkerFirst !== undefined ? { runWorkerFirst: input.runWorkerFirst } : {}),
+  };
+  return {
+    files: files.sort((a, b) => a.path.localeCompare(b.path)),
+    ...(input.binding ? { binding: input.binding } : {}),
+    ...(Object.keys(config).length ? { config } : {}),
+  };
+}
+
+function assertArtifactContentLimit(bundle: WorkerArtifactBundle): void {
+  const moduleBytes = bundle.modules.reduce(
+    (total, module) =>
+      total +
+      (module.encoding === "base64"
+        ? Buffer.from(module.content, "base64").length
+        : Buffer.byteLength(module.content, "utf8")),
+    0,
+  );
+  const assetBytes =
+    bundle.assets?.files.reduce(
+      (total, asset) => total + Buffer.from(asset.content, "base64").length,
+      0,
+    ) || 0;
+  if (moduleBytes + assetBytes > MAX_XAPI_ARTIFACT_CONTENT_BYTES) {
+    throw new WorkerArtifactError(
+      "Worker modules and static assets exceed the current xAPI Artifact transport limit of 12 MiB",
+    );
+  }
+}
+
 function portableRelativePath(root: string, path: string): string {
   return relative(root, path).split(sep).join("/");
 }
@@ -213,6 +317,36 @@ function loadSingleModule(path: string): LoadedWorkerArtifact {
     sizeBytes: bytes.length,
     upload: { moduleCode },
   };
+}
+
+function loadSingleModuleWithAssets(path: string, staticAssets: WorkerStaticAssetsInput): LoadedWorkerArtifact {
+  const legacy = loadSingleModule(path);
+  if (!("moduleCode" in legacy.upload)) throw new WorkerArtifactError("Worker module could not be loaded");
+  const mainModule = posix.basename(path);
+  const assets = collectAssetFiles(staticAssets);
+  const bundle: WorkerArtifactBundle = {
+    version: 1,
+    mainModule,
+    modules: [{
+      path: mainModule,
+      content: legacy.upload.moduleCode,
+      encoding: "utf8",
+      contentType: "application/javascript+module",
+    }],
+    assets,
+  };
+  assertArtifactContentLimit(bundle);
+  const storedBytes = Buffer.from(JSON.stringify({
+    version: 1,
+    mainModule,
+    modules: [{
+      path: mainModule,
+      contentBase64: Buffer.from(legacy.upload.moduleCode, "utf8").toString("base64"),
+      contentType: "application/javascript+module",
+    }],
+    assets,
+  }), "utf8");
+  return { kind: "bundle", contentSha256: sha256(storedBytes), sizeBytes: storedBytes.length, upload: { bundle } };
 }
 
 function collectBundleFiles(root: string): Array<{
@@ -267,7 +401,7 @@ function collectBundleFiles(root: string): Array<{
   return files.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-function loadModuleBundle(root: string, main: string | undefined): LoadedWorkerArtifact {
+function loadModuleBundle(root: string, main: string | undefined, staticAssets?: WorkerStaticAssetsInput): LoadedWorkerArtifact {
   const mainModule = normalizeMainModule(main);
   const files = collectBundleFiles(root);
   if (!files.length) throw new WorkerArtifactError("Worker output directory is empty");
@@ -306,6 +440,7 @@ function loadModuleBundle(root: string, main: string | undefined): LoadedWorkerA
     }
   }
 
+  const assets = staticAssets ? collectAssetFiles(staticAssets) : undefined;
   const bundle: WorkerArtifactBundle = {
     version: 1,
     mainModule,
@@ -320,7 +455,9 @@ function loadModuleBundle(root: string, main: string | undefined): LoadedWorkerA
         contentType: file.contentType,
       };
     }),
+    ...(assets ? { assets } : {}),
   };
+  assertArtifactContentLimit(bundle);
   const storedBytes = Buffer.from(
     JSON.stringify({
       version: 1,
@@ -330,6 +467,7 @@ function loadModuleBundle(root: string, main: string | undefined): LoadedWorkerA
         contentBase64: file.bytes.toString("base64"),
         contentType: file.contentType,
       })),
+      ...(assets ? { assets } : {}),
     }),
     "utf8",
   );
@@ -344,6 +482,7 @@ function loadModuleBundle(root: string, main: string | undefined): LoadedWorkerA
 export function loadWorkerArtifact(
   outputPath: string,
   mainModule?: string,
+  staticAssets?: WorkerStaticAssetsInput,
 ): LoadedWorkerArtifact {
   if (!existsSync(outputPath)) {
     throw new WorkerArtifactError(`Worker build output does not exist: ${outputPath}`);
@@ -358,8 +497,10 @@ export function loadWorkerArtifact(
         "build.main (or --main) is only valid when the Worker build output is a directory",
       );
     }
-    return loadSingleModule(outputPath);
+    return staticAssets
+      ? loadSingleModuleWithAssets(outputPath, staticAssets)
+      : loadSingleModule(outputPath);
   }
-  if (info.isDirectory()) return loadModuleBundle(outputPath, mainModule);
+  if (info.isDirectory()) return loadModuleBundle(outputPath, mainModule, staticAssets);
   throw new WorkerArtifactError("Worker build output is not a file or directory");
 }

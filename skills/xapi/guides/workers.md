@@ -208,12 +208,30 @@ npx xapi-to workers upload <worker-id> \
   --idempotency-key artifact-2026-08-21
 ```
 
-This directory format is for Worker code modules. HTML, CSS, images, fonts, and
-other website files are static assets and use Cloudflare's separate assets
-upload protocol; the CLI rejects them here instead of silently dropping them.
-Native static-assets upload is not exposed by this xAPI CLI flow yet. Until it
-is, bundle small application assets into Worker code through the project's
-build step; never bypass xAPI by sending the user's key directly to Cloudflare.
+This directory format is for Worker code modules. For a web application, keep
+HTML, CSS, images, and fonts in a separate build directory and declare it in
+`xapi.worker.json`. `workers push` packages those files into the immutable xAPI
+Artifact and the platform completes Cloudflare's native static-assets upload:
+
+```json
+{
+  "build": { "command": "npm run build", "output": "dist/worker" },
+  "assets": {
+    "directory": "dist/client",
+    "binding": "ASSETS",
+    "htmlHandling": "auto-trailing-slash",
+    "notFoundHandling": "single-page-application",
+    "runWorkerFirst": ["/api/*"]
+  }
+}
+```
+
+Wrangler imports preserve supported `assets` settings. Cloudflare permits up to
+25 MiB per asset and 100,000 assets per version. Asset content stays separate
+from Worker modules and is never silently dropped. The current xAPI JSON
+Artifact transport accepts at most 12 MiB of decoded modules and assets in one
+deployment; split larger sites before upload until the multipart Artifact
+transport is available.
 
 Save the returned Artifact `id`, then deploy that exact Artifact to preview:
 
@@ -225,7 +243,12 @@ npx xapi-to workers deploy <worker-id> \
   --idempotency-key release-candidate-1
 ```
 
-After deployment, read the environment `publicUrl` instead of constructing a hostname:
+After deployment, read the environment `publicUrl` instead of constructing a hostname.
+For a web application, `workers plan` reports whether that environment has a
+dedicated hostname. Preview path fallback remains useful for API and diagnostic
+Workers. A path-prefix-aware application can also use it in production;
+root-relative browser URLs and OAuth callbacks require `webAppReady: true`.
+Promotion surfaces this as a manual review instead of blocking compatible apps.
 
 ```bash
 npx xapi-to workers get <worker-id> --format pretty

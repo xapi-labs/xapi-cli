@@ -104,6 +104,39 @@ const environmentSchema = z
   })
   .strict();
 
+const staticAssetsSchema = z
+  .object({
+    directory: relativeProjectPath,
+    binding: z
+      .string()
+      .regex(
+        /^[A-Z][A-Z0-9_]{0,63}$/,
+        "must start with A-Z and contain only A-Z, 0-9, and underscore",
+      )
+      .optional(),
+    htmlHandling: z
+      .enum([
+        "auto-trailing-slash",
+        "force-trailing-slash",
+        "drop-trailing-slash",
+        "none",
+      ])
+      .optional(),
+    notFoundHandling: z
+      .enum(["none", "404-page", "single-page-application"])
+      .optional(),
+    runWorkerFirst: z
+      .union([
+        z.boolean(),
+        z
+          .array(z.string().min(1).max(500).regex(/^!?\//))
+          .min(1)
+          .max(100),
+      ])
+      .optional(),
+  })
+  .strict();
+
 export const workerProjectConfigSchema = z
   .object({
     $schema: z.literal(WORKER_PROJECT_SCHEMA_URL).optional(),
@@ -130,6 +163,7 @@ export const workerProjectConfigSchema = z
         main: relativeProjectPath.optional(),
       })
       .strict(),
+    assets: staticAssetsSchema.optional(),
     environments: z
       .object({
         preview: environmentSchema,

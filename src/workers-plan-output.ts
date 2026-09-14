@@ -10,6 +10,7 @@ const KIND_LABEL: Record<WorkerPlanAction["kind"], string> = {
   budget: "Budget",
   resource: "Resource",
   secret: "Secret",
+  routing: "Routing",
   artifact: "Artifact",
   deployment: "Deployment",
 };

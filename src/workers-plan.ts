@@ -24,6 +24,7 @@ export type WorkerPlanKind =
   | "budget"
   | "resource"
   | "secret"
+  | "routing"
   | "artifact"
   | "deployment";
 
@@ -84,8 +85,9 @@ const KIND_ORDER: Record<WorkerPlanKind, number> = {
   budget: 1,
   resource: 2,
   secret: 3,
-  artifact: 4,
-  deployment: 5,
+  routing: 4,
+  artifact: 5,
+  deployment: 6,
 };
 
 const REMOTE_RESOURCE_TYPE: Record<string, DesiredResource["type"]> = {
@@ -366,7 +368,20 @@ function localArtifact(project: LoadedWorkerProject): {
   );
   if (!existsSync(path)) return {};
   try {
-    const artifact = loadWorkerArtifact(path, project.config.build.main);
+    const artifact = loadWorkerArtifact(
+      path,
+      project.config.build.main,
+      project.config.assets
+        ? {
+            ...project.config.assets,
+            directory: resolveWorkerProjectPath(
+              project,
+              project.config.assets.directory,
+              "assets.directory",
+            ),
+          }
+        : undefined,
+    );
     return {
       sha256: artifact.contentSha256,
       sizeBytes: artifact.sizeBytes,
@@ -667,6 +682,22 @@ export async function createWorkerPlan(
   prerequisiteBlocked =
     compareSecrets(actions, desired.secrets, remoteSecrets) ||
     prerequisiteBlocked;
+  if (project.config.assets) {
+    const ready = remoteEnvironmentState?.webAppReady;
+    if (ready === true) {
+      add(actions, "NO_CHANGE", "routing", options.environment, "Web application has a dedicated hostname", undefined, {
+        routingMode: remoteEnvironmentState?.routingMode,
+        publicOrigin: remoteEnvironmentState?.publicOrigin,
+      });
+    } else {
+      add(actions, "MANUAL", "routing", options.environment, remoteEnvironmentState
+        ? "Static assets can be tested through the dispatch path, but root-relative URLs and OAuth callbacks require a dedicated hostname"
+        : "Web hostname readiness will be checked after the Worker is created", undefined, {
+        routingMode: remoteEnvironmentState?.routingMode || "UNKNOWN",
+        publicBasePath: remoteEnvironmentState?.publicBasePath,
+      });
+    }
+  }
   artifactAndDeployment(
     actions,
     project,

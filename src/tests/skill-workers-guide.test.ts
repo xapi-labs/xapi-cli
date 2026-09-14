@@ -40,7 +40,9 @@ describe('bundled xAPI Workers skill guide', () => {
     expect(guide).toContain('"main": "worker.js"');
     expect(guide).toContain('--file dist/');
     expect(guide).toContain('--main worker.js');
-    expect(guide).toContain("separate assets\nupload protocol");
+    expect(guide).toContain("native static-assets upload");
+    expect(guide).toContain('"directory": "dist/client"');
+    expect(guide).toContain('`webAppReady: true`');
     expect(guide).not.toContain('--build <build-id>');
   });
 
