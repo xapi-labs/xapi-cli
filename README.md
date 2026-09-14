@@ -413,7 +413,7 @@ xapi-to workers create \
   --preview-budget 0.25 \
   --production-budget 2
 
-# Build locally or in CI, then upload the single bundled ES module.
+# Upload one bundled ES module, or use --file dist/ --main worker.js for code splitting.
 xapi-to workers upload <worker-id> \
   --file dist/worker.mjs \
   --idempotency-key artifact-v1

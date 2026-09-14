@@ -83,6 +83,26 @@ Artifact, deploys preview, waits for the active state, and runs the configured
 health check. `push` never deletes an extra stateful resource or Secret; `plan`
 marks such drift `MANUAL` for explicit handling.
 
+`build.output` may point to one bundled JavaScript module or to a directory of
+Cloudflare code modules. A directory requires `build.main`, relative to that
+directory, so CI and local runs select the same entrypoint:
+
+```json
+{
+  "build": {
+    "command": "npm run build",
+    "output": "dist",
+    "main": "worker.js"
+  }
+}
+```
+
+Directory Artifacts include `.js`, `.mjs`, `.wasm`, `.txt`, and `.bin` modules
+in one versioned upload. Relative imports must resolve inside the directory;
+package imports must be bundled by the build. The CLI normalizes and hashes the
+complete Artifact before `plan` or `push`, so both commands compare identical
+bytes. Existing single-file project configurations remain valid.
+
 After real preview validation, promote the exact active preview Artifact without
 rebuilding it:
 
@@ -154,7 +174,7 @@ Each environment also returns `publicUrl`. Use that field for calls: xAPI may po
 
 ### Produce an Artifact, then deploy
 
-Deployments consume an immutable xAPI Artifact, never a mutable directory and never a running Sandbox. The normal path is to bundle locally or in CI and upload one ES module. Sandbox is an optional build provider.
+Deployments consume an immutable xAPI Artifact, never a mutable directory and never a running Sandbox. The normal path is to build locally or in CI and upload either one bundled ES module or one code-module directory. Sandbox is an optional build provider.
 
 The user's API key authenticates only xAPI control-plane requests. It is never embedded in a bundle, written into a build Sandbox, or sent directly to Cloudflare. Do not put runtime secrets in source; add them later as encrypted Secret bindings.
 
@@ -167,7 +187,8 @@ export default {
 };
 ```
 
-Build locally or in CI, then upload the single bundled UTF-8 ES module. It must be at most 1 MiB and include its runtime dependencies:
+Build locally or in CI. A single bundled UTF-8 ES module must be at most 1 MiB
+and include its runtime dependencies:
 
 ```bash
 npm run build
@@ -175,6 +196,24 @@ npx xapi-to workers upload <worker-id> \
   --file dist/worker.mjs \
   --idempotency-key artifact-2026-08-21
 ```
+
+For code splitting, upload the output directory and name its entrypoint. The
+directory may contain at most 200 supported modules and 10 MiB of decoded
+module content. All modules are sent together in one xAPI Artifact request:
+
+```bash
+npx xapi-to workers upload <worker-id> \
+  --file dist/ \
+  --main worker.js \
+  --idempotency-key artifact-2026-08-21
+```
+
+This directory format is for Worker code modules. HTML, CSS, images, fonts, and
+other website files are static assets and use Cloudflare's separate assets
+upload protocol; the CLI rejects them here instead of silently dropping them.
+Native static-assets upload is not exposed by this xAPI CLI flow yet. Until it
+is, bundle small application assets into Worker code through the project's
+build step; never bypass xAPI by sending the user's key directly to Cloudflare.
 
 Save the returned Artifact `id`, then deploy that exact Artifact to preview:
 
@@ -199,7 +238,8 @@ curl "<preview-publicUrl>/health"
 
 The CLI skips `.git`, `.xapi`, `node_modules`, `dist`, credential directories (`.ssh`, `.aws`, `.gnupg`, `.docker`), `.env*`, package-manager credential files, private-key extensions, and common SSH private-key names.
 
-`--output` must identify the single bundled ES module produced by the command:
+The optional server-side Sandbox builder currently requires `--output` to
+identify one bundled ES module produced by the command:
 
 ```bash
 npx xapi-to workers build <worker-id> \
@@ -212,7 +252,7 @@ npx xapi-to workers build <worker-id> \
 
 The result must have `status: SUCCEEDED`. Save its `artifactId`, not the build `id`, and deploy it with `--artifact`.
 
-Reuse an upload key only for identical bundle bytes. Reuse a build key only for the exact same source snapshot and parameters. Reuse a deployment key only for the same Artifact and environment. A successful deployment returns `status: ACTIVE`; `DEPLOYING` is not completion and `FAILED` must be surfaced with its error.
+Reuse an upload key only for identical normalized Artifact bytes. Reuse a build key only for the exact same source snapshot and parameters. Reuse a deployment key only for the same Artifact and environment. A successful deployment returns `status: ACTIVE`; `DEPLOYING` is not completion and `FAILED` must be surfaced with its error.
 
 After real preview validation, deploy the identical file to production with a new stable key:
 

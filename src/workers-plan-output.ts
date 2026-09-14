@@ -204,7 +204,7 @@ export function formatWorkerPlan(plan: WorkerDeploymentPlan): string {
     metadataRow("Config", plan.project.configPath),
     metadataRow(
       "Build",
-      `${plan.project.build.command} → ${plan.project.build.output}`,
+      `${plan.project.build.command} → ${plan.project.build.output}${plan.project.build.main ? ` (main: ${plan.project.build.main})` : ""}`,
     ),
     "  Plan compares the current bundle; push rebuilds it before upload.",
     "",

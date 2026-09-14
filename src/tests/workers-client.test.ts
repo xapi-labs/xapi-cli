@@ -126,6 +126,42 @@ describe("workers client", () => {
     expect(JSON.parse(init.body).idempotencyKey).toBe("showcase-upload-v1");
   });
 
+  it("uploads a multi-module bundle in one immutable artifact request", async () => {
+    fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id: "artifact-2" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ) as any;
+    const bundle = {
+      version: 1 as const,
+      mainModule: "worker.js",
+      modules: [
+        {
+          path: "worker.js",
+          content: 'import "./chunk.js"; export default {};',
+          encoding: "utf8" as const,
+          contentType: "application/javascript+module" as const,
+        },
+        {
+          path: "chunk.js",
+          content: "export {};",
+          encoding: "utf8" as const,
+          contentType: "application/javascript+module" as const,
+        },
+      ],
+    };
+    await uploadWorkerArtifact(options, "worker/id", {
+      bundle,
+      idempotencyKey: "showcase-bundle-v1",
+    });
+    const [, init] = fetchSpy.mock.calls[0] as any[];
+    expect(JSON.parse(init.body)).toEqual({
+      bundle,
+      idempotencyKey: "showcase-bundle-v1",
+    });
+  });
+
   it("uses the server-side build endpoint with an extended timeout", async () => {
     fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ id: "build-1", status: "SUCCEEDED" }), {

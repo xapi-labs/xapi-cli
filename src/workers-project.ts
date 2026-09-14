@@ -127,6 +127,7 @@ export const workerProjectConfigSchema = z
       .object({
         command: z.string().min(1).max(1000),
         output: relativeProjectPath,
+        main: relativeProjectPath.optional(),
       })
       .strict(),
     environments: z

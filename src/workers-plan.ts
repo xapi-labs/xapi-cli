@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, statSync } from "node:fs";
 import type { WorkersClientOptions } from "./workers-client.ts";
 import * as workersClient from "./workers-client.ts";
+import { loadWorkerArtifact, WorkerArtifactError } from "./workers-artifact.ts";
 import { deploymentPrefix, currentMatchingDeployment } from "./workers-deployment-state.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
 import {
@@ -43,7 +43,7 @@ export interface WorkerDeploymentPlan {
     configPath: string;
     workerId?: string;
     slug: string;
-    build: { command: string; output: string };
+    build: { command: string; output: string; main?: string };
   };
   environment: "preview" | "production";
   remote: { linked: boolean; workerId?: string };
@@ -365,24 +365,18 @@ function localArtifact(project: LoadedWorkerProject): {
     "build.output",
   );
   if (!existsSync(path)) return {};
-  if (lstatSync(path).isSymbolicLink()) {
-    return { blocked: "Build output is a symbolic link" };
+  try {
+    const artifact = loadWorkerArtifact(path, project.config.build.main);
+    return {
+      sha256: artifact.contentSha256,
+      sizeBytes: artifact.sizeBytes,
+    };
+  } catch (error) {
+    if (error instanceof WorkerArtifactError) {
+      return { blocked: error.message };
+    }
+    throw error;
   }
-  const info = statSync(path);
-  if (!info.isFile()) return { blocked: "Build output is not a file" };
-  if (!info.size) return { blocked: "Build output is empty" };
-  if (info.size > 1024 * 1024) {
-    return { blocked: "Build output exceeds the 1 MiB artifact limit" };
-  }
-  const bytes = readFileSync(path);
-  const source = bytes.toString("utf8");
-  if (!Buffer.from(source, "utf8").equals(bytes)) {
-    return { blocked: "Build output is not valid UTF-8 JavaScript" };
-  }
-  return {
-    sha256: createHash("sha256").update(bytes).digest("hex"),
-    sizeBytes: info.size,
-  };
 }
 
 function validatePlanInputs(project: LoadedWorkerProject): void {
@@ -465,7 +459,7 @@ function artifactAndDeployment(
       local.sha256 || project.config.build.output,
       local.sha256
         ? "Upload the local bundle as a new immutable Artifact"
-        : `Run ${project.config.build.command} and upload its single ESM output`,
+        : `Run ${project.config.build.command} and upload its Worker output`,
       {
         output: project.config.build.output,
         ...(local.sha256
@@ -702,6 +696,7 @@ export async function createWorkerPlan(
       build: {
         command: project.config.build.command,
         output: project.config.build.output,
+        ...(project.config.build.main ? { main: project.config.build.main } : {}),
       },
     },
     environment: options.environment,

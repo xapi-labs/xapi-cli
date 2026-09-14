@@ -145,6 +145,21 @@ describe("Worker project configuration", () => {
     ).toBe(join(root, "dist", "worker.mjs"));
   });
 
+  test("accepts an explicit main module for directory build output", () => {
+    const root = fixture({
+      build: {
+        command: "npm run build",
+        output: "dist",
+        main: "worker.js",
+      },
+    });
+    expect(loadWorkerProject(root).config.build).toEqual({
+      command: "npm run build",
+      output: "dist",
+      main: "worker.js",
+    });
+  });
+
   test("throws a stable error when no project exists", () => {
     const root = realpathSync(
       mkdtempSync(join(tmpdir(), "xapi-worker-empty-")),

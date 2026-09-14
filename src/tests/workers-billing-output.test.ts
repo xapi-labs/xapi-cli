@@ -109,7 +109,7 @@ describe("Worker billing human output", () => {
   Reasons                 LOW_BALANCE
 
 Resource totals
-  Resource        Count  Settled      Reserved  Estimated  Exposure  Quality        Reasons                
+${'  Resource        Count  Settled      Reserved  Estimated  Exposure  Quality        Reasons'.padEnd(107)}
   ──────────────  ─────  ───────────  ────────  ─────────  ────────  ─────────────  ───────────────────────
   worker_runtime  1      $1.25000000  —         $0         —         INDETERMINATE  ESTIMATED_TOTAL_UNKNOWN
 ────────────────────────────────────────────────────────────────────────────────────────`);

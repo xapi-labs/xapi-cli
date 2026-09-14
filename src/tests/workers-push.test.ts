@@ -192,12 +192,30 @@ function fakePlatform(
     listWorkerArtifacts: async () => state.artifacts,
     uploadWorkerArtifact: async (_api, _id, input) => {
       calls.uploadArtifact += 1;
-      const moduleCode = String(input.moduleCode);
+      const artifactBytes = "bundle" in input
+        ? Buffer.from(
+            JSON.stringify({
+              version: 1,
+              mainModule: input.bundle.mainModule,
+              modules: [...input.bundle.modules]
+                .sort((a: any, b: any) => a.path.localeCompare(b.path))
+                .map((module: any) => ({
+                  path: module.path,
+                  contentBase64:
+                    module.encoding === "base64"
+                      ? module.content
+                      : Buffer.from(module.content, "utf8").toString("base64"),
+                  contentType: module.contentType,
+                })),
+            }),
+            "utf8",
+          )
+        : Buffer.from(input.moduleCode, "utf8");
       const artifact = {
         id: "artifact-1",
         idempotencyKey: input.idempotencyKey,
-        contentSha256: createHash("sha256").update(moduleCode).digest("hex"),
-        sizeBytes: Buffer.byteLength(moduleCode),
+        contentSha256: createHash("sha256").update(artifactBytes).digest("hex"),
+        sizeBytes: artifactBytes.length,
       };
       state.artifacts.push(artifact);
       if (failArtifact) {
@@ -511,7 +529,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(platform.calls.deploy).toBe(0);
   });
 
-  test("rejects an unbundled module before Artifact upload and preserves remote state", async () => {
+  test("rejects a single-file output with an unresolved import before upload", async () => {
     const root = fixture({ linked: true });
     const platform = fakePlatform({ exists: true });
     let caught: WorkerPushError | undefined;
@@ -534,11 +552,66 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
       caught = error as WorkerPushError;
     }
     expect(caught).toBeInstanceOf(WorkerPushError);
-    expect(caught?.message).toContain("single self-contained module");
+    expect(caught?.message).toContain("imports that are not in the Artifact");
     expect(caught?.recovery).toEqual(
       expect.objectContaining({ workerId, resourcesPreserved: true }),
     );
     expect(platform.calls.uploadArtifact).toBe(0);
     expect(platform.calls.deploy).toBe(0);
+  });
+
+  test("uploads a code-split directory as one immutable Artifact", async () => {
+    const root = fixture({ linked: true });
+    const configPath = join(root, "xapi.worker.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.build = {
+      command: "fake-build",
+      output: "dist",
+      main: "worker.mjs",
+    };
+    writeFileSync(configPath, JSON.stringify(config, null, 2));
+    const platform = fakePlatform({ exists: true });
+    let uploadInput: Record<string, unknown> | undefined;
+    const upload = platform.client.uploadWorkerArtifact;
+    platform.client.uploadWorkerArtifact = async (...args) => {
+      uploadInput = args[2];
+      return upload(...args);
+    };
+
+    const result = await pushWorkerProject({
+      cwd: root,
+      environment: "preview",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: platform.client,
+      confirm: async () => true,
+      runBuild: async () => {
+        mkdirSync(join(root, "dist"), { recursive: true });
+        writeFileSync(
+          join(root, "dist/worker.mjs"),
+          `import { message } from "./chunk.mjs"; export default { fetch() { return new Response(message) } };`,
+        );
+        writeFileSync(
+          join(root, "dist/chunk.mjs"),
+          `export const message = "ok";`,
+        );
+      },
+      fetchPublic: (async () => new Response("ok")) as unknown as typeof fetch,
+      sleep: async () => undefined,
+    });
+
+    expect(result.status).toBe("ACTIVE");
+    expect(uploadInput).not.toHaveProperty("moduleCode");
+    expect(uploadInput?.bundle).toEqual(
+      expect.objectContaining({
+        version: 1,
+        mainModule: "worker.mjs",
+        modules: expect.arrayContaining([
+          expect.objectContaining({ path: "worker.mjs" }),
+          expect.objectContaining({ path: "chunk.mjs" }),
+        ]),
+      }),
+    );
+    expect(platform.calls.uploadArtifact).toBe(1);
+    expect(platform.calls.deploy).toBe(1);
   });
 });

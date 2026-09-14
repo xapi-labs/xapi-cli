@@ -1,4 +1,5 @@
 import { request } from "./client.ts";
+import type { WorkerArtifactUploadRequest } from "./workers-artifact.ts";
 import { scheme } from "./config.ts";
 
 export interface WorkersClientOptions {
@@ -126,7 +127,7 @@ export function listWorkerArtifacts(options: WorkersClientOptions, id: string) {
 export function uploadWorkerArtifact(
   options: WorkersClientOptions,
   id: string,
-  input: Record<string, unknown>,
+  input: WorkerArtifactUploadRequest,
 ) {
   return request<unknown>(
     url(options, `/${encodeURIComponent(id)}/artifacts`),

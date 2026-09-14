@@ -37,13 +37,17 @@ describe('bundled xAPI Workers skill guide', () => {
     expect(guide).toContain('workers deploy <worker-id>');
     expect(guide).toContain('--artifact <artifact-id>');
     expect(guide).toContain('### Optional Sandbox build');
+    expect(guide).toContain('"main": "worker.js"');
+    expect(guide).toContain('--file dist/');
+    expect(guide).toContain('--main worker.js');
+    expect(guide).toContain("separate assets\nupload protocol");
     expect(guide).not.toContain('--build <build-id>');
   });
 
   it('preserves key isolation, idempotency, budgets, and terminal status rules', () => {
     expect(guide).toContain('never embedded in a bundle');
     expect(guide).toContain('between $0.10 and $100 per day');
-    expect(guide).toContain('Reuse an upload key only for identical bundle bytes');
+    expect(guide).toContain('Reuse an upload key only for identical normalized Artifact bytes');
     expect(guide).toContain('`status: ACTIVE`');
   });
 

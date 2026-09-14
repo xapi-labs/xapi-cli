@@ -32,7 +32,11 @@
       "required": ["command", "output"],
       "properties": {
         "command": { "type": "string", "minLength": 1, "maxLength": 1000 },
-        "output": { "$ref": "#/$defs/projectPath" }
+        "output": { "$ref": "#/$defs/projectPath" },
+        "main": {
+          "description": "Entrypoint relative to build.output when output is a directory",
+          "$ref": "#/$defs/projectPath"
+        }
       }
     },
     "environments": {

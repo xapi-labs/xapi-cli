@@ -25,6 +25,10 @@ import { rollbackWorkerProject } from "../workers-rollback.ts";
 import { readWorkerLogs, tailWorkerLogs } from "../workers-logs.ts";
 import { formatWorkerMetering } from "../workers-metering-output.ts";
 import {
+  loadWorkerArtifact,
+  WorkerArtifactError,
+} from "../workers-artifact.ts";
+import {
   printWorkerBillingResponse,
   workerBillingOutputMode,
 } from "../workers-billing-output.ts";
@@ -44,7 +48,7 @@ COMMANDS
   list
   get <worker-id>
   create --name NAME --slug SLUG --preview-budget USD --production-budget USD
-  upload <worker-id> --file dist/index.mjs
+  upload <worker-id> --file dist/index.mjs|dist/ [--main worker.js]
   artifacts <worker-id>
   build <worker-id> --project . --entrypoint src/index.ts --command "npm run build"
   builds <worker-id>
@@ -135,7 +139,8 @@ BILLING FLAGS
   --cursor OPAQUE --limit 1..100        Page ledger without decoding its cursor
 
 UPLOAD FLAGS
-  --file PATH                   Bundled UTF-8 ES module (required, max 1 MiB)
+  --file PATH                   Single ES module or code-module directory (required)
+  --main PATH                   Entrypoint relative to --file when it is a directory
   --idempotency-key KEY         Stable retry key (generated when omitted)
 
 OPTIONAL SANDBOX BUILD FLAGS
@@ -177,6 +182,7 @@ EXAMPLES
   xapi-to workers create --name "Daily agent" --slug daily-agent \
     --preview-budget 0.25 --production-budget 2
   xapi-to workers upload <id> --file dist/index.mjs
+  xapi-to workers upload <id> --file dist/ --main worker.js
   xapi-to workers deploy <id> --artifact <artifact-id> --env preview
   xapi-to workers billing overview <id> --env production
   xapi-to workers billing usage <id> --env production --json
@@ -320,23 +326,6 @@ async function projectFiles(project: string) {
   }
   await walk(project);
   return files;
-}
-
-async function bundledModule(path: string) {
-  const absolute = resolve(path);
-  const info = await stat(absolute).catch((error) => {
-    err(`cannot read Worker bundle: ${absolute}`, error.message);
-  });
-  if (!info.isFile()) err(`Worker bundle is not a file: ${absolute}`);
-  if (!info.size) err("Worker bundle is empty");
-  if (info.size > 1024 * 1024)
-    err("Worker bundle exceeds the 1 MiB artifact limit");
-  const buffer = await readFile(absolute);
-  const moduleCode = buffer.toString("utf8");
-  if (!Buffer.from(moduleCode, "utf8").equals(buffer)) {
-    err("Worker bundle must be valid UTF-8 JavaScript");
-  }
-  return moduleCode;
 }
 
 export async function workersCommand(
@@ -666,14 +655,27 @@ export async function workersCommand(
       return;
     }
     case "upload": {
-      assertFlags(flags, ["file", "idempotency-key"]);
+      assertFlags(flags, ["file", "main", "idempotency-key"]);
       const id = oneId(
         rest,
         "usage: xapi-to workers upload <worker-id> --file PATH",
       );
+      if (flags.main === "true" || flags.main === "") {
+        err("--main requires a path relative to the output directory");
+      }
+      let artifact;
+      try {
+        artifact = loadWorkerArtifact(
+          resolve(required(flags.file, "--file")),
+          flags.main,
+        );
+      } catch (error) {
+        if (error instanceof WorkerArtifactError) err(error.message);
+        throw error;
+      }
       output(
         await client.uploadWorkerArtifact(options(), id, {
-          moduleCode: await bundledModule(required(flags.file, "--file")),
+          ...artifact.upload,
           idempotencyKey: flags["idempotency-key"] || randomUUID(),
         }),
       );

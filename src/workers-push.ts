@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
-  lstatSync,
   readFileSync,
   renameSync,
   statSync,
@@ -10,8 +9,13 @@ import {
 } from "node:fs";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
-import { parse } from "acorn";
 import { HttpError, isRetryableRequestError } from "./client.ts";
+import {
+  type LoadedWorkerArtifact,
+  loadWorkerArtifact,
+  WorkerArtifactError,
+  type WorkerArtifactUploadRequest,
+} from "./workers-artifact.ts";
 import type { WorkersClientOptions } from "./workers-client.ts";
 import * as workersClient from "./workers-client.ts";
 import {
@@ -73,7 +77,7 @@ export interface PushClient extends PlanClient, DeploymentClient {
   uploadWorkerArtifact(
     options: WorkersClientOptions,
     id: string,
-    input: Record<string, unknown>,
+    input: WorkerArtifactUploadRequest,
   ): Promise<unknown>;
 }
 
@@ -240,112 +244,20 @@ async function terminalConfirm(): Promise<boolean> {
   }
 }
 
-function walkSyntax(node: unknown, visit: (item: UnknownRecord) => void): void {
-  if (!node || typeof node !== "object") return;
-  if (Array.isArray(node)) {
-    for (const item of node) walkSyntax(item, visit);
-    return;
-  }
-  const item = node as UnknownRecord;
-  if (typeof item.type === "string") visit(item);
-  for (const [key, child] of Object.entries(item)) {
-    if (key !== "start" && key !== "end" && key !== "loc") {
-      walkSyntax(child, visit);
-    }
-  }
-}
-
-function validateBundle(project: LoadedWorkerProject): {
-  moduleCode: string;
-  contentSha256: string;
-  sizeBytes: number;
-} {
+function validateBundle(project: LoadedWorkerProject): LoadedWorkerArtifact {
   const path = resolveWorkerProjectPath(
     project,
     project.config.build.output,
     "build.output",
   );
-  if (!existsSync(path)) {
-    throw new WorkerPushError(`Build output does not exist: ${path}`);
-  }
-  if (lstatSync(path).isSymbolicLink()) {
-    throw new WorkerPushError("Build output must not be a symbolic link");
-  }
-  const info = statSync(path);
-  if (!info.isFile()) throw new WorkerPushError("Build output is not a file");
-  if (!info.size) throw new WorkerPushError("Build output is empty");
-  if (info.size > 1024 * 1024) {
-    throw new WorkerPushError("Build output exceeds the 1 MiB artifact limit");
-  }
-  const bytes = readFileSync(path);
-  const moduleCode = bytes.toString("utf8");
-  if (!Buffer.from(moduleCode, "utf8").equals(bytes)) {
-    throw new WorkerPushError("Build output must be valid UTF-8 JavaScript");
-  }
-  let ast: unknown;
   try {
-    ast = parse(moduleCode, {
-      ecmaVersion: "latest",
-      sourceType: "module",
-      allowHashBang: true,
-    });
+    return loadWorkerArtifact(path, project.config.build.main);
   } catch (error) {
-    throw new WorkerPushError(
-      `Build output is not valid JavaScript ESM: ${error instanceof Error ? error.message : "parse failed"}`,
-    );
-  }
-  let defaultExport = false;
-  const externalImports: string[] = [];
-  walkSyntax(ast, (node) => {
-    if (node.type === "ExportDefaultDeclaration") defaultExport = true;
-    if (
-      node.type === "ExportNamedDeclaration" &&
-      Array.isArray(node.specifiers)
-    ) {
-      defaultExport ||= node.specifiers.some((specifier) => {
-        if (!specifier || typeof specifier !== "object") return false;
-        const exported = (specifier as UnknownRecord).exported;
-        if (!exported || typeof exported !== "object") return false;
-        const exportedRecord = exported as UnknownRecord;
-        return exportedRecord.name === "default" || exportedRecord.value === "default";
-      });
+    if (error instanceof WorkerArtifactError) {
+      throw new WorkerPushError(error.message);
     }
-    if (
-      node.type === "ImportDeclaration" ||
-      node.type === "ExportAllDeclaration" ||
-      (node.type === "ExportNamedDeclaration" && node.source)
-    ) {
-      const source = text(record(node.source, "module source").value);
-      if (source && !/^(?:cloudflare|node):/.test(source)) {
-        externalImports.push(source);
-      }
-    }
-    if (node.type === "ImportExpression") {
-      const sourceNode = node.source;
-      const source =
-        sourceNode && typeof sourceNode === "object"
-          ? text((sourceNode as UnknownRecord).value)
-          : undefined;
-      if (!source || !/^(?:cloudflare|node):/.test(source)) {
-        externalImports.push(source || "<dynamic expression>");
-      }
-    }
-  });
-  if (!defaultExport) {
-    throw new WorkerPushError(
-      "Build output must export a default Cloudflare Worker handler",
-    );
+    throw error;
   }
-  if (externalImports.length) {
-    throw new WorkerPushError(
-      `Build output is not a single self-contained module; bundle these imports: ${[...new Set(externalImports)].sort().join(", ")}`,
-    );
-  }
-  return {
-    moduleCode,
-    contentSha256: sha256(bytes),
-    sizeBytes: info.size,
-  };
 }
 
 function environmentOf(
@@ -604,7 +516,7 @@ async function ensureArtifact(
   try {
     return record(
       await api.uploadWorkerArtifact(options, workerId, {
-        moduleCode: bundle.moduleCode,
+        ...bundle.upload,
         idempotencyKey,
       }),
       "Artifact",
@@ -615,7 +527,7 @@ async function ensureArtifact(
     if (reconciled) return reconciled;
     return record(
       await api.uploadWorkerArtifact(options, workerId, {
-        moduleCode: bundle.moduleCode,
+        ...bundle.upload,
         idempotencyKey,
       }),
       "Artifact",
