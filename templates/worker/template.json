@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "worker",
+  "version": "1.0.0",
+  "name": "HTTP Worker",
+  "description": "Minimal HTTP Worker with a health endpoint and xAPI AI base URL binding.",
+  "productTemplate": "worker",
+  "defaultResources": [],
+  "defaultSecrets": [],
+  "packageScripts": {},
+  "files": [
+    { "source": "src/index.ts", "target": "src/index.ts" }
+  ]
+}

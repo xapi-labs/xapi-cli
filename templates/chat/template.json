@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "chat",
+  "version": "1.0.0",
+  "name": "DeepSeek Chat",
+  "description": "OpenAI-compatible DeepSeek chat endpoint backed by ai.xapi.to.",
+  "productTemplate": "agent",
+  "defaultResources": [],
+  "defaultSecrets": ["MODEL_KEY"],
+  "packageScripts": {},
+  "files": [
+    { "source": "src/index.ts", "target": "src/index.ts" }
+  ]
+}

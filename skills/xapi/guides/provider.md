@@ -55,6 +55,36 @@ Use `--clear-about` or `--clear-website` to clear a value. Provider metadata
 updates cannot modify the version contract or upstream credentials; use the
 version command for those fields.
 
+## Configure a service request limit
+
+Rate limits are optional service settings. Configure both values together when
+creating a service or updating an existing one:
+
+```bash
+npx xapi-to provider create --file ./service.json \
+  --rate-limit-requests 100 \
+  --rate-limit-period-seconds 60
+
+npx xapi-to provider update <service-id> \
+  --rate-limit-requests 100 \
+  --rate-limit-period-seconds 60
+```
+
+`requests` accepts 1 through 1,000,000 and `periodSeconds` accepts 1 through
+86,400. The backend applies one quota to each User x Service pair, so all API keys
+owned by the same user share that service quota. This setting is supported only
+for `PROXY` services; the backend rejects a non-null limit for `DIRECT` services.
+
+Disable the limit explicitly with:
+
+```bash
+npx xapi-to provider update <service-id> --clear-rate-limit
+```
+
+This sends `rateLimitConfig: null`. Omitting the rate-limit flags during an
+update leaves the existing setting unchanged. A raw `rateLimitConfig` can also
+be included in `service.json`; explicit CLI rate-limit flags override that field.
+
 ## Edit and publish a revision
 
 ```bash

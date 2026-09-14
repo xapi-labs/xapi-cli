@@ -1,6 +1,6 @@
 {
   "name": "xapi-to",
-  "version": "0.1.19",
+  "version": "0.1.21",
   "description": "Agent-friendly CLI for xapi - discover and call capabilities and APIs",
   "type": "module",
   "bin": {
@@ -24,7 +24,9 @@
     "src/openai-sandbox-client.ts",
     "src/sandbox-client.ts",
     "README.md",
-    "skills"
+    "schemas",
+    "skills",
+    "templates"
   ],
   "license": "MIT",
   "homepage": "https://xapi.to",
@@ -49,6 +51,9 @@
   },
   "dependencies": {
     "@openai/agents": "0.15.0",
+    "acorn": "^8.18.0",
+    "jsonc-parser": "^3.3.1",
+    "smol-toml": "^1.8.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {

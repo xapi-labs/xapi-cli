@@ -59,6 +59,25 @@ describe('client.request', () => {
       expect(calls).toBe(1);
     });
 
+    it('interrupts retry backoff when the caller aborts', async () => {
+      process.env.XAPI_RETRY_BASE_MS = '100';
+      let calls = 0;
+      fetchSpy = mockFetch(async () => {
+        calls++;
+        return new Response('busy', { status: 503 });
+      });
+      const controller = new AbortController();
+      const pending = request(
+        'https://action.xapi.to/x',
+        { method: 'GET', signal: controller.signal },
+        5_000,
+        2,
+      );
+      controller.abort();
+      await expect(pending).rejects.toThrow(/aborted/i);
+      expect(calls).toBe(1);
+    });
+
     it('does NOT retry by default (fail-safe for non-idempotent writes)', async () => {
       let calls = 0;
       fetchSpy = mockFetch(async () => {

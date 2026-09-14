@@ -26,7 +26,8 @@ npx skills add xapi-labs/xapi-cli
 ```
 
 This installs the bundled [`xapi` skill](skills/xapi), which teaches the agent
-how to call social, search, crypto, and AI data through this CLI. Then just ask
+how to call social, search, domains/DNS, crypto, BlockPI RPC, Binance Web3, and
+AI services through this CLI. Then just ask
 — "what's the price of BTC" — and it takes it from there. Set up a key first;
 see [Quick Start](#quick-start).
 
@@ -86,8 +87,14 @@ xapi-to services --category Social --page-size 10       # filter and paginate
 xapi-to get twitter.tweet_detail                        # get action schema
 xapi-to get-batch twitter.tweet_detail crypto.token.price # get several schemas
 xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'  # execute
+xapi-to call serper.search --input '{"body":[{"q":"OpenAI"},{"q":"Cloudflare"}]}' # Serper mini-batch
 xapi-to call ai.text.chat.fast --input '{"messages":[{"role":"user","content":"Hi"}]}' --stream
 ```
+
+Direct `serper.*` actions use a nested `body`. Eleven current v7 actions accept
+one request object or a mini-batch array; `serper.reviews` accepts only one
+object. See the bundled [Serper guide](skills/xapi/guides/serper.md) for the
+Action list, examples, and dynamic per-credit billing.
 
 Search uses `--sort default|relevance|price`. `default` is the recommended
 order: it considers keyword coverage and match quality first, then favors
@@ -300,6 +307,175 @@ XAPI_MODEL=deepseek-v4-pro \
 npm run example:sandbox:openai
 ```
 
+### Hosted Workers Commands
+
+Inspect delayed storage collection separately from the financial ledger:
+
+```bash
+xapi-to workers metering <worker-id> --env preview
+xapi-to workers metering <worker-id> --env preview --json
+```
+
+Human output lists each resource's UTC collection window, source status, sample
+count, last sample and retry times. Missing samples are not zero usage; observed
+samples are not final settlement. An empty or truncated list does not prove
+complete history. This source read is independent of the billing snapshot.
+
+`workers` manages continuously addressable JavaScript applications on
+xAPI-hosted Cloudflare Workers for Platforms.
+It is separate from `sandbox`: use Sandbox for arbitrary shell/build/GPU work,
+and Workers for HTTP, WebSocket, Webhook, Cron, and persistent Agent entrypoints.
+
+```bash
+# New project: build, create/update resources, deploy preview, then promote the
+# exact tested Artifact to production.
+xapi workers templates
+xapi workers init my-agent --template persistent-agent
+cd my-agent
+# Review the plan before resources are created.
+xapi workers plan --env preview
+xapi workers push --env preview
+xapi workers promote --to production
+
+# Existing Cloudflare Worker: Wrangler remains the source of runtime config.
+cd existing-worker
+xapi workers init --from-wrangler ./wrangler.jsonc
+xapi workers plan --env preview
+xapi workers push --env preview
+
+# Code rollback never rolls back KV/D1/R2/DO/Queue/Workflow data or Secrets.
+xapi workers rollback --env production --to previous
+
+# Follow Tail Worker logs and correlate one request or deployment.
+xapi workers logs <worker-id> --env production --tail --since 10m
+xapi workers logs <worker-id> --env production --request-id <request-id>
+```
+
+Templates are versioned packages shipped with the CLI, not remote code fetched
+during `init`. `persistent-agent` includes buildable source plus KV, D1, R2,
+Durable Object, Queue, and Workflow declarations. `push` provisions the
+environment-specific resources and returns their binding state; secret values
+remain a separate operation:
+
+```bash
+export APP_TOKEN='replace-with-an-incoming-request-token'
+export MODEL_KEY='replace-with-an-ai.xapi.to-key'
+xapi workers secrets set <worker-id> APP_TOKEN --env preview --from-env APP_TOKEN
+xapi workers secrets set <worker-id> MODEL_KEY --env preview --from-env MODEL_KEY
+```
+
+The project workflow works without Git. `xapi.worker.json` may be committed,
+but Secret values must stay in environment variables or the encrypted Secret
+store. `push` never silently deletes extra stateful resources or Secrets.
+
+Deployment identity includes the code Artifact, remote resource identities,
+Secret versions, environment bindings and compatibility settings. Changing only
+resources or compatibility settings therefore deploys again; repeating an
+unchanged push reuses the current activation. Older deployments without this
+configuration fingerprint require one deployment to establish the baseline.
+
+Removing a resource from `xapi.worker.json` does **not** unbind or destroy it:
+`plan` reports `MANUAL`, and the resource remains billable and its reserve stays
+frozen. To destroy it, first stop application access to that resource and remove
+its declaration, run `workers resources delete <worker-id> <resource-id> --env
+preview --yes`, then push again to publish the reduced binding set. Do not keep
+the declaration, or a subsequent push will create a replacement resource.
+If deletion fails, the cloud resource and reserve remain; inspect the reported
+error rather than assuming the data has been removed. Preserve a backup before
+deleting data you need. A successful deployment alone is not proof of deletion
+or final billing settlement.
+
+In CI,
+set `XAPI_KEY` and `XAPI_API_HOST` explicitly, use a Key restricted to the target
+Worker, and pass `--non-interactive`; safety preflights are still enforced:
+
+```bash
+export XAPI_API_HOST=test.xapi.to
+export XAPI_KEY="$CI_XAPI_KEY"
+xapi workers plan --env preview --format json
+xapi workers push --env preview --non-interactive
+xapi workers promote --to production --non-interactive
+```
+
+The lower-level commands remain available for diagnosis and custom automation:
+
+```bash
+# API keys need workers:read / workers:write scopes.
+xapi-to workers provider-status
+xapi-to workers capabilities --format table
+xapi-to workers bindings --format table
+
+# Both environment budgets are explicit ($0.10-$100/day).
+xapi-to workers create \
+  --name "Daily research agent" \
+  --slug daily-research-agent \
+  --template agent \
+  --preview-budget 0.25 \
+  --production-budget 2
+
+# Upload one bundled ES module, or use --file dist/ --main worker.js for code splitting.
+xapi-to workers upload <worker-id> \
+  --file dist/worker.mjs \
+  --idempotency-key artifact-v1
+
+xapi-to workers deploy <worker-id> \
+  --artifact <artifact-id> \
+  --env preview \
+  --idempotency-key preview-v1
+
+# Add per-environment state and object storage, then deploy again so the
+# bindings are attached to that User Worker.
+xapi-to workers resources create <worker-id> \
+  --env preview --type kv --binding STATE
+xapi-to workers resources create <worker-id> \
+  --env preview --type r2 --binding FILES
+
+# Secrets are encrypted at rest; prefer reading them from a local env variable.
+MODEL_KEY='...' xapi-to workers secrets set <worker-id> MODEL_KEY \
+  --env preview --from-env MODEL_KEY
+xapi-to workers resources list <worker-id> --env preview --format table
+xapi-to workers secrets list <worker-id> --env preview --format table
+
+# Durable Agent state, asynchronous tasks, workflows, and persistent schedules.
+xapi-to workers resources create <worker-id> \
+  --env preview --type do --binding AGENT_STATE --class-name AgentState
+xapi-to workers resources create <worker-id> \
+  --env preview --type queue --binding TASK_QUEUE
+xapi-to workers resources create <worker-id> \
+  --env preview --type workflow --binding AGENT_WORKFLOW
+# Queue includes an xAPI-managed consumer. Send a local route envelope from
+# Worker code; delivery is at least once, so make /tasks/run idempotent:
+# await env.TASK_QUEUE.send({
+#   path: '/tasks/run', method: 'POST', body: { taskId: 'task_123' }
+# });
+xapi-to workers schedules create <worker-id> \
+  --name heartbeat --cron "*/15 * * * *" --timezone UTC \
+  --env preview --path /cron --method POST
+
+# Optional: build source in an ephemeral xAPI Sandbox. A successful result
+# contains artifactId, which is deployed exactly like an upload.
+xapi-to workers build <worker-id> \
+  --project . \
+  --entrypoint src/index.ts \
+  --command "npm install --ignore-scripts && npm run build" \
+  --output dist/worker.mjs \
+  --idempotency-key build-v1
+
+xapi-to workers get <worker-id> --format pretty
+xapi-to workers audit <worker-id> --format table
+xapi-to workers invocations <worker-id> --env production --format table
+xapi-to workers logs <worker-id> --env production --format table
+xapi-to workers usage <worker-id> --env production --format pretty
+xapi-to workers billing-status --format pretty
+xapi-to workers domains list <worker-id> --format table
+xapi-to workers budget <worker-id> production --daily-usd 3
+xapi-to workers delete <worker-id> --yes
+```
+
+Set `XAPI_API_HOST=test.xapi.to` for the test control plane. Mutating requests
+are not retried automatically; when a deployment result is uncertain, inspect
+the Worker and retry with the same idempotency key.
+
 ### OAuth
 
 Bind third-party OAuth accounts (e.g. Twitter) to your API key.
@@ -344,6 +520,8 @@ management without a JWT exchange:
 xapi-to provider list
 xapi-to provider create --file ./service.json
 xapi-to provider update <service-id> --about-file ./ABOUT.md --website https://example.com
+xapi-to provider update <service-id> --rate-limit-requests 100 --rate-limit-period-seconds 60
+xapi-to provider update <service-id> --clear-rate-limit
 xapi-to provider versions <service-id>
 xapi-to provider revision start <service-id> 1
 xapi-to provider version update <service-id> <version-id> --file ./contract.json
@@ -352,6 +530,10 @@ xapi-to provider publish <service-id> <revision-id> --changelog-file ./CHANGELOG
 xapi-to provider metrics <service-id> --days 7
 xapi-to provider events --after '<opaque-next-cursor>'
 ```
+
+Service rate limits are optional and supported only for proxied services. Both
+numeric flags are required when setting a limit; the quota is shared by all API
+keys belonging to the same user for that service.
 
 Service usage tutorials are Skill packages. Scaffold one from the serving
 contract, submit it for review, wait for publication, then link it:
@@ -416,17 +598,17 @@ xapi-to list --format table                             # human-readable table
 
 ## Environment Variables
 
-| Variable | Description |
-|---|---|
-| `XAPI_KEY` | API key (overrides config file) |
-| `XAPI_API_KEY` | Compatible API key alias (overrides config file; lower priority than `XAPI_KEY`) |
-| `XAPI_SANDBOX_KEY` | Sandbox-only credential for OpenAI SandboxAgent examples/tests |
-| `XAPI_AI_KEY` | AI Gateway credential for OpenAI-compatible model calls |
-| `XAPI_ACTION_HOST` | Action service host (default: `action.xapi.to`) |
-| `XAPI_API_HOST` | Auth/account service host (default: `api.xapi.to`) |
-| `XAPI_SANDBOX_HOST` | Sandbox gateway host (default: `sandbox.xapi.to`) |
-| `XAPI_OUTPUT` | Default output format (`json`\|`pretty`\|`table`) |
-| `XAPI_TRANSFER_IDLE_TIMEOUT_MS` | SSE/download idle timeout in milliseconds (default: `60000`) |
+| Variable                        | Description                                                                      |
+| ------------------------------- | -------------------------------------------------------------------------------- |
+| `XAPI_KEY`                      | API key (overrides config file)                                                  |
+| `XAPI_API_KEY`                  | Compatible API key alias (overrides config file; lower priority than `XAPI_KEY`) |
+| `XAPI_SANDBOX_KEY`              | Sandbox-only credential for OpenAI SandboxAgent examples/tests                   |
+| `XAPI_AI_KEY`                   | AI Gateway credential for OpenAI-compatible model calls                          |
+| `XAPI_ACTION_HOST`              | Action service host (default: `action.xapi.to`)                                  |
+| `XAPI_API_HOST`                 | Auth/account service host (default: `api.xapi.to`)                               |
+| `XAPI_SANDBOX_HOST`             | Sandbox gateway host (default: `sandbox.xapi.to`)                                |
+| `XAPI_OUTPUT`                   | Default output format (`json`\|`pretty`\|`table`)                                |
+| `XAPI_TRANSFER_IDLE_TIMEOUT_MS` | SSE/download idle timeout in milliseconds (default: `60000`)                     |
 
 Config is stored at `~/.xapi/config.json`.
 
@@ -436,28 +618,28 @@ This is a small quick-reference subset, not the complete or permanently fixed
 catalog. Use `xapi-to list --source capability`, `search`, and `get` for the
 current IDs and schemas.
 
-| ID | Description |
-|---|---|
-| `twitter.tweet_detail` | Get tweet details and replies |
-| `twitter.user_by_screen_name` | Get user profile by username |
-| `twitter.user_tweets` | Get tweets from a user |
-| `twitter.user_tweets_and_replies` | Get tweets and replies from a user |
-| `twitter.user_media` | Get media posts from a user |
-| `twitter.following` | Get user following list |
-| `twitter.followers` | Get user followers |
-| `twitter.retweeters` | Get tweet retweeters |
-| `twitter.search` | Search tweets |
-| `ai.text.chat.fast` | Fast AI chat completion |
-| `ai.text.chat.reasoning` | Advanced reasoning chat |
-| `ai.text.chat.auto` | Model-selected chat with provider fallback |
-| `ai.text.summarize` | Summarize long text |
-| `ai.text.rewrite` | Rewrite text with different styles |
-| `ai.embedding.generate` | Generate vector embeddings |
-| `web.search` | Web search |
-| `web.search.realtime` | Realtime web search with time filters |
-| `web.search.news` | News search |
-| `crypto.token.price` | Crypto token price and changes |
-| `crypto.token.metadata` | Crypto token metadata |
+| ID                                | Description                                |
+| --------------------------------- | ------------------------------------------ |
+| `twitter.tweet_detail`            | Get tweet details and replies              |
+| `twitter.user_by_screen_name`     | Get user profile by username               |
+| `twitter.user_tweets`             | Get tweets from a user                     |
+| `twitter.user_tweets_and_replies` | Get tweets and replies from a user         |
+| `twitter.user_media`              | Get media posts from a user                |
+| `twitter.following`               | Get user following list                    |
+| `twitter.followers`               | Get user followers                         |
+| `twitter.retweeters`              | Get tweet retweeters                       |
+| `twitter.search`                  | Search tweets                              |
+| `ai.text.chat.fast`               | Fast AI chat completion                    |
+| `ai.text.chat.reasoning`          | Advanced reasoning chat                    |
+| `ai.text.chat.auto`               | Model-selected chat with provider fallback |
+| `ai.text.summarize`               | Summarize long text                        |
+| `ai.text.rewrite`                 | Rewrite text with different styles         |
+| `ai.embedding.generate`           | Generate vector embeddings                 |
+| `web.search`                      | Web search                                 |
+| `web.search.realtime`             | Realtime web search with time filters      |
+| `web.search.news`                 | News search                                |
+| `crypto.token.price`              | Crypto token price and changes             |
+| `crypto.token.metadata`           | Crypto token metadata                      |
 
 ## Security
 

@@ -54,6 +54,59 @@ describe('provider command', () => {
     );
   });
 
+  it('creates a service with an explicitly configured per-user rate limit', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'xapi-provider-create-test-'));
+    temporary.push(dir);
+    const service = join(dir, 'service.json');
+    await writeFile(service, JSON.stringify({ name: 'Weather', accessMode: 'PROXY' }));
+
+    await provider(['create'], {
+      file: service,
+      'rate-limit-requests': '100',
+      'rate-limit-period-seconds': '60',
+    });
+
+    expect(requestSpy).toHaveBeenCalledWith(
+      'api.xapi.to',
+      'sk-provider',
+      '/api/api-services/agent/services',
+      {
+        method: 'POST',
+        body: {
+          name: 'Weather',
+          accessMode: 'PROXY',
+          rateLimitConfig: { requests: 100, periodSeconds: 60 },
+        },
+      },
+    );
+  });
+
+  it('updates or clears a service rate limit without metadata', async () => {
+    await provider(['update', 'service-1'], {
+      'rate-limit-requests': '250',
+      'rate-limit-period-seconds': '3600',
+    });
+
+    expect(requestSpy).toHaveBeenLastCalledWith(
+      'api.xapi.to',
+      'sk-provider',
+      '/api/api-services/agent/services/service-1',
+      {
+        method: 'PATCH',
+        body: { rateLimitConfig: { requests: 250, periodSeconds: 3600 } },
+      },
+    );
+
+    await provider(['update', 'service-1'], { 'clear-rate-limit': 'true' });
+
+    expect(requestSpy).toHaveBeenLastCalledWith(
+      'api.xapi.to',
+      'sk-provider',
+      '/api/api-services/agent/services/service-1',
+      { method: 'PATCH', body: { rateLimitConfig: null } },
+    );
+  });
+
   it('publishes a revision with changelog content and no automatic retry', async () => {
     await provider(['publish', 'service-1', 'revision-1'], {
       changelog: 'Added provider metrics',
@@ -115,6 +168,10 @@ describe('provider command', () => {
       [['skill', 'scaffold', 'service-1'], { output: 'true' }],
       [['skill', 'fingerprint', 'service-1'], { 'skill-version-id': 'true' }],
       [['delete', 'service-1'], { confirm: 'true' }],
+      [['update', 'service-1'], {
+        'rate-limit-requests': 'true',
+        'rate-limit-period-seconds': '60',
+      }],
     ] as Array<[string[], Record<string, string>]>) {
       requestSpy.mockClear();
       await expect(provider(args, flags)).rejects.toThrow('err called');
@@ -131,5 +188,28 @@ describe('provider command', () => {
     expect(errSpy).toHaveBeenCalledWith(
       '--clear-about cannot be combined with --about or --about-file',
     );
+  });
+
+  it('rejects incomplete, conflicting, or out-of-range rate-limit flags before network I/O', async () => {
+    for (const flags of [
+      { 'rate-limit-requests': '100' },
+      {
+        'rate-limit-requests': '100',
+        'rate-limit-period-seconds': '60',
+        'clear-rate-limit': 'true',
+      },
+      {
+        'rate-limit-requests': '1000001',
+        'rate-limit-period-seconds': '60',
+      },
+      {
+        'rate-limit-requests': '100',
+        'rate-limit-period-seconds': '86401',
+      },
+    ] as Array<Record<string, string>>) {
+      requestSpy.mockClear();
+      await expect(provider(['update', 'service-1'], flags)).rejects.toThrow('err called');
+      expect(requestSpy).not.toHaveBeenCalled();
+    }
   });
 });
