@@ -257,6 +257,50 @@ describe("workers push preview", () => {
     expect(resources).toEqual(["accepted-v1"]);
     expect(deployments).toEqual(["accepted-v1"]);
   });
+  test("passes D1 location and replication from the project without inventing defaults", async () => {
+    const root = fixture({
+      resources: [
+        {
+          type: "d1_database",
+          bindingName: "DB",
+          location: "apac",
+          readReplication: "disabled",
+        },
+      ],
+    });
+    const platform = fakePlatform();
+    const inputs: Array<Record<string, unknown>> = [];
+    const create = platform.client.createWorkerResource.bind(platform.client);
+    platform.client.createWorkerResource = async (...args) => {
+      inputs.push(args[3]);
+      return create(...args);
+    };
+    await pushWorkerProject({
+      cwd: root,
+      environment: "preview",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: platform.client,
+      confirm: async () => true,
+      runBuild: async () => {
+        mkdirSync(join(root, "dist"), { recursive: true });
+        writeFileSync(
+          join(root, "dist/worker.mjs"),
+          "export default {fetch(){return new Response('ok')}};",
+        );
+      },
+      fetchPublic: (async () =>
+        Response.json({ ok: true })) as unknown as typeof fetch,
+      sleep: async () => undefined,
+    });
+    expect(inputs).toEqual([
+      {
+        type: "d1_database",
+        bindingName: "DB",
+        location: "apac",
+        readReplication: "disabled",
+      },
+    ]);
+  });
   test("recovers uncertain writes, hides credentials from build, waits ACTIVE, and is repeatable", async () => {
     const root = fixture({
       resources: [{ type: "kv_namespace", bindingName: "STATE" }],

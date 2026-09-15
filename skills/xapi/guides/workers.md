@@ -500,3 +500,20 @@ npx xapi-to workers delete <worker-id> --yes
 ```
 
 The backend preflights managed resources (for example, R2 must be empty), deletes active upstream scripts and resources, then marks the Worker soft-deleted. Records have a 30-day retention window. A partial upstream failure leaves the Worker in `DELETING`; report the error and do not say the Worker is deleted or active.
+
+## D1 and R2 data location
+
+Choose the expected primary data-access region when a project creates D1 or R2. The Worker code itself remains globally deployed on Cloudflare's edge network.
+
+```json
+{
+  "type": "d1_database",
+  "bindingName": "DB",
+  "location": "apac",
+  "readReplication": "disabled"
+}
+```
+
+Supported location hints are `wnam`, `enam`, `weur`, `eeur`, `apac`, and `oc`. `readReplication` is D1-only and accepts `auto` or `disabled`. Omitting these fields preserves the existing compatible behavior.
+
+Location is creation-time placement. Changing it on an existing binding is blocked because Cloudflare cannot move an existing D1 database or R2 bucket in place. Create a new binding, migrate and verify the data, switch the application binding, and retain the old resource for rollback before deleting it.

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   mkdtempSync,
   mkdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -48,6 +49,27 @@ function fixture(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Worker project configuration", () => {
+  test("publishes placement fields in the packaged JSON Schema", () => {
+    const schema = JSON.parse(
+      readFileSync(
+        join(import.meta.dir, "../../schemas/worker-project.v1.schema.json"),
+        "utf8",
+      ),
+    );
+    expect(schema.$defs.resource.properties.location.enum).toEqual([
+      "wnam",
+      "enam",
+      "weur",
+      "eeur",
+      "apac",
+      "oc",
+    ]);
+    expect(schema.$defs.resource.properties.readReplication.enum).toEqual([
+      "auto",
+      "disabled",
+    ]);
+  });
+
   test("discovers the project config from a nested directory", () => {
     const root = fixture();
     const nested = join(root, "src", "agent");
@@ -110,6 +132,52 @@ describe("Worker project configuration", () => {
       htmlHandling: "auto-trailing-slash",
       runWorkerFirst: ["/api/*", "!/api/docs/*"],
     });
+  });
+
+  test("accepts D1 and R2 placement and rejects it on unrelated resources", () => {
+    const validRoot = fixture({
+      environments: {
+        preview: {
+          dailyBudgetUsd: 0.25,
+          resources: [
+            {
+              type: "d1_database",
+              bindingName: "DB",
+              location: "apac",
+              readReplication: "auto",
+            },
+            { type: "r2_bucket", bindingName: "FILES", location: "apac" },
+          ],
+        },
+        production: { dailyBudgetUsd: 2 },
+      },
+    });
+    expect(
+      loadWorkerProject(validRoot).config.environments.preview.resources,
+    ).toEqual([
+      {
+        type: "d1_database",
+        bindingName: "DB",
+        location: "apac",
+        readReplication: "auto",
+      },
+      { type: "r2_bucket", bindingName: "FILES", location: "apac" },
+    ]);
+
+    const invalidRoot = fixture({
+      environments: {
+        preview: {
+          dailyBudgetUsd: 0.25,
+          resources: [
+            { type: "kv_namespace", bindingName: "CACHE", location: "apac" },
+          ],
+        },
+        production: { dailyBudgetUsd: 2 },
+      },
+    });
+    expect(() => loadWorkerProject(invalidRoot)).toThrow(
+      "environments.preview.resources.0.location",
+    );
   });
 
   test("rejects credential fields and credential-shaped values", () => {

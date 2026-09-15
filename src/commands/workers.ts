@@ -72,7 +72,7 @@ COMMANDS
   schedules delete <worker-id> <schedule-id> --yes
   bindings
   resources list <worker-id> --env preview|production
-  resources create <worker-id> --env ENV --type kv|d1|r2|do|queue|workflow --binding NAME
+  resources create <worker-id> --env ENV --type kv|d1|r2|do|queue|workflow --binding NAME [--location REGION] [--read-replication MODE]
   resources delete <worker-id> <resource-id> --env ENV --yes
   secrets list <worker-id> --env preview|production
   secrets set <worker-id> <NAME> --env ENV --from-env VARIABLE
@@ -161,6 +161,8 @@ RESOURCE FLAGS
   --env preview|production      Resource environment (required)
   --type kv|d1|r2|do|queue|workflow
   --class-name NAME             Exported class for a Durable Object
+  --location REGION             D1/R2 placement: wnam|enam|weur|eeur|apac|oc
+  --read-replication MODE       D1 replicas: auto|disabled
   --binding NAME                Uppercase env binding, for example STATE or FILES
 
 SECRET FLAGS
@@ -1131,7 +1133,7 @@ export async function workersCommand(
         return;
       }
       if (action === "create") {
-        assertFlags(flags, ["env", "type", "binding", "class-name", "retention-price-version"]);
+        assertFlags(flags, ["env", "type", "binding", "class-name", "location", "read-replication", "retention-price-version"]);
         const id = oneId(
           resourceArgs,
           "usage: xapi-to workers resources create <worker-id> --env ENV --type kv|d1|r2|do|queue|workflow --binding NAME",
@@ -1151,6 +1153,27 @@ export async function workersCommand(
           type === "do"
             ? required(flags["class-name"], "--class-name")
             : undefined;
+        const location = flags.location;
+        if (
+          location &&
+          !["wnam", "enam", "weur", "eeur", "apac", "oc"].includes(location)
+        ) {
+          err("--location must be wnam, enam, weur, eeur, apac, or oc");
+        }
+        if (location && type !== "d1" && type !== "r2") {
+          err("--location is only valid with --type d1 or r2");
+        }
+        const readReplication = flags["read-replication"];
+        if (
+          readReplication &&
+          readReplication !== "auto" &&
+          readReplication !== "disabled"
+        ) {
+          err("--read-replication must be auto or disabled");
+        }
+        if (readReplication && type !== "d1") {
+          err("--read-replication is only valid with --type d1");
+        }
         output(
           await client.createWorkerResource(
             options(),
@@ -1161,6 +1184,8 @@ export async function workersCommand(
               retentionPriceVersion: flags["retention-price-version"],
               bindingName: required(flags.binding, "--binding"),
               ...(className ? { className } : {}),
+              ...(location ? { location } : {}),
+              ...(readReplication ? { readReplication } : {}),
             },
           ),
         );

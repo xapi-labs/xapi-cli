@@ -101,6 +101,115 @@ describe("workers plan", () => {
     writeFileSync(join(root, "xapi.worker.json"), JSON.stringify(config));
     expect(await run()).toBe("CREATE");
   });
+  test("blocks an in-place D1 location change and explains that migration is required", async () => {
+    const bundle = "export default {fetch(){return new Response('ok')}}";
+    const root = project({ linked: true, bundle });
+    const config = JSON.parse(
+      readFileSync(join(root, "xapi.worker.json"), "utf8"),
+    );
+    config.environments.preview.resources = [
+      { type: "d1_database", bindingName: "DB", location: "apac" },
+    ];
+    writeFileSync(join(root, "xapi.worker.json"), JSON.stringify(config));
+    const client = {
+      listWorkers: unexpected("listWorkers"),
+      getWorker: async () => ({
+        id: workerId,
+        slug: "plan-agent",
+        environments: [
+          {
+            id: "env-preview",
+            name: "PREVIEW",
+            dailyBudgetUsd: 0.25,
+          },
+        ],
+        artifacts: [],
+        deployments: [],
+      }),
+      listWorkerResources: async () => [
+        {
+          bindingName: "DB",
+          type: "D1_DATABASE",
+          status: "ACTIVE",
+          config: { created_in_region: "EEUR" },
+        },
+      ],
+      listWorkerSecrets: async () => [],
+    };
+    const plan = await createWorkerPlan({
+      cwd: root,
+      environment: "preview",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client,
+    });
+    expect(plan.canApply).toBe(false);
+    expect(plan.actions).toContainEqual(
+      expect.objectContaining({
+        operation: "BLOCKED",
+        kind: "resource",
+        key: "DB",
+        message: expect.stringContaining("migrate data"),
+        desired: expect.objectContaining({ location: "apac" }),
+        current: expect.objectContaining({ effectiveLocation: "eeur" }),
+      }),
+    );
+  });
+  test("shows requested and effective placement when the resource matches", async () => {
+    const bundle = "export default {fetch(){return new Response('ok')}}";
+    const root = project({ linked: true, bundle });
+    const config = JSON.parse(
+      readFileSync(join(root, "xapi.worker.json"), "utf8"),
+    );
+    config.environments.preview.resources = [
+      { type: "d1_database", bindingName: "DB", location: "apac" },
+    ];
+    writeFileSync(join(root, "xapi.worker.json"), JSON.stringify(config));
+    const client = {
+      listWorkers: unexpected("listWorkers"),
+      getWorker: async () => ({
+        id: workerId,
+        slug: "plan-agent",
+        environments: [
+          {
+            id: "env-preview",
+            name: "PREVIEW",
+            dailyBudgetUsd: 0.25,
+          },
+        ],
+        artifacts: [],
+        deployments: [],
+      }),
+      listWorkerResources: async () => [
+        {
+          bindingName: "DB",
+          type: "D1_DATABASE",
+          status: "ACTIVE",
+          config: {
+            requestedLocation: "apac",
+            created_in_region: "APAC",
+          },
+        },
+      ],
+      listWorkerSecrets: async () => [],
+    };
+    const plan = await createWorkerPlan({
+      cwd: root,
+      environment: "preview",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client,
+    });
+    expect(plan.actions).toContainEqual(
+      expect.objectContaining({
+        operation: "NO_CHANGE",
+        kind: "resource",
+        key: "DB",
+        current: expect.objectContaining({
+          requestedLocation: "apac",
+          effectiveLocation: "apac",
+        }),
+      }),
+    );
+  });
   test("rejects a missing Wrangler configuration before reading remote state", async () => {
     const root = project();
     rmSync(join(root, "wrangler.jsonc"));

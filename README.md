@@ -462,6 +462,8 @@ xapi-to workers secrets list <worker-id> --env preview --format table
 xapi-to workers resources create <worker-id> \
   --env preview --type do --binding AGENT_STATE --class-name AgentState
 xapi-to workers resources create <worker-id> \
+  --env preview --type d1 --binding DB --location apac --read-replication disabled
+xapi-to workers resources create <worker-id> \
   --env preview --type queue --binding TASK_QUEUE
 xapi-to workers resources create <worker-id> \
   --env preview --type workflow --binding AGENT_WORKFLOW
