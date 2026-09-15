@@ -1,3 +1,4 @@
+import busboy from "busboy";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -18,7 +19,7 @@ const MAX_ASSET_FILE_BYTES = 25 * 1024 * 1024;
 // Base64 expansion leaves 12 MiB for decoded Worker modules plus assets.
 const MAX_XAPI_ARTIFACT_CONTENT_BYTES = 12 * 1024 * 1024;
 const SAFE_MODULE_PATH =
-  /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._@+/-]{1,240}$/;
+  /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._@+~/-]{1,240}$/;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -64,6 +65,7 @@ export interface WorkerArtifactBundle {
   version: 1;
   mainModule: string;
   modules: WorkerArtifactBundleModule[];
+  observability?: { enabled: boolean };
   assets?: WorkerArtifactAssets;
 }
 
@@ -80,6 +82,7 @@ export interface LoadedWorkerArtifact {
   contentSha256: string;
   sizeBytes: number;
   upload: WorkerArtifactUploadInput;
+  nativeMetadata?: UnknownRecord;
 }
 
 export class WorkerArtifactError extends Error {
@@ -503,4 +506,111 @@ export function loadWorkerArtifact(
   }
   if (info.isDirectory()) return loadModuleBundle(outputPath, mainModule, staticAssets);
   throw new WorkerArtifactError("Worker build output is not a file or directory");
+}
+
+/** Read Wrangler's --dry-run --outfile multipart artifact without rewriting code. */
+export async function loadWorkerArtifactInput(
+  outputPath: string,
+  mainModule?: string,
+  staticAssets?: WorkerStaticAssetsInput,
+): Promise<LoadedWorkerArtifact> {
+  if (!outputPath.endsWith(".bundle")) return loadWorkerArtifact(outputPath, mainModule, staticAssets);
+  if (mainModule) throw new WorkerArtifactError("Wrangler bundles contain their own main_module; omit --main/build.main");
+  if (!existsSync(outputPath) || !lstatSync(outputPath).isFile() || lstatSync(outputPath).isSymbolicLink()) {
+    throw new WorkerArtifactError("Wrangler bundle must be a regular file");
+  }
+  if (statSync(outputPath).size > 18 * 1024 * 1024) throw new WorkerArtifactError("Wrangler bundle exceeds the current Artifact transport limit");
+  const bytes = readFileSync(outputPath);
+  const firstLine = bytes.subarray(0, bytes.indexOf("\r\n")).toString("ascii");
+  if (!/^--[A-Za-z0-9_-]{1,70}$/.test(firstLine)) throw new WorkerArtifactError("Invalid Wrangler multipart boundary");
+  type NativeFile = { name: string; type: string; arrayBuffer(): Promise<Uint8Array> };
+  const entries = await new Promise<Array<[string, string | NativeFile]>>((resolve, reject) => {
+    const result: Array<[string, string | NativeFile]> = [];
+    const parser = busboy({ headers: {"content-type": `multipart/form-data; boundary=${firstLine.slice(2)}`}, preservePath: true,
+      limits: { files: MAX_BUNDLE_MODULES, fields: 1, parts: MAX_BUNDLE_MODULES + 1, fieldSize: 1024 * 1024, fileSize: MAX_BUNDLE_CONTENT_BYTES } });
+    parser.on("field", (name, value, info) => {
+      if (info.valueTruncated || info.nameTruncated) reject(new WorkerArtifactError("Truncated native metadata"));
+      result.push([name, value]);
+    });
+    parser.on("file", (name, stream, info) => {
+      const chunks: Buffer[] = [];
+      stream.on("data", chunk => chunks.push(chunk));
+      stream.on("limit", () => reject(new WorkerArtifactError("Native module exceeds Artifact capacity")));
+      stream.on("error", reject);
+      stream.on("end", () => result.push([name, {name: info.filename, type: info.mimeType, arrayBuffer: async () => Buffer.concat(chunks)}]));
+    });
+    for (const event of ["partsLimit", "filesLimit", "fieldsLimit"] as const) parser.on(event, () => reject(new WorkerArtifactError("Native multipart exceeds Artifact capacity")));
+    parser.on("error", () => reject(new WorkerArtifactError("Malformed Wrangler multipart bundle")));
+    parser.on("close", () => resolve(result));
+    parser.end(bytes);
+  });
+  const metadataParts = entries.filter(([name]) => name === "metadata");
+  if (metadataParts.length !== 1 || typeof metadataParts[0][1] !== "string") throw new WorkerArtifactError("Wrangler bundle requires one metadata part");
+  let metadata: UnknownRecord;
+  try { metadata = JSON.parse(metadataParts[0][1]); }
+  catch { throw new WorkerArtifactError("Invalid Wrangler metadata JSON"); }
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) throw new WorkerArtifactError("Invalid Wrangler metadata");
+  // Resource identities and credentials are owned by xAPI's control plane.
+  // Do not silently import a native binding that has no managed equivalent here.
+  const known = new Set(["main_module", "bindings", "compatibility_date", "compatibility_flags", "observability"]);
+  const unknown = Object.keys(metadata).filter(key => !known.has(key));
+  if (unknown.length) throw new WorkerArtifactError(`Native metadata needs explicit platform mapping: ${unknown.join(", ")}`);
+  if (metadata.bindings !== undefined && (!Array.isArray(metadata.bindings) || metadata.bindings.some((binding: UnknownRecord) =>
+    !binding || !["d1", "r2_bucket", "kv_namespace"].includes(String(binding.type)) || typeof binding.name !== "string"
+  ))) throw new WorkerArtifactError("Native binding metadata needs explicit platform mapping; keep credentials in xAPI Secrets");
+  if (metadata.compatibility_flags !== undefined && (!Array.isArray(metadata.compatibility_flags) || metadata.compatibility_flags.some(flag => typeof flag !== "string"))) throw new WorkerArtifactError("Invalid native compatibility flags");
+  const observation = metadata.observability as UnknownRecord | undefined;
+  if (observation !== undefined && (!observation || typeof observation !== "object" || Array.isArray(observation) || typeof observation.enabled !== "boolean" || Object.keys(observation).some(key => key !== "enabled"))) throw new WorkerArtifactError("Native observability config needs explicit mapping");
+  const observability = observation ? {enabled: observation.enabled as boolean} : undefined;
+  const main = normalizeMainModule(typeof metadata.main_module === "string" ? metadata.main_module : undefined);
+  const modules: WorkerArtifactBundleModule[] = [];
+  const seen = new Set<string>();
+  let moduleBytes = 0;
+  const types = new Set<WorkerModuleContentType>(["application/javascript+module", "application/wasm", "text/plain", "application/octet-stream"]);
+  for (const [name, value] of entries) {
+    if (name === "metadata") continue;
+    if (typeof value === "string" || !SAFE_MODULE_PATH.test(name) || seen.has(name) || value.name !== name) throw new WorkerArtifactError(`Invalid or duplicate native module: ${name}`);
+    seen.add(name);
+    const contentType = value.type as WorkerModuleContentType;
+    if (!types.has(contentType)) throw new WorkerArtifactError(`Native module type needs platform mapping: ${contentType}`);
+    const content = Buffer.from(await value.arrayBuffer());
+    moduleBytes += content.length;
+    if (moduleBytes > MAX_BUNDLE_CONTENT_BYTES || seen.size > MAX_BUNDLE_MODULES) throw new WorkerArtifactError("Native modules exceed current Artifact capacity");
+    const utf8 = contentType === "application/javascript+module" || contentType === "text/plain";
+    if (utf8 && !Buffer.from(content.toString("utf8"), "utf8").equals(content)) throw new WorkerArtifactError(`Invalid UTF-8 module: ${name}`);
+    // Native module linkage (including computed imports) is validated by CF.
+    if (contentType === "application/javascript+module") {
+      try { parse(content.toString("utf8"), { ecmaVersion: "latest", sourceType: "module", allowHashBang: true }); }
+      catch { throw new WorkerArtifactError(`Invalid JavaScript module: ${name}`); }
+    }
+    modules.push({ path: name, content: content.toString(utf8 ? "utf8" : "base64"), encoding: utf8 ? "utf8" : "base64", contentType });
+  }
+  if (!modules.some(module => module.path === main && module.contentType === "application/javascript+module")) throw new WorkerArtifactError("Native main_module is missing or not ESM");
+  modules.sort((a,b) => a.path.localeCompare(b.path));
+  const assets = staticAssets ? collectAssetFiles(staticAssets) : undefined;
+  const bundle: WorkerArtifactBundle = { version: 1, mainModule: main, modules, ...(observability ? {observability} : {}), ...(assets ? {assets} : {}) };
+  assertArtifactContentLimit(bundle);
+  const stored = Buffer.from(JSON.stringify({ ...(observability ? {observability} : {}), version: 1, mainModule: main, modules: modules.map(module => ({
+    path: module.path, contentBase64: Buffer.from(module.content, module.encoding === "base64" ? "base64" : "utf8").toString("base64"), contentType: module.contentType,
+  })), ...(assets ? {assets} : {}) }));
+  return { kind: "bundle", contentSha256: sha256(stored), sizeBytes: stored.length, upload: {bundle}, nativeMetadata: metadata };
+}
+
+export function validateNativeDeploymentMetadata(
+  artifact: LoadedWorkerArtifact,
+  settings: { compatibilityDate?: string; compatibilityFlags?: string[] },
+  resources: Array<{type: string; bindingName: string}>,
+): void {
+  const metadata = artifact.nativeMetadata;
+  if (!metadata) return;
+  if (metadata.compatibility_date !== settings.compatibilityDate ||
+    JSON.stringify([...(metadata.compatibility_flags as string[] || [])].sort()) !== JSON.stringify([...(settings.compatibilityFlags || [])].sort())) {
+    throw new WorkerArtifactError("Wrangler bundle compatibility settings differ from deployment configuration; rebuild before publishing");
+  }
+  const managed: Record<string,string> = {d1: "d1_database", r2_bucket: "r2_bucket", kv_namespace: "kv_namespace"};
+  for (const binding of (metadata.bindings || []) as UnknownRecord[]) {
+    if (!resources.some(resource => resource.bindingName === binding.name && resource.type === managed[String(binding.type)])) {
+      throw new WorkerArtifactError(`Native binding ${binding.name} is missing from xAPI resource declarations`);
+    }
+  }
 }

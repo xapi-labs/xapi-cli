@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, statSync } from "node:fs";
 import type { WorkersClientOptions } from "./workers-client.ts";
 import * as workersClient from "./workers-client.ts";
-import { loadWorkerArtifact, WorkerArtifactError } from "./workers-artifact.ts";
+import { loadWorkerArtifactInput, validateNativeDeploymentMetadata, WorkerArtifactError } from "./workers-artifact.ts";
 import { deploymentPrefix, currentMatchingDeployment } from "./workers-deployment-state.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
 import {
@@ -356,11 +356,11 @@ function compareSecrets(
   return blocked;
 }
 
-function localArtifact(project: LoadedWorkerProject): {
+async function localArtifact(project: LoadedWorkerProject, environment: "preview" | "production"): Promise<{
   sha256?: string;
   sizeBytes?: number;
   blocked?: string;
-} {
+}> {
   const path = resolveWorkerProjectPath(
     project,
     project.config.build.output,
@@ -368,7 +368,7 @@ function localArtifact(project: LoadedWorkerProject): {
   );
   if (!existsSync(path)) return {};
   try {
-    const artifact = loadWorkerArtifact(
+    const artifact = await loadWorkerArtifactInput(
       path,
       project.config.build.main,
       project.config.assets
@@ -382,6 +382,7 @@ function localArtifact(project: LoadedWorkerProject): {
           }
         : undefined,
     );
+    validateNativeDeploymentMetadata(artifact, readWranglerDeploymentSettings(project, environment), project.config.environments[environment].resources);
     return {
       sha256: artifact.contentSha256,
       sizeBytes: artifact.sizeBytes,
@@ -420,7 +421,7 @@ function validatePlanInputs(project: LoadedWorkerProject): void {
   }
 }
 
-function artifactAndDeployment(
+async function artifactAndDeployment(
   actions: WorkerPlanAction[],
   project: LoadedWorkerProject,
   remote: UnknownRecord | undefined,
@@ -430,8 +431,8 @@ function artifactAndDeployment(
   resources: UnknownRecord[],
   secrets: UnknownRecord[],
   environmentName: "preview" | "production",
-): void {
-  const local = localArtifact(project);
+): Promise<void> {
+  const local = await localArtifact(project, environmentName);
   if (local.blocked) {
     add(
       actions,
@@ -698,7 +699,7 @@ export async function createWorkerPlan(
       });
     }
   }
-  artifactAndDeployment(
+  await artifactAndDeployment(
     actions,
     project,
     remote,

@@ -12,7 +12,8 @@ import { createInterface } from "node:readline/promises";
 import { HttpError, isRetryableRequestError } from "./client.ts";
 import {
   type LoadedWorkerArtifact,
-  loadWorkerArtifact,
+  loadWorkerArtifactInput,
+  validateNativeDeploymentMetadata,
   WorkerArtifactError,
   type WorkerArtifactUploadRequest,
 } from "./workers-artifact.ts";
@@ -245,14 +246,14 @@ async function terminalConfirm(): Promise<boolean> {
   }
 }
 
-function validateBundle(project: LoadedWorkerProject): LoadedWorkerArtifact {
+async function validateBundle(project: LoadedWorkerProject): Promise<LoadedWorkerArtifact> {
   const path = resolveWorkerProjectPath(
     project,
     project.config.build.output,
     "build.output",
   );
   try {
-    return loadWorkerArtifact(
+    return await loadWorkerArtifactInput(
       path,
       project.config.build.main,
       project.config.assets
@@ -514,7 +515,7 @@ async function ensureArtifact(
   api: PushClient,
   options: WorkersClientOptions,
   workerId: string,
-  bundle: ReturnType<typeof validateBundle>,
+  bundle: Awaited<ReturnType<typeof validateBundle>>,
 ): Promise<UnknownRecord> {
   const idempotencyKey = stableKey(
     "xapi-worker-artifact-v1",
@@ -869,7 +870,8 @@ export async function pushWorkerProject(
       linkedProject.config.build.command,
       linkedProject.rootDir,
     );
-    const bundle = validateBundle(linkedProject);
+    const bundle = await validateBundle(linkedProject);
+    validateNativeDeploymentMetadata(bundle, compatibility, linkedProject.config.environments.preview.resources);
     const artifact = await ensureArtifact(
       api,
       options.clientOptions,

@@ -672,3 +672,11 @@ current IDs and schemas.
 ## License
 
 MIT
+
+### Native framework deployment bundles
+
+Framework output can be exported with Wrangler's `deploy --dry-run --outfile
+dist/app.worker.bundle` and published through `xapi workers push`. The CLI
+retains native module names/types/bytes and separately publishes static Assets.
+See [the Workers guide](skills/xapi/guides/workers.md#framework-builds-publish-wranglers-complete-bundle)
+for configuration, supported metadata and current transport boundaries.

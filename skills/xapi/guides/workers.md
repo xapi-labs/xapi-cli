@@ -103,6 +103,49 @@ package imports must be bundled by the build. The CLI normalizes and hashes the
 complete Artifact before `plan` or `push`, so both commands compare identical
 bytes. Existing single-file project configurations remain valid.
 
+### Framework builds: publish Wrangler's complete bundle
+
+For a framework that produces a generated Wrangler configuration (for example
+vinext), use that configuration to produce the native upload bundle:
+
+```bash
+npm run build
+npx wrangler deploy --dry-run --config dist/server/wrangler.json --outfile dist/app.worker.bundle
+```
+
+Point the project build output to `dist/app.worker.bundle`; omit `build.main`.
+Set `assets.directory` to the framework's client output (for example
+`dist/client`). Then use `xapi workers plan --env preview` and
+`xapi workers push --env preview`. The build command should run both commands
+above. `--dry-run` creates a local artifact; it does not publish outside xAPI.
+
+The CLI reads multipart module names, bytes, MIME types and `main_module` from
+Wrangler instead of guessing the output directory's contents. It does not
+rename chunks or rewrite imports. Assets are packaged with the artifact and
+published using CF's asset upload session before the script is activated.
+Compatibility date/flags must match the project's Wrangler configuration.
+D1/R2/KV binding names must match declared xAPI resources; native account IDs
+and resource IDs are not reused. Secrets are set separately through xAPI.
+The artifact also preserves `observability.enabled`.
+
+This adapter currently supports the explicitly mapped metadata above, not every
+Wrangler setting. Unmapped metadata fails before artifact upload rather than
+being silently discarded. Cron triggers are separate from the upload bundle
+and must be configured through xAPI schedules. The granular `workers upload`
+command is artifact-only; use the project `push` workflow for coordinated
+compatibility, resource, secret and asset handling.
+
+Current xAPI transport limits remain 200 modules / 10 MiB decoded modules and
+12 MiB decoded modules plus assets. These are xAPI limits, not a statement of
+CF's full native capacity. If exceeded, report the unsupported deployment;
+never split a project into unrelated deployments or edit framework output to
+work around the limit.
+
+A `PATH_FALLBACK` URL is not a root-hosted Web application URL. Do not rewrite
+application routes or configure GitHub callbacks against an invented host.
+Use the environment's reported routing state and verify a real reachable
+`publicOrigin` with empty `publicBasePath` for a root-hosted acceptance test.
+
 After real preview validation, promote the exact active preview Artifact without
 rebuilding it:
 
