@@ -20,7 +20,7 @@ afterEach(() => {
   }
 });
 
-function fixture(): string {
+function fixture(options: { assets?: boolean } = {}): string {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "xapi-promote-")));
   roots.push(root);
   writeFileSync(
@@ -51,6 +51,15 @@ function fixture(): string {
         },
         wrangler: "wrangler.jsonc",
         build: { command: "never-run", output: "dist/worker.mjs" },
+        ...(options.assets
+          ? {
+              assets: {
+                directory: "dist/client",
+                binding: "ASSETS",
+                notFoundHandling: "single-page-application",
+              },
+            }
+          : {}),
         environments: {
           preview: {
             dailyBudgetUsd: 0.25,
@@ -79,6 +88,7 @@ function fakePlatform(
     resources?: Array<Record<string, unknown>>;
     secrets?: string[];
     failDeployOnce?: boolean;
+    webAppReady?: boolean;
   } = {},
 ) {
   const previewDeployments: Array<Record<string, unknown>> = [
@@ -134,6 +144,7 @@ function fakePlatform(
           activeDeploymentId: productionDeployments.find(item => item.status === "ACTIVE")?.id,
           dailyBudgetUsd: options.budget ?? 2,
           publicUrl: "https://agent.example.test/w/ref/production",
+          webAppReady: options.webAppReady,
         },
       ],
       artifacts,
@@ -275,6 +286,34 @@ describe("workers promote", () => {
     expect(recovery).toContain("secrets set");
     expect(platform.calls.deploy).toBe(0);
     expect(platform.calls.health).toBe(0);
+  });
+
+  test("surfaces path-fallback review without blocking compatible static web apps", async () => {
+    const root = fixture({ assets: true });
+    const fallback = fakePlatform({ webAppReady: false });
+    const blocked = await createWorkerPromotionPlan({
+      cwd: root,
+      to: "production",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: fallback.client,
+    });
+    expect(blocked.plan.canPromote).toBe(true);
+    expect(blocked.plan.production.checks).toContainEqual(
+      expect.objectContaining({
+        status: "MANUAL",
+        kind: "routing",
+        key: "production",
+      }),
+    );
+
+    const dedicated = fakePlatform({ webAppReady: true });
+    const ready = await createWorkerPromotionPlan({
+      cwd: root,
+      to: "production",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: dedicated.client,
+    });
+    expect(ready.plan.canPromote).toBe(true);
   });
 
   test("shows extra production state as MANUAL data risk and cancellation is mutation-free", async () => {

@@ -103,6 +103,49 @@ package imports must be bundled by the build. The CLI normalizes and hashes the
 complete Artifact before `plan` or `push`, so both commands compare identical
 bytes. Existing single-file project configurations remain valid.
 
+### Framework builds: publish Wrangler's complete bundle
+
+For a framework that produces a generated Wrangler configuration (for example
+vinext), use that configuration to produce the native upload bundle:
+
+```bash
+npm run build
+npx wrangler deploy --dry-run --config dist/server/wrangler.json --outfile dist/app.worker.bundle
+```
+
+Point the project build output to `dist/app.worker.bundle`; omit `build.main`.
+Set `assets.directory` to the framework's client output (for example
+`dist/client`). Then use `xapi workers plan --env preview` and
+`xapi workers push --env preview`. The build command should run both commands
+above. `--dry-run` creates a local artifact; it does not publish outside xAPI.
+
+The CLI reads multipart module names, bytes, MIME types and `main_module` from
+Wrangler instead of guessing the output directory's contents. It does not
+rename chunks or rewrite imports. Assets are packaged with the artifact and
+published using CF's asset upload session before the script is activated.
+Compatibility date/flags must match the project's Wrangler configuration.
+D1/R2/KV binding names must match declared xAPI resources; native account IDs
+and resource IDs are not reused. Secrets are set separately through xAPI.
+The artifact also preserves `observability.enabled`.
+
+This adapter currently supports the explicitly mapped metadata above, not every
+Wrangler setting. Unmapped metadata fails before artifact upload rather than
+being silently discarded. Cron triggers are separate from the upload bundle
+and must be configured through xAPI schedules. The granular `workers upload`
+command is artifact-only; use the project `push` workflow for coordinated
+compatibility, resource, secret and asset handling.
+
+Current xAPI transport limits remain 200 modules / 10 MiB decoded modules and
+12 MiB decoded modules plus assets. These are xAPI limits, not a statement of
+CF's full native capacity. If exceeded, report the unsupported deployment;
+never split a project into unrelated deployments or edit framework output to
+work around the limit.
+
+A `PATH_FALLBACK` URL is not a root-hosted Web application URL. Do not rewrite
+application routes or configure GitHub callbacks against an invented host.
+Use the environment's reported routing state and verify a real reachable
+`publicOrigin` with empty `publicBasePath` for a root-hosted acceptance test.
+
 After real preview validation, promote the exact active preview Artifact without
 rebuilding it:
 
@@ -208,12 +251,30 @@ npx xapi-to workers upload <worker-id> \
   --idempotency-key artifact-2026-08-21
 ```
 
-This directory format is for Worker code modules. HTML, CSS, images, fonts, and
-other website files are static assets and use Cloudflare's separate assets
-upload protocol; the CLI rejects them here instead of silently dropping them.
-Native static-assets upload is not exposed by this xAPI CLI flow yet. Until it
-is, bundle small application assets into Worker code through the project's
-build step; never bypass xAPI by sending the user's key directly to Cloudflare.
+This directory format is for Worker code modules. For a web application, keep
+HTML, CSS, images, and fonts in a separate build directory and declare it in
+`xapi.worker.json`. `workers push` packages those files into the immutable xAPI
+Artifact and the platform completes Cloudflare's native static-assets upload:
+
+```json
+{
+  "build": { "command": "npm run build", "output": "dist/worker" },
+  "assets": {
+    "directory": "dist/client",
+    "binding": "ASSETS",
+    "htmlHandling": "auto-trailing-slash",
+    "notFoundHandling": "single-page-application",
+    "runWorkerFirst": ["/api/*"]
+  }
+}
+```
+
+Wrangler imports preserve supported `assets` settings. Cloudflare permits up to
+25 MiB per asset and 100,000 assets per version. Asset content stays separate
+from Worker modules and is never silently dropped. The current xAPI JSON
+Artifact transport accepts at most 12 MiB of decoded modules and assets in one
+deployment; split larger sites before upload until the multipart Artifact
+transport is available.
 
 Save the returned Artifact `id`, then deploy that exact Artifact to preview:
 
@@ -225,7 +286,12 @@ npx xapi-to workers deploy <worker-id> \
   --idempotency-key release-candidate-1
 ```
 
-After deployment, read the environment `publicUrl` instead of constructing a hostname:
+After deployment, read the environment `publicUrl` instead of constructing a hostname.
+For a web application, `workers plan` reports whether that environment has a
+dedicated hostname. Preview path fallback remains useful for API and diagnostic
+Workers. A path-prefix-aware application can also use it in production;
+root-relative browser URLs and OAuth callbacks require `webAppReady: true`.
+Promotion surfaces this as a manual review instead of blocking compatible apps.
 
 ```bash
 npx xapi-to workers get <worker-id> --format pretty

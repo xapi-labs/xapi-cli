@@ -97,6 +97,37 @@ describe("Worker Artifact loader", () => {
     expect(() => loadWorkerArtifact(root)).toThrow("--main");
   });
 
+  test("packages native static assets with MIME types and routing settings", () => {
+    const root = directory();
+    const worker = join(root, "worker.mjs");
+    const assets = join(root, "public");
+    mkdirSync(assets);
+    writeFileSync(worker, "export default { fetch() { return new Response('api') } };");
+    writeFileSync(join(assets, "index.html"), "<h1>hello</h1>");
+    writeFileSync(join(assets, "logo.png"), Buffer.from([137, 80, 78, 71]));
+
+    const artifact = loadWorkerArtifact(worker, undefined, {
+      directory: assets,
+      binding: "ASSETS",
+      notFoundHandling: "single-page-application",
+      runWorkerFirst: ["/api/*"],
+    });
+
+    expect(artifact.kind).toBe("bundle");
+    if (!("bundle" in artifact.upload)) throw new Error("expected bundle");
+    expect(artifact.upload.bundle.assets).toEqual({
+      binding: "ASSETS",
+      config: {
+        notFoundHandling: "single-page-application",
+        runWorkerFirst: ["/api/*"],
+      },
+      files: [
+        expect.objectContaining({ path: "/index.html", contentType: "text/html" }),
+        expect.objectContaining({ path: "/logo.png", contentType: "image/png" }),
+      ],
+    });
+  });
+
   test("rejects missing relative modules and static website assets", () => {
     const root = directory();
     writeFileSync(
