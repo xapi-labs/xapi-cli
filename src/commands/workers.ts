@@ -25,7 +25,7 @@ import { rollbackWorkerProject } from "../workers-rollback.ts";
 import { readWorkerLogs, tailWorkerLogs } from "../workers-logs.ts";
 import { formatWorkerMetering } from "../workers-metering-output.ts";
 import {
-  loadWorkerArtifact,
+  loadWorkerArtifactInput,
   WorkerArtifactError,
 } from "../workers-artifact.ts";
 import {
@@ -665,7 +665,7 @@ export async function workersCommand(
       }
       let artifact;
       try {
-        artifact = loadWorkerArtifact(
+        artifact = await loadWorkerArtifactInput(
           resolve(required(flags.file, "--file")),
           flags.main,
         );

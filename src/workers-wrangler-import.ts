@@ -88,6 +88,7 @@ const SUPPORTED_TOP_LEVEL = new Set([
   "main",
   "compatibility_date",
   "compatibility_flags",
+  "assets",
 ]);
 const MANAGED_TOP_LEVEL = new Set([
   "kv_namespaces",
@@ -122,7 +123,6 @@ const IGNORED_TOP_LEVEL = new Set([
   "upload_source_maps",
   "legacy_assets",
   "site",
-  "assets",
   "limits",
   "version_metadata",
   "tail_consumers",
@@ -243,6 +243,40 @@ function bindingName(
     return undefined;
   }
   return value;
+}
+
+function staticAssets(
+  preview: UnknownRecord,
+  production: UnknownRecord,
+  entries: WranglerCompatibilityEntry[],
+): WorkerProjectConfig["assets"] | undefined {
+  const previewAssets = record(preview.assets);
+  const productionAssets = record(production.assets);
+  if (!previewAssets && !productionAssets) return undefined;
+  if (JSON.stringify(previewAssets) !== JSON.stringify(productionAssets)) {
+    compatibilityEntry(entries, "UNSUPPORTED", "assets", "Environment-specific static asset settings are not portable; use one shared assets configuration");
+    return undefined;
+  }
+  const source = previewAssets || productionAssets!;
+  const candidate = {
+    directory: source.directory,
+    ...(source.binding !== undefined ? { binding: source.binding } : {}),
+    ...(source.html_handling !== undefined ? { htmlHandling: source.html_handling } : {}),
+    ...(source.not_found_handling !== undefined ? { notFoundHandling: source.not_found_handling } : {}),
+    ...(source.run_worker_first !== undefined ? { runWorkerFirst: source.run_worker_first } : {}),
+  };
+  const parsed = workerProjectConfigSchema.shape.assets.safeParse(candidate);
+  if (!parsed.success) {
+    compatibilityEntry(entries, "UNSUPPORTED", "assets", `Static assets are invalid: ${parsed.error.issues[0]?.message || "invalid configuration"}`);
+    return undefined;
+  }
+  for (const key of Object.keys(source)) {
+    if (!["directory", "binding", "html_handling", "not_found_handling", "run_worker_first"].includes(key)) {
+      compatibilityEntry(entries, "UNSUPPORTED", `assets.${key}`, "This static asset setting is not supported by xAPI yet");
+    }
+  }
+  compatibilityEntry(entries, "SUPPORTED", "assets", "Static asset directory, binding, and routing settings will be preserved");
+  return parsed.data;
 }
 
 function physicalFields(
@@ -617,6 +651,11 @@ export function importWranglerProject(
     preview: selectedConfig(wrangler, "preview"),
     production: selectedConfig(wrangler, "production"),
   };
+  const assets = staticAssets(
+    desired.preview.config,
+    desired.production.config,
+    entries,
+  );
   const previewResources = resourceList(
     desired.preview.config,
     desired.preview.prefix,
@@ -697,6 +736,7 @@ export function importWranglerProject(
     },
     wrangler: wranglerPath,
     build: { command: "npm run build", output: "dist/worker.mjs" },
+    ...(assets ? { assets } : {}),
     environments: {
       preview: {
         dailyBudgetUsd: budget(options.previewDailyBudgetUsd, "preview"),

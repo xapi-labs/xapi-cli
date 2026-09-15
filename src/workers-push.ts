@@ -12,7 +12,8 @@ import { createInterface } from "node:readline/promises";
 import { HttpError, isRetryableRequestError } from "./client.ts";
 import {
   type LoadedWorkerArtifact,
-  loadWorkerArtifact,
+  loadWorkerArtifactInput,
+  validateNativeDeploymentMetadata,
   WorkerArtifactError,
   type WorkerArtifactUploadRequest,
 } from "./workers-artifact.ts";
@@ -105,6 +106,7 @@ export interface WorkerPushResult {
   artifact: { id: string; contentSha256: string; sizeBytes: number };
   deployment: { id: string; status: "ACTIVE"; idempotencyKey: string };
   publicUrl: string;
+  routing?: { mode?: string; webAppReady: boolean; publicOrigin?: string; publicBasePath?: string };
   health: { url: string; status: number; attempts: number };
   commands: { logs: string; promote: string };
 }
@@ -244,14 +246,27 @@ async function terminalConfirm(): Promise<boolean> {
   }
 }
 
-function validateBundle(project: LoadedWorkerProject): LoadedWorkerArtifact {
+async function validateBundle(project: LoadedWorkerProject): Promise<LoadedWorkerArtifact> {
   const path = resolveWorkerProjectPath(
     project,
     project.config.build.output,
     "build.output",
   );
   try {
-    return loadWorkerArtifact(path, project.config.build.main);
+    return await loadWorkerArtifactInput(
+      path,
+      project.config.build.main,
+      project.config.assets
+        ? {
+            ...project.config.assets,
+            directory: resolveWorkerProjectPath(
+              project,
+              project.config.assets.directory,
+              "assets.directory",
+            ),
+          }
+        : undefined,
+    );
   } catch (error) {
     if (error instanceof WorkerArtifactError) {
       throw new WorkerPushError(error.message);
@@ -500,7 +515,7 @@ async function ensureArtifact(
   api: PushClient,
   options: WorkersClientOptions,
   workerId: string,
-  bundle: ReturnType<typeof validateBundle>,
+  bundle: Awaited<ReturnType<typeof validateBundle>>,
 ): Promise<UnknownRecord> {
   const idempotencyKey = stableKey(
     "xapi-worker-artifact-v1",
@@ -855,7 +870,8 @@ export async function pushWorkerProject(
       linkedProject.config.build.command,
       linkedProject.rootDir,
     );
-    const bundle = validateBundle(linkedProject);
+    const bundle = await validateBundle(linkedProject);
+    validateNativeDeploymentMetadata(bundle, compatibility, linkedProject.config.environments.preview.resources);
     const artifact = await ensureArtifact(
       api,
       options.clientOptions,
@@ -903,6 +919,7 @@ export async function pushWorkerProject(
           new Promise((resolve) => setTimeout(resolve, milliseconds))),
     );
     const publicUrl = text(environmentOf(finalWorker, "preview").publicUrl)!;
+    const finalEnvironment = environmentOf(finalWorker, "preview");
     return {
       schemaVersion: 1,
       status: "ACTIVE",
@@ -924,6 +941,12 @@ export async function pushWorkerProject(
         idempotencyKey: deployed.idempotencyKey,
       },
       publicUrl,
+      ...(linkedProject.config.assets ? { routing: {
+        mode: text(finalEnvironment.routingMode),
+        webAppReady: finalEnvironment.webAppReady === true,
+        publicOrigin: text(finalEnvironment.publicOrigin),
+        publicBasePath: text(finalEnvironment.publicBasePath),
+      } } : {}),
       health,
       commands: {
         logs: `xapi workers logs ${workerState.id} --env preview`,

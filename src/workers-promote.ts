@@ -29,7 +29,7 @@ export type PromotionCheckStatus = "NO_CHANGE" | "MANUAL" | "BLOCKED";
 
 export interface WorkerPromotionCheck {
   status: PromotionCheckStatus;
-  kind: "budget" | "resource" | "secret";
+  kind: "budget" | "resource" | "secret" | "routing";
   key: string;
   message: string;
   command?: string;
@@ -131,12 +131,31 @@ function productionChecks(
   remoteEnvironment: UnknownRecord,
   resources: UnknownRecord[],
   secrets: UnknownRecord[],
+  hasStaticAssets: boolean,
 ): { checks: WorkerPromotionCheck[]; dataRisk: string[] } {
   const checks: WorkerPromotionCheck[] = [];
   const dataRisk: string[] = [
     "Promotion changes the Worker code Artifact only; it does not snapshot, copy, or roll back production data",
   ];
   const currentBudget = amount(remoteEnvironment.dailyBudgetUsd);
+  if (hasStaticAssets) {
+    checks.push(
+      remoteEnvironment.webAppReady === true
+        ? {
+            status: "NO_CHANGE",
+            kind: "routing",
+            key: "production",
+            message: "Production web application has a dedicated hostname",
+          }
+        : {
+            status: "MANUAL",
+            kind: "routing",
+            key: "production",
+            message:
+              "Production is using path fallback; verify the application base path, root-relative URLs, and OAuth callbacks, or configure a dedicated hostname",
+          },
+    );
+  }
   if (
     currentBudget === undefined ||
     Math.abs(currentBudget - desired.dailyBudgetUsd) > 0.00005
@@ -278,8 +297,8 @@ function productionChecks(
   }
   checks.sort(
     (a, b) =>
-      ({ budget: 0, resource: 1, secret: 2 })[a.kind] -
-        { budget: 0, resource: 1, secret: 2 }[b.kind] ||
+      ({ routing: 0, budget: 1, resource: 2, secret: 3 })[a.kind] -
+        { routing: 0, budget: 1, resource: 2, secret: 3 }[b.kind] ||
       a.key.localeCompare(b.key),
   );
   return { checks, dataRisk: dataRisk.sort() };
@@ -380,6 +399,7 @@ export async function createWorkerPromotionPlan(
     production,
     resources,
     secrets,
+    Boolean(project.config.assets),
   );
   const plan: WorkerPromotionPlan = {
     schemaVersion: 1,

@@ -39,6 +39,45 @@
         }
       }
     },
+    "assets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["directory"],
+      "properties": {
+        "directory": { "$ref": "#/$defs/projectPath" },
+        "binding": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{0,63}$"
+        },
+        "htmlHandling": {
+          "enum": [
+            "auto-trailing-slash",
+            "force-trailing-slash",
+            "drop-trailing-slash",
+            "none"
+          ]
+        },
+        "notFoundHandling": {
+          "enum": ["none", "404-page", "single-page-application"]
+        },
+        "runWorkerFirst": {
+          "oneOf": [
+            { "type": "boolean" },
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 100,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+                "pattern": "^!?/"
+              }
+            }
+          ]
+        }
+      }
+    },
     "environments": {
       "type": "object",
       "additionalProperties": false,

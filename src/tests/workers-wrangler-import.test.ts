@@ -36,6 +36,13 @@ describe("Wrangler project import", () => {
       "main": "src/index.ts",
       "compatibility_date": "2026-08-26",
       "compatibility_flags": ["nodejs_compat"],
+      "assets": {
+        "directory": "dist/client",
+        "binding": "ASSETS",
+        "html_handling": "auto-trailing-slash",
+        "not_found_handling": "single-page-application",
+        "run_worker_first": ["/api/*"]
+      },
       "account_id": "provider-account-id",
       "routes": ["old.example/*"],
       "kv_namespaces": [{ "binding": "STATE", "id": "physical-kv-id" }],
@@ -90,6 +97,13 @@ describe("Wrangler project import", () => {
       ),
     ).toEqual(["AGENT", "DB", "EVENTS", "FILES", "FLOW", "STATE"]);
     expect(project.config.environments.preview.secrets).toEqual(["MODEL_KEY"]);
+    expect(project.config.assets).toEqual({
+      directory: "dist/client",
+      binding: "ASSETS",
+      htmlHandling: "auto-trailing-slash",
+      notFoundHandling: "single-page-application",
+      runWorkerFirst: ["/api/*"],
+    });
     const generated = readFileSync(join(root, "xapi.worker.json"), "utf8");
     expect(generated).not.toContain("provider-account-id");
     expect(generated).not.toContain("physical-");
