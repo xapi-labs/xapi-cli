@@ -477,7 +477,14 @@ export function createWorkerResource(
   options: WorkersClientOptions,
   id: string,
   environment: string,
-  input: { type: string; bindingName: string; className?: string; retentionPriceVersion?: string },
+  input: {
+    type: string;
+    bindingName: string;
+    className?: string;
+    location?: string;
+    readReplication?: string;
+    retentionPriceVersion?: string;
+  },
 ) {
   return request<unknown>(
     url(

@@ -41,6 +41,10 @@ export const workerManagedResourceSchema = z
       .string()
       .regex(/^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/)
       .optional(),
+    location: z
+      .enum(["wnam", "enam", "weur", "eeur", "apac", "oc"])
+      .optional(),
+    readReplication: z.enum(["auto", "disabled"]).optional(),
   })
   .strict()
   .superRefine((resource, context) => {
@@ -56,6 +60,24 @@ export const workerManagedResourceSchema = z
         code: "custom",
         path: ["className"],
         message: "is only valid for a durable_object resource",
+      });
+    }
+    if (
+      resource.location &&
+      resource.type !== "d1_database" &&
+      resource.type !== "r2_bucket"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["location"],
+        message: "is only valid for d1_database and r2_bucket resources",
+      });
+    }
+    if (resource.readReplication && resource.type !== "d1_database") {
+      context.addIssue({
+        code: "custom",
+        path: ["readReplication"],
+        message: "is only valid for a d1_database resource",
       });
     }
   });

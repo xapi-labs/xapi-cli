@@ -69,7 +69,14 @@ export interface PushClient extends PlanClient, DeploymentClient {
     options: WorkersClientOptions,
     id: string,
     environment: string,
-    input: { type: string; bindingName: string; className?: string; retentionPriceVersion?: string },
+    input: {
+      type: string;
+      bindingName: string;
+      className?: string;
+      location?: string;
+      readReplication?: string;
+      retentionPriceVersion?: string;
+    },
   ): Promise<unknown>;
   listWorkerArtifacts(
     options: WorkersClientOptions,
@@ -440,9 +447,27 @@ function resourceMatches(
     remote.config && typeof remote.config === "object"
       ? text((remote.config as UnknownRecord).className)
       : undefined;
+  const config =
+    remote.config && typeof remote.config === "object"
+      ? (remote.config as UnknownRecord)
+      : {};
+  const remoteLocation = text(
+    config.requestedLocation ??
+      config.created_in_region ??
+      config.running_in_region ??
+      config.location,
+  )?.toLowerCase();
+  const replication = config.readReplication ?? config.read_replication;
+  const remoteReadReplication =
+    replication && typeof replication === "object"
+      ? text((replication as UnknownRecord).mode)
+      : text(replication);
   return (
     remoteType === desired.type &&
-    (desired.type !== "durable_object" || remoteClassName === desired.className)
+    (desired.type !== "durable_object" || remoteClassName === desired.className) &&
+    (!desired.location || remoteLocation === desired.location) &&
+    (!desired.readReplication ||
+      remoteReadReplication === desired.readReplication)
   );
 }
 

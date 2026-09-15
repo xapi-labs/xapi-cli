@@ -86,6 +86,14 @@ function actionDetail(action: WorkerPlanAction): string {
     const parts = [RESOURCE_LABEL[type] || type];
     const className = text(desired.className) || text(current.className);
     if (className) parts.push(`class ${className}`);
+    const location =
+      text(desired.location) ||
+      text(current.requestedLocation) ||
+      text(current.effectiveLocation);
+    if (location) parts.push(`location ${location.toUpperCase()}`);
+    const readReplication =
+      text(desired.readReplication) || text(current.readReplication);
+    if (readReplication) parts.push(`read replication ${readReplication}`);
     if (action.operation === "CREATE") parts.push("managed by xAPI");
     return parts.join(" · ");
   }

@@ -111,6 +111,19 @@ function record(value: unknown): UnknownRecord | undefined {
     : undefined;
 }
 
+function resourceLocation(value: unknown): string | undefined {
+  const location = string(value)?.toLowerCase();
+  return location &&
+    ["wnam", "enam", "weur", "eeur", "apac", "oc"].includes(location)
+    ? location
+    : undefined;
+}
+
+function readReplicationMode(value: unknown): string | undefined {
+  const mode = string(value)?.toLowerCase();
+  return mode === "auto" || mode === "disabled" ? mode : undefined;
+}
+
 function list(value: unknown, label: string): UnknownRecord[] {
   const raw = Array.isArray(value)
     ? value
@@ -216,6 +229,10 @@ function compareResources(
       type: resource.type,
       bindingName: resource.bindingName,
       ...(resource.className ? { className: resource.className } : {}),
+      ...(resource.location ? { location: resource.location } : {}),
+      ...(resource.readReplication
+        ? { readReplication: resource.readReplication }
+        : {}),
     };
     if (!existing) {
       add(
@@ -231,6 +248,28 @@ function compareResources(
     remoteByName.delete(resource.bindingName);
     const existingType = REMOTE_RESOURCE_TYPE[string(existing.type) || ""];
     const existingClassName = string(record(existing.config)?.className);
+    const existingConfig = record(existing.config) || {};
+    const requestedLocation = resourceLocation(existingConfig.requestedLocation);
+    const effectiveLocation = resourceLocation(
+      existingConfig.created_in_region ??
+        existingConfig.running_in_region ??
+        existingConfig.location,
+    );
+    const comparableLocation = requestedLocation || effectiveLocation;
+    const replication =
+      existingConfig.readReplication ?? existingConfig.read_replication;
+    const existingReadReplication = readReplicationMode(
+      replication && typeof replication === "object"
+        ? string(record(replication)?.mode)
+        : replication,
+    );
+    const currentPlacement = {
+      ...(requestedLocation ? { requestedLocation } : {}),
+      ...(effectiveLocation ? { effectiveLocation } : {}),
+      ...(existingReadReplication
+        ? { readReplication: existingReadReplication }
+        : {}),
+    };
     if (
       existingType !== resource.type ||
       (resource.type === "durable_object" &&
@@ -251,6 +290,28 @@ function compareResources(
       );
       continue;
     }
+    if (
+      (resource.location && comparableLocation !== resource.location) ||
+      (resource.readReplication &&
+        existingReadReplication !== resource.readReplication)
+    ) {
+      blocked = true;
+      add(
+        actions,
+        "BLOCKED",
+        "resource",
+        resource.bindingName,
+        resource.location && comparableLocation !== resource.location
+          ? "The existing resource is in another location; create a new binding and migrate data before switching"
+          : "The existing D1 read-replication mode differs; update it explicitly before deployment",
+        desiredState,
+        {
+          type: existingType,
+          ...currentPlacement,
+        },
+      );
+      continue;
+    }
     const status = string(existing.status) || "UNKNOWN";
     const readyForDeployment =
       status === "ACTIVE" ||
@@ -264,7 +325,7 @@ function compareResources(
         resource.bindingName,
         `Managed resource is ${status}; wait for or repair it before deployment`,
         desiredState,
-        { status },
+        { status, ...currentPlacement },
       );
       continue;
     }
@@ -277,7 +338,7 @@ function compareResources(
         ? "Durable Object declaration matches and will become ACTIVE with the next deployment"
         : "Managed resource already matches desired state",
       desiredState,
-      { status },
+      { status, ...currentPlacement },
     );
   }
   for (const [name, existing] of [...remoteByName].sort(([a], [b]) =>

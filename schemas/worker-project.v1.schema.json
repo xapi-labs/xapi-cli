@@ -147,13 +147,31 @@
         "className": {
           "type": "string",
           "pattern": "^[A-Za-z_$][A-Za-z0-9_$]{0,127}$"
-        }
+        },
+        "location": {
+          "enum": ["wnam", "enam", "weur", "eeur", "apac", "oc"]
+        },
+        "readReplication": { "enum": ["auto", "disabled"] }
       },
       "allOf": [
         {
           "if": { "properties": { "type": { "const": "durable_object" } } },
           "then": { "required": ["className"] },
           "else": { "not": { "required": ["className"] } }
+        },
+        {
+          "if": { "required": ["location"] },
+          "then": {
+            "properties": {
+              "type": { "enum": ["d1_database", "r2_bucket"] }
+            }
+          }
+        },
+        {
+          "if": { "required": ["readReplication"] },
+          "then": {
+            "properties": { "type": { "const": "d1_database" } }
+          }
         }
       ]
     }
