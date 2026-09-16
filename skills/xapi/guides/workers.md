@@ -20,7 +20,7 @@ server-side instance boundary; an out-of-scope Worker is returned as `404`.
 Production uses `api.xapi.to`. Select the test control plane explicitly:
 
 ```bash
-export XAPI_API_HOST=test.xapi.to
+export XAPI_API_HOST=api.test.xapi.to
 ```
 
 Do not send the key directly to Cloudflare or any non-xAPI host. xAPI owns the Cloudflare account and API token.
@@ -109,7 +109,7 @@ both host and key explicit. Non-interactive mode removes prompts but does not
 bypass `BLOCKED` plan items or production preflights:
 
 ```bash
-export XAPI_API_HOST=test.xapi.to
+export XAPI_API_HOST=api.test.xapi.to
 export XAPI_KEY="$CI_XAPI_KEY"
 xapi workers plan --env preview --format json
 xapi workers push --env preview --non-interactive
@@ -348,6 +348,10 @@ Never print the value to verify it. User code can report only whether a secret i
 npx xapi-to workers secrets delete <worker-id> MODEL_KEY \
   --env preview --yes
 ```
+
+## Consumption queries
+
+For the dedicated deployment and cost-reconciliation workflow, install the bundled `xapi-workers` skill. Query `workers billing overview <worker-id> --env preview --json` and `workers billing ledger <worker-id> --env preview --all --json`. The latter follows all pages at one snapshot and fails instead of silently truncating; its completion flag only describes pagination. Reuse its `snapshotTime` with overview `--snapshot-time` before comparing totals. Customer accrued charges, platform-funded amounts and frozen reserves are distinct; missing observations are unknown, not zero. A snapshot covers its UTC billing day, not all history.
 
 ## Inspect and manage
 

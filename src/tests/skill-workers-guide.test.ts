@@ -29,7 +29,7 @@ describe('bundled xAPI Workers skill guide', () => {
     expect(guide).toContain('--non-interactive');
     expect(guide).toContain('never deletes an extra stateful resource or Secret');
     expect(guide).toContain('does **not** restore or migrate KV');
-    expect(guide).toContain('XAPI_API_HOST=test.xapi.to');
+    expect(guide).toContain('XAPI_API_HOST=api.test.xapi.to');
   });
 
   it('uses Artifact upload as the default and Sandbox only as an option', () => {
