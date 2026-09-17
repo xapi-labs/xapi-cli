@@ -11,6 +11,7 @@ import {
   loadWorkerProject,
   resolveWorkerProjectPath,
 } from "./workers-project.ts";
+import { remoteWorkerResourceState } from "./workers-resource-state.ts";
 
 export type WorkerPlanOperation =
   | "CREATE"
@@ -90,38 +91,10 @@ const KIND_ORDER: Record<WorkerPlanKind, number> = {
   deployment: 6,
 };
 
-const REMOTE_RESOURCE_TYPE: Record<string, DesiredResource["type"]> = {
-  KV_NAMESPACE: "kv_namespace",
-  D1_DATABASE: "d1_database",
-  R2_BUCKET: "r2_bucket",
-  DURABLE_OBJECT: "durable_object",
-  QUEUE: "queue",
-  WORKFLOW: "workflow",
-  kv_namespace: "kv_namespace",
-  d1_database: "d1_database",
-  r2_bucket: "r2_bucket",
-  durable_object: "durable_object",
-  queue: "queue",
-  workflow: "workflow",
-};
-
 function record(value: unknown): UnknownRecord | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as UnknownRecord)
     : undefined;
-}
-
-function resourceLocation(value: unknown): string | undefined {
-  const location = string(value)?.toLowerCase();
-  return location &&
-    ["wnam", "enam", "weur", "eeur", "apac", "oc"].includes(location)
-    ? location
-    : undefined;
-}
-
-function readReplicationMode(value: unknown): string | undefined {
-  const mode = string(value)?.toLowerCase();
-  return mode === "auto" || mode === "disabled" ? mode : undefined;
 }
 
 function list(value: unknown, label: string): UnknownRecord[] {
@@ -208,6 +181,7 @@ function compareResources(
   actions: WorkerPlanAction[],
   desired: DesiredResource[],
   remote: UnknownRecord[],
+  environment: "preview" | "production",
 ): boolean {
   let blocked = false;
   const remoteByName = new Map<string, UnknownRecord>();
@@ -217,6 +191,12 @@ function compareResources(
       throw new WorkerProjectConfigError(
         "worker_plan_invalid_response",
         "xAPI returned a managed resource without bindingName",
+      );
+    }
+    if (remoteByName.has(name)) {
+      throw new WorkerProjectConfigError(
+        "worker_plan_invalid_response",
+        `xAPI returned duplicate managed resource binding ${name}`,
       );
     }
     remoteByName.set(name, item);
@@ -246,23 +226,13 @@ function compareResources(
       continue;
     }
     remoteByName.delete(resource.bindingName);
-    const existingType = REMOTE_RESOURCE_TYPE[string(existing.type) || ""];
-    const existingClassName = string(record(existing.config)?.className);
-    const existingConfig = record(existing.config) || {};
-    const requestedLocation = resourceLocation(existingConfig.requestedLocation);
-    const effectiveLocation = resourceLocation(
-      existingConfig.created_in_region ??
-        existingConfig.running_in_region ??
-        existingConfig.location,
-    );
+    const state = remoteWorkerResourceState(existing);
+    const existingType = state.type;
+    const existingClassName = state.className;
+    const requestedLocation = state.requestedLocation;
+    const effectiveLocation = state.effectiveLocation;
     const comparableLocation = requestedLocation || effectiveLocation;
-    const replication =
-      existingConfig.readReplication ?? existingConfig.read_replication;
-    const existingReadReplication = readReplicationMode(
-      replication && typeof replication === "object"
-        ? string(record(replication)?.mode)
-        : replication,
-    );
+    const existingReadReplication = state.readReplication;
     const currentPlacement = {
       ...(requestedLocation ? { requestedLocation } : {}),
       ...(effectiveLocation ? { effectiveLocation } : {}),
@@ -303,7 +273,7 @@ function compareResources(
         resource.bindingName,
         resource.location && comparableLocation !== resource.location
           ? "The existing resource is in another location; create a new binding and migrate data before switching"
-          : "The existing D1 read-replication mode differs; update it explicitly before deployment",
+          : "The existing D1 read-replication mode differs and xAPI has no in-place resource update endpoint; create a new binding and migrate data before switching",
         desiredState,
         {
           type: existingType,
@@ -312,7 +282,7 @@ function compareResources(
       );
       continue;
     }
-    const status = string(existing.status) || "UNKNOWN";
+    const status = state.status;
     const readyForDeployment =
       status === "ACTIVE" ||
       (resource.type === "durable_object" && status === "PROVISIONING");
@@ -349,11 +319,12 @@ function compareResources(
       "MANUAL",
       "resource",
       name,
-      "Remote resource remains bound and may keep accruing charges. Removing its local declaration does not detach or delete it; explicitly delete it, then deploy again",
+      `Remote-only resource may keep accruing charges. Adopt it with \`xapi workers resources pull --env ${environment}\`, or back it up and run \`xapi workers resources destroy --env ${environment} --binding ${name} --yes\``,
       undefined,
       {
+        ...(string(existing.id) ? { resourceId: string(existing.id) } : {}),
         type:
-          REMOTE_RESOURCE_TYPE[string(existing.type) || ""] ||
+          remoteWorkerResourceState(existing).type ||
           string(existing.type) ||
           "unknown",
         status: string(existing.status) || "UNKNOWN",
@@ -739,7 +710,7 @@ export async function createWorkerPlan(
   }
 
   prerequisiteBlocked =
-    compareResources(actions, desired.resources, remoteResources) ||
+    compareResources(actions, desired.resources, remoteResources, options.environment) ||
     prerequisiteBlocked;
   prerequisiteBlocked =
     compareSecrets(actions, desired.secrets, remoteSecrets) ||
@@ -797,7 +768,12 @@ export async function createWorkerPlan(
       linked: !!remote,
       ...(remote ? { workerId: string(remote.id) } : {}),
     },
-    canApply: summary.BLOCKED === 0,
+    canApply:
+      summary.BLOCKED === 0 &&
+      !actions.some(
+        (action) =>
+          action.operation === "MANUAL" && action.kind === "resource",
+      ),
     summary,
     actions,
   };

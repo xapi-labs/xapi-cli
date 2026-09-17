@@ -313,7 +313,7 @@ describe("workers plan", () => {
       clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
       client,
     });
-    expect(plan.canApply).toBe(true);
+    expect(plan.canApply).toBe(false);
     expect(plan.actions).toContainEqual(
       expect.objectContaining({ operation: "UPDATE", kind: "budget" }),
     );
@@ -329,6 +329,7 @@ describe("workers plan", () => {
         operation: "MANUAL",
         kind: "resource",
         key: "OLD_DB",
+        message: expect.stringContaining("resources pull"),
       }),
     );
     expect(plan.actions).toContainEqual(

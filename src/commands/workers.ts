@@ -23,6 +23,13 @@ import {
 import { promoteWorkerProject } from "../workers-promote.ts";
 import { rollbackWorkerProject } from "../workers-rollback.ts";
 import { readWorkerLogs, tailWorkerLogs } from "../workers-logs.ts";
+import {
+  addProjectResource,
+  destroyProjectResource,
+  pullProjectResources,
+  removeProjectResource,
+  updateProjectResource,
+} from "../workers-project-resources.ts";
 import { formatWorkerMetering } from "../workers-metering-output.ts";
 import {
   loadWorkerArtifactInput,
@@ -71,9 +78,11 @@ COMMANDS
   schedules pause|resume <worker-id> <schedule-id>
   schedules delete <worker-id> <schedule-id> --yes
   bindings
-  resources list <worker-id> --env preview|production
-  resources create <worker-id> --env ENV --type kv|d1|r2|do|queue|workflow --binding NAME [--location REGION] [--read-replication MODE]
-  resources delete <worker-id> <resource-id> --env ENV --yes
+  resources add --env preview|production|both --type TYPE --binding NAME
+  resources update --env preview|production|both --type TYPE --binding NAME
+  resources pull --env preview|production|both
+  resources remove --env preview|production|both --binding NAME
+  resources destroy --env preview|production --binding NAME --yes
   secrets list <worker-id> --env preview|production
   secrets set <worker-id> <NAME> --env ENV --from-env VARIABLE
   secrets delete <worker-id> <NAME> --env ENV --yes
@@ -98,6 +107,7 @@ INIT FLAGS
   --preview-budget 0.10..100            Default: 0.25
   --production-budget 0.10..100         Default: 2
   --force                               Overwrite template-managed files only
+  --framework auto|react|vite|vue|next  Override existing package detection
 
 PLAN FLAGS
   --env preview|production              Environment to compare (required)
@@ -115,6 +125,7 @@ PROMOTE FLAGS
   --artifact ARTIFACT_ID                ACTIVE preview Artifact (default: latest)
   --config PATH                         Explicit xapi.worker.json path
   --non-interactive                     CI mode after all production preflights pass
+  --retention-price-version VERSION     Explicit accepted freeze quote for new production resources
 
 ROLLBACK FLAGS
   --env preview|production              Environment whose code will be rolled back
@@ -158,12 +169,20 @@ DEPLOY FLAGS
   --idempotency-key KEY         Stable retry key (generated when omitted)
 
 RESOURCE FLAGS
-  --env preview|production      Resource environment (required)
+  --env preview|production|both Project resource environment
+  --config PATH                 Explicit xapi.worker.json path
   --type kv|d1|r2|do|queue|workflow
   --class-name NAME             Exported class for a Durable Object
   --location REGION             D1/R2 placement: wnam|enam|weur|eeur|apac|oc
   --read-replication MODE       D1 replicas: auto|disabled
   --binding NAME                Uppercase env binding, for example STATE or FILES
+  --yes                         Required for physical resource destruction
+
+ADVANCED REMOTE RESOURCE COMMANDS
+  These recovery/debug commands mutate live state without updating xapi.worker.json.
+  resources list <worker-id> --env preview|production
+  resources create <worker-id> --env ENV --type TYPE --binding NAME
+  resources delete <worker-id> <resource-id> --env ENV --yes
 
 SECRET FLAGS
   --from-env VARIABLE           Read value from a local environment variable
@@ -176,6 +195,7 @@ AUTHORIZATION
 EXAMPLES
   xapi-to workers templates
   xapi-to workers init my-agent --template persistent-agent
+  xapi-to workers init . --framework vite
   xapi-to workers init --from-wrangler ./wrangler.jsonc
   xapi-to workers plan --env preview --format json
   xapi-to workers push --env preview
@@ -189,10 +209,90 @@ EXAMPLES
   xapi-to workers billing overview <id> --env production
   xapi-to workers billing usage <id> --env production --json
   xapi-to workers build <id> --entrypoint src/index.ts --command "npm run build"
-  xapi-to workers resources create <id> --env preview --type kv --binding STATE
+  xapi-to workers resources add --env both --type d1 --binding DB
+  xapi-to workers resources update --env preview --type d1 --binding DB --location weur
+  xapi-to workers resources pull --env preview
   DEEPSEEK_KEY=... xapi-to workers secrets set <id> MODEL_KEY \
     --env preview --from-env DEEPSEEK_KEY
   xapi-to workers list --format table
+`;
+
+export const WORKERS_INIT_HELP = `xapi-to workers init - Initialize an xAPI Worker project
+
+USAGE
+  xapi-to workers init [directory] [flags]
+
+STARTING POINTS
+  New Worker
+    xapi workers init my-agent --template persistent-agent
+
+  Existing React, Vite, Vue, or static Next.js package
+    cd app && xapi workers init
+    Detection preserves existing dev, build, and test scripts.
+
+  Existing Worker with Wrangler
+    xapi workers init --from-wrangler ./wrangler.jsonc
+
+  Next.js SSR
+    Run vinext check/init first, then import its generated Wrangler config.
+
+WRITES
+  Existing frontends gain xapi.worker.json, wrangler.jsonc,
+  xapi-worker/index.ts, and xapi:* package scripts. Re-running init is not a
+  resource synchronization operation.
+
+FLAGS
+  --template worker|agent|chat|webhook|persistent-agent
+  --framework auto|react|vite|vue|next
+  --from-wrangler PATH
+  --accept-partial
+  --name NAME
+  --slug SLUG
+  --preview-budget USD
+  --production-budget USD
+  --force
+`;
+
+export const WORKERS_RESOURCES_HELP = `xapi-to workers resources - Reconcile managed Worker resources
+
+STATE MODEL
+  xapi.worker.json is desired state. xAPI is live state. workers plan reads and
+  compares both; the CLI keeps no third cached state file.
+
+PROJECT COMMANDS
+  add      Declare a new resource locally; plan then push/promote.
+  update   Replace one complete existing declaration locally; linked resource
+           type and Durable Object class cannot change in place.
+  pull     Adopt supported healthy live-only resources into desired state.
+  remove   Stop declaring a resource; live data remains and may keep billing.
+  destroy  Remove one environment declaration and request live data deletion;
+           requires --yes and a prior backup.
+
+USAGE
+  xapi workers resources add --env preview|production|both --type TYPE --binding NAME
+  xapi workers resources update --env preview|production|both --type TYPE --binding NAME
+  xapi workers resources pull --env preview|production|both
+  xapi workers resources remove --env preview|production|both --binding NAME
+  xapi workers resources destroy --env preview|production --binding NAME --yes
+
+RESOURCE FLAGS
+  --type kv|d1|r2|do|queue|workflow
+  --class-name NAME
+  --location wnam|enam|weur|eeur|apac|oc
+  --read-replication auto|disabled
+  --config PATH
+
+SAFE FLOW
+  xapi workers resources add --env preview --type d1 --binding DB --location apac
+  xapi workers plan --env preview
+  xapi workers push --env preview
+
+  Live location and D1 replication changes cannot be updated in place. Create a
+  new binding, migrate data, and switch explicitly when plan reports BLOCKED.
+
+ADVANCED LIVE-ONLY COMMANDS
+  list/create/delete <worker-id> operate on live state without updating the
+  project file. Use them only for recovery or custom control-plane automation.
 `;
 
 const COMMON_FLAGS = new Set(["help", "format"]);
@@ -334,7 +434,19 @@ export async function workersCommand(
   args: string[],
   flags: Record<string, string>,
 ): Promise<void> {
-  if (flags.help || args.length === 0) {
+  if (flags.help) {
+    if (args[0] === "init") {
+      console.log(WORKERS_INIT_HELP);
+      return;
+    }
+    if (args[0] === "resources") {
+      console.log(WORKERS_RESOURCES_HELP);
+      return;
+    }
+    console.log(WORKERS_HELP);
+    return;
+  }
+  if (args.length === 0) {
     console.log(WORKERS_HELP);
     return;
   }
@@ -356,6 +468,7 @@ export async function workersCommand(
         "preview-budget",
         "production-budget",
         "force",
+        "framework",
       ]);
       if (rest.length > 1) {
         err("usage: xapi-to workers init [directory] [flags]");
@@ -364,9 +477,9 @@ export async function workersCommand(
         if (!flags["from-wrangler"] || flags["from-wrangler"] === "true") {
           err("--from-wrangler requires a .jsonc, .json, or .toml path");
         }
-        if (rest.length || flags.template || flags.name || flags.slug) {
+        if (rest.length || flags.template || flags.name || flags.slug || flags.framework) {
           err(
-            "--from-wrangler cannot be combined with a target directory, --template, --name, or --slug",
+            "--from-wrangler cannot be combined with a target directory, --template, --name, --slug, or --framework",
           );
         }
         if (flags["accept-partial"] && flags["accept-partial"] !== "true") {
@@ -406,6 +519,9 @@ export async function workersCommand(
       if (flags["accept-partial"]) {
         err("--accept-partial is only valid with --from-wrangler");
       }
+      if (flags.framework === "true" || flags.framework === "") {
+        err("--framework requires auto, react, vite, vue, or next");
+      }
       const template = (flags.template || "worker") as WorkerStarterTemplate;
       if (flags.force && flags.force !== "true") {
         err("--force does not accept a value");
@@ -424,6 +540,7 @@ export async function workersCommand(
               ? budget(flags["production-budget"], "--production-budget")
               : 2,
             force: flags.force === "true",
+            framework: flags.framework === "true" ? undefined : flags.framework,
           }),
         );
       } catch (error) {
@@ -519,7 +636,13 @@ export async function workersCommand(
       return;
     }
     case "promote": {
-      assertFlags(flags, ["to", "artifact", "config", "non-interactive"]);
+      assertFlags(flags, [
+        "to",
+        "artifact",
+        "config",
+        "non-interactive",
+        "retention-price-version",
+      ]);
       if (rest.length) err("usage: xapi-to workers promote --to production");
       if (flags.to !== "production") {
         err("workers promote requires --to production");
@@ -533,6 +656,12 @@ export async function workersCommand(
       if (flags["non-interactive"] && flags["non-interactive"] !== "true") {
         err("--non-interactive does not accept a value");
       }
+      if (
+        flags["retention-price-version"] === "true" ||
+        flags["retention-price-version"] === ""
+      ) {
+        err("--retention-price-version requires the explicitly accepted quote version");
+      }
       const nonInteractive = flags["non-interactive"] === "true";
       try {
         output(
@@ -542,6 +671,7 @@ export async function workersCommand(
             configPath: flags.config,
             clientOptions: options(),
             nonInteractive,
+            retentionPriceVersion: flags["retention-price-version"],
             onPlan: nonInteractive ? undefined : (plan) => output(plan),
           }),
         );
@@ -1033,7 +1163,7 @@ export async function workersCommand(
           await client.createWorkerSchedule(options(), id, {
             name: required(flags.name, "--name"),
             cron: required(flags.cron, "--cron"),
-            environment: environment(flags.env),
+            environment: environment(flags.env) as "preview" | "production",
             path: required(flags.path, "--path"),
             timezone: flags.timezone || "UTC",
             method: (flags.method || "POST").toUpperCase(),
@@ -1118,6 +1248,123 @@ export async function workersCommand(
       return;
     case "resources": {
       const [action, ...resourceArgs] = rest;
+      if (action === "destroy") {
+        assertFlags(flags, ["env", "config", "binding", "yes"]);
+        if (resourceArgs.length) {
+          err("usage: xapi-to workers resources destroy --env preview|production --binding NAME --yes");
+        }
+        if (flags.yes !== "true") {
+          err("refusing to destroy a managed resource without --yes");
+        }
+        output(
+          await destroyProjectResource({
+            configPath: flags.config,
+            environment: environment(flags.env) as "preview" | "production",
+            bindingName: required(flags.binding, "--binding"),
+            clientOptions: options(),
+          }),
+        );
+        return;
+      }
+      if (action === "pull") {
+        assertFlags(flags, ["env", "config"]);
+        if (resourceArgs.length) {
+          err("usage: xapi-to workers resources pull --env preview|production|both");
+        }
+        const selected = required(flags.env, "--env");
+        if (!["preview", "production", "both"].includes(selected)) {
+          err("--env must be preview, production, or both");
+        }
+        const environments = (selected === "both"
+          ? ["preview", "production"]
+          : [selected]) as Array<"preview" | "production">;
+        output(
+          await pullProjectResources({
+            configPath: flags.config,
+            environments,
+            clientOptions: options(),
+          }),
+        );
+        return;
+      }
+      if (action === "add" || action === "update" || action === "remove") {
+        assertFlags(flags, [
+          "env",
+          "config",
+          "type",
+          "binding",
+          "class-name",
+          "location",
+          "read-replication",
+        ]);
+        if (resourceArgs.length) {
+          err(`usage: xapi-to workers resources ${action} --env preview|production|both --binding NAME`);
+        }
+        const selected = required(flags.env, "--env");
+        if (!["preview", "production", "both"].includes(selected)) {
+          err("--env must be preview, production, or both");
+        }
+        const environments = (selected === "both"
+          ? ["preview", "production"]
+          : [selected]) as Array<"preview" | "production">;
+        const bindingName = required(flags.binding, "--binding");
+        if (action === "remove") {
+          if (flags.type || flags["class-name"] || flags.location || flags["read-replication"]) {
+            err("resources remove accepts only --env, --binding, and --config");
+          }
+          output(
+            removeProjectResource({
+              configPath: flags.config,
+              environments,
+              bindingName,
+            }),
+          );
+          return;
+        }
+        const type = required(flags.type, "--type");
+        const typeMap: Record<string, "kv_namespace" | "d1_database" | "r2_bucket" | "durable_object" | "queue" | "workflow"> = {
+          kv: "kv_namespace",
+          d1: "d1_database",
+          r2: "r2_bucket",
+          do: "durable_object",
+          queue: "queue",
+          workflow: "workflow",
+        };
+        if (!typeMap[type]) err("--type must be kv, d1, r2, do, queue, or workflow");
+        const edit = action === "add" ? addProjectResource : updateProjectResource;
+        output(
+          edit({
+            configPath: flags.config,
+            environments,
+            resource: {
+              type: typeMap[type],
+              bindingName,
+              ...(flags["class-name"]
+                ? { className: flags["class-name"] }
+                : {}),
+              ...(flags.location
+                ? {
+                    location: flags.location as
+                      | "wnam"
+                      | "enam"
+                      | "weur"
+                      | "eeur"
+                      | "apac"
+                      | "oc",
+                  }
+                : {}),
+              ...(flags["read-replication"]
+                ? {
+                    readReplication: flags["read-replication"] as
+                      | "auto"
+                      | "disabled",
+                  }
+                : {}),
+            },
+          }),
+        );
+        return;
+      }
       if (action === "list") {
         assertFlags(flags, ["env"]);
         output(
@@ -1211,7 +1458,7 @@ export async function workersCommand(
         );
         return;
       }
-      err("usage: xapi-to workers resources <list|create|delete> ...");
+      err("usage: xapi-to workers resources <add|update|pull|remove|destroy|list|create|delete> ...");
     }
     case "secrets": {
       const [action, ...secretArgs] = rest;

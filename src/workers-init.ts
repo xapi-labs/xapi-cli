@@ -24,6 +24,7 @@ import {
   renderWorkerTemplateFiles,
   type WorkerTemplate,
 } from "./workers-templates.ts";
+import { initExistingFrameworkProject } from "./workers-framework-init.ts";
 
 export type WorkerStarterTemplate = string;
 
@@ -37,6 +38,7 @@ export interface InitWorkerProjectOptions {
   productionDailyBudgetUsd?: number;
   force?: boolean;
   compatibilityDate?: string;
+  framework?: string;
 }
 
 export interface InitWorkerProjectResult {
@@ -45,6 +47,8 @@ export interface InitWorkerProjectResult {
   template: WorkerStarterTemplate;
   files: string[];
   nextSteps: string[];
+  mode?: "new" | "existing";
+  framework?: string;
 }
 
 const COMMON_MANAGED_FILES = [
@@ -232,24 +236,6 @@ export function initWorkerProject(
       "Worker name must be between 2 and 80 characters",
     );
   }
-  if (existsSync(rootDir)) {
-    if (!lstatSync(rootDir).isDirectory()) {
-      throw new WorkerProjectConfigError(
-        "worker_init_target_not_directory",
-        `Worker project target is not a directory: ${rootDir}`,
-      );
-    }
-    const entries = readdirSync(rootDir);
-    if (entries.length && !options.force) {
-      throw new WorkerProjectConfigError(
-        "worker_init_target_not_empty",
-        `Worker project target is not empty: ${rootDir}`,
-      );
-    }
-  } else {
-    mkdirSync(rootDir, { recursive: true });
-  }
-
   const compatibilityDate =
     options.compatibilityDate || new Date().toISOString().slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(compatibilityDate)) {
@@ -271,6 +257,44 @@ export function initWorkerProject(
       );
     }
   }
+  if (existsSync(rootDir)) {
+    if (!lstatSync(rootDir).isDirectory()) {
+      throw new WorkerProjectConfigError(
+        "worker_init_target_not_directory",
+        `Worker project target is not a directory: ${rootDir}`,
+      );
+    }
+    const entries = readdirSync(rootDir);
+    if (entries.length && !options.force) {
+      if (existsSync(join(rootDir, "package.json"))) {
+        const adopted = initExistingFrameworkProject({
+          rootDir,
+          name,
+          slug,
+          compatibilityDate,
+          previewDailyBudgetUsd,
+          productionDailyBudgetUsd,
+          framework: options.framework,
+        });
+        return {
+          rootDir,
+          configPath: adopted.configPath,
+          template: "worker",
+          files: adopted.files,
+          nextSteps: adopted.nextSteps,
+          mode: "existing",
+          framework: adopted.framework,
+        };
+      }
+      throw new WorkerProjectConfigError(
+        "worker_init_target_not_empty",
+        `Worker project target is not empty and has no package.json: ${rootDir}`,
+      );
+    }
+  } else {
+    mkdirSync(rootDir, { recursive: true });
+  }
+
   const files = projectFiles(
     slug,
     name,
@@ -314,5 +338,6 @@ export function initWorkerProject(
       "xapi workers plan --env preview",
       "xapi workers push --env preview",
     ],
+    mode: "new",
   };
 }

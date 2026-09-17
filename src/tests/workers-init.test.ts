@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -188,8 +189,84 @@ describe("workers init", () => {
         target: "existing",
         compatibilityDate: "2026-08-26",
       }),
-    ).toThrow("not empty");
+    ).toThrow("Refusing to replace existing project file");
     expect(existsSync(join(target, "xapi.worker.json"))).toBe(true);
+  });
+
+  test("adopts an existing React Vite project without replacing its application files", () => {
+    const cwd = workspace();
+    const target = join(cwd, "existing-vite");
+    mkdirSync(target);
+    writeFileSync(
+      join(target, "package.json"),
+      JSON.stringify({
+        name: "existing-vite",
+        private: true,
+        scripts: { dev: "vite", build: "vite build", test: "vitest" },
+        dependencies: { react: "latest" },
+        devDependencies: { vite: "latest", "@vitejs/plugin-react": "latest" },
+      }),
+    );
+    writeFileSync(join(target, "app-marker.txt"), "preserved");
+    const result = initWorkerProject({
+      cwd,
+      target: "existing-vite",
+      compatibilityDate: "2026-09-17",
+    });
+    expect(result.mode).toBe("existing");
+    expect(result.framework).toBe("react-vite");
+    expect(readFileSync(join(target, "app-marker.txt"), "utf8")).toBe("preserved");
+    const pkg = JSON.parse(readFileSync(join(target, "package.json"), "utf8"));
+    expect(pkg.scripts.dev).toBe("vite");
+    expect(pkg.scripts.build).toBe("vite build");
+    expect(pkg.scripts.test).toBe("vitest");
+    expect(pkg.scripts["xapi:build"]).toBe(
+      "npm run build && npm run xapi:worker:build",
+    );
+    expect(pkg.scripts["xapi:worker:dev"]).toContain("wrangler dev");
+    const project = loadWorkerProject(target);
+    expect(project.config.assets?.directory).toBe("dist");
+    expect(project.config.assets?.runWorkerFirst).toEqual(["/api/*", "/health"]);
+    expect(project.config.build.output).toBe(".xapi/worker/index.mjs");
+    expect(existsSync(join(target, "xapi-worker/index.ts"))).toBe(true);
+  });
+
+  test("adopts a statically exported Next project and rejects SSR without mutation", () => {
+    const cwd = workspace();
+    const staticTarget = join(cwd, "next-static");
+    mkdirSync(staticTarget);
+    writeFileSync(
+      join(staticTarget, "package.json"),
+      JSON.stringify({
+        name: "next-static",
+        scripts: { build: "next build" },
+        dependencies: { next: "latest", react: "latest" },
+      }),
+    );
+    writeFileSync(
+      join(staticTarget, "next.config.mjs"),
+      "export default { output: 'export' };\n",
+    );
+    const adopted = initWorkerProject({ cwd, target: "next-static" });
+    expect(adopted.framework).toBe("next-static");
+    expect(loadWorkerProject(staticTarget).config.assets).toMatchObject({
+      directory: "out",
+      notFoundHandling: "404-page",
+    });
+
+    const ssrTarget = join(cwd, "next-ssr");
+    mkdirSync(ssrTarget);
+    const original = JSON.stringify({
+      name: "next-ssr",
+      scripts: { build: "next build" },
+      dependencies: { next: "latest", react: "latest" },
+    });
+    writeFileSync(join(ssrTarget, "package.json"), original);
+    expect(() => initWorkerProject({ cwd, target: "next-ssr" })).toThrow(
+      "Next.js SSR requires a Workers adapter",
+    );
+    expect(readFileSync(join(ssrTarget, "package.json"), "utf8")).toBe(original);
+    expect(existsSync(join(ssrTarget, "xapi.worker.json"))).toBe(false);
   });
 
   test("force overwrites managed files but preserves unknown files", () => {
