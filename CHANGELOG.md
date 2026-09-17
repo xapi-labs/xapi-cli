@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.22](https://github.com/xapi-labs/xapi-cli/compare/v0.1.21...v0.1.22) (2026-09-17)
+
+
+### Features
+
+* **provider:** import API contracts and wait for publication ([#14](https://github.com/xapi-labs/xapi-cli/issues/14)) ([0b17d43](https://github.com/xapi-labs/xapi-cli/commit/0b17d43b5f24536f6a4b50d29de65a4045b81369))
+* **provider:** manage per-user service rate limits ([49c974b](https://github.com/xapi-labs/xapi-cli/commit/49c974b82d42decb6fb55c7034f8cd562b2c9d03))
+* **skill:** add domain and Web3 service guides ([86de0d1](https://github.com/xapi-labs/xapi-cli/commit/86de0d11f89a4a9d52fa1d407541150d71addefe))
+* **skill:** document domains and GPT Live ([7466f4d](https://github.com/xapi-labs/xapi-cli/commit/7466f4db1ce8ea8172f85a4ce286e151aa0688c8))
+
+
+### Bug Fixes
+
+* **oauth:** enforce hard polling deadlines ([86e6828](https://github.com/xapi-labs/xapi-cli/commit/86e6828c411df85acbb6ad471951d38b31693590))
+* **skill:** harden live service guidance ([137e8ab](https://github.com/xapi-labs/xapi-cli/commit/137e8ab7b32febe176e2f619d6c472655bbcb244))
+
 ## [0.1.21](https://github.com/xapi-labs/xapi-cli/compare/v0.1.20...v0.1.21) (2026-08-28)
 
 
