@@ -90,8 +90,11 @@ async function jsonFile(path: string): Promise<ProviderObject> {
 }
 
 function segment(value: string): string {
-  if (value === '.' || value === '..') throw new Error('Invalid service or revision ID');
-  return encodeURIComponent(value);
+  const normalized = value.trim();
+  if (!normalized || normalized === '.' || normalized === '..') {
+    throw new Error('Invalid service or revision ID');
+  }
+  return encodeURIComponent(normalized);
 }
 
 export async function providerOnboarding(args: string[], flags: Record<string, string>): Promise<void> {
@@ -162,6 +165,9 @@ export async function providerOnboarding(args: string[], flags: Record<string, s
     }
     if (command === 'submit') {
       const changelog = flag(flags, 'changelog');
+      if (changelog !== undefined && changelog.length > 2000) {
+        throw new Error('--changelog must be at most 2000 characters');
+      }
       const submission = await providerRequest(`${revisionPath}/submit`, cfg.apiKey, 'POST', changelog ? { changelog } : {});
       emit({ serviceId, revisionId, submission });
       return;

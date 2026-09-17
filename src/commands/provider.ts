@@ -2,7 +2,7 @@
 
 import { mkdir, open, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
-import { apiKeyApiRequest } from '../client.ts';
+import { apiKeyApiRequest, HttpError } from '../client.ts';
 import { providerOnboarding, PROVIDER_ONBOARDING_HELP } from './provider-onboarding.ts';
 import { redactProvider } from '../provider-client.ts';
 import {
@@ -166,11 +166,13 @@ async function textOption(
 
 async function readJsonObject(path: string, flagName = '--file'): Promise<Record<string, unknown>> {
   if (!path || path === 'true') err(`${flagName} requires a JSON file path or - for stdin`);
+  const text = await readText(path, flagName);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(await readText(path, flagName));
-  } catch (error: any) {
-    err(`invalid JSON from ${flagName}`, error.message);
+    parsed = JSON.parse(text);
+  } catch {
+    // Runtime JSON errors can quote input fragments, including credentials.
+    err(`invalid JSON from ${flagName}`, 'Input must be valid JSON.');
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     err(`${flagName} must contain a JSON object`);
@@ -419,6 +421,11 @@ export async function provider(args: string[], flags: Record<string, string>) {
 
     output(redactProvider(result, [apiKey]), flags.format as any);
   } catch (error: any) {
-    err('provider request failed', error.message);
+    // Provider error bodies can echo submitted configuration or credentials.
+    // Preserve local errors, but never print an HTTP response body verbatim.
+    const message = error instanceof HttpError
+      ? `HTTP ${error.status}`
+      : String(redactProvider(error instanceof Error ? error.message : 'Unknown error', [apiKey]));
+    err('provider request failed', message);
   }
 }

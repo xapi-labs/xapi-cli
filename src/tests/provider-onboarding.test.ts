@@ -150,6 +150,27 @@ describe('provider lifecycle commands', () => {
     expect(errSpy.mock.calls[0][1]).toContain('No automatic retry');
   });
 
+  it('does not print server-echoed secrets from existing provider commands', async () => {
+    respond = () => new Response('sk-cli-secret upstream-private-value', { status: 400 });
+    await expect(provider(['create'], { file: await file({
+      name: 'Example',
+      privateHeaders: { Authorization: 'upstream-private-value' },
+    }) })).rejects.toThrow('cli error');
+    expect(calls).toHaveLength(1);
+    expect(errSpy).toHaveBeenCalledWith('provider request failed', 'HTTP 400');
+    expect(JSON.stringify(errSpy.mock.calls)).not.toContain('upstream-private-value');
+    expect(JSON.stringify(errSpy.mock.calls)).not.toContain('sk-cli-secret');
+  });
+
+  it('does not expose malformed JSON fragments from existing provider commands', async () => {
+    const path = join(dir, 'legacy-bad.json');
+    await writeFile(path, '{"privateHeaders":{"Authorization":"upstream-private-value"}');
+    await expect(provider(['create'], { file: path })).rejects.toThrow('cli error');
+    expect(calls).toHaveLength(0);
+    expect(errSpy).toHaveBeenCalledWith('provider request failed', 'cli error');
+    expect(JSON.stringify(errSpy.mock.calls)).not.toContain('upstream-private-value');
+  });
+
   it('reports scope requirements on 403 and fails immediately', async () => {
     respond = () => new Response('private error body', { status: 403 });
     await expect(provider(['submit', 'svc'], { revision: 'rev-1' })).rejects.toThrow('cli error');
@@ -229,6 +250,8 @@ describe('provider lifecycle commands', () => {
       [['wait', 'svc'], { revision: 'rev-1', interval: 'true' }],
       [['wait', 'svc'], { revision: 'rev-1', 'max-attempts': '0' }],
       [['submit', 'svc'], {}], [['wait', '..'], { revision: 'rev-1' }],
+      [['submit', '   '], { revision: 'rev-1' }],
+      [['submit', 'svc'], { revision: 'rev-1', changelog: 'x'.repeat(2001) }],
       [['import'], { file: 'true' }], [['update', 'svc'], { revision: 'rev-1', mode: 'typo' }],
     ] as [string[], Record<string, string>][]) await expect(provider(args, flags)).rejects.toThrow('cli error');
     expect(calls).toHaveLength(0);

@@ -112,6 +112,13 @@ WebSocket client. Active SSE and raw downloads may run longer than 60 seconds,
 but abort after 60 seconds without data by default. Set
 `XAPI_TRANSFER_IDLE_TIMEOUT_MS` to change that idle timeout.
 
+GPT Live is a WebSocket protocol and cannot be invoked with `xapi-to call`.
+Read [the WebSocket Gateway guide](skills/xapi/guides/ws_gateway.md) and use a
+real WebSocket client. The packaged
+[`examples/openai-gpt-live-text.mjs`](examples/openai-gpt-live-text.mjs)
+demonstrates `session.start`, managed Responses delegation, text events, and a
+graceful `session.close` without placing an xAPI key in source or CLI arguments.
+
 ### Async Task Commands
 
 Task helpers built on top of the `task.poll` capability.
@@ -215,6 +222,7 @@ explicit `authConfig` clears those credentials. Omitting both fields preserves t
 `submit` returns `{serviceId, revisionId, submission}`. A successful submission
 does not guarantee publication. `wait` checks the requested revision, succeeds
 only for `PUBLISHED`, and outputs the review report with `success` and `reason`.
+`--changelog` is limited to 2,000 characters by both the CLI and backend.
 Rejection, a draft/sandbox/suspended revision, or a legacy manual-review hold
 exit nonzero. Pending review continues until publication, the timeout (default
 10 minutes), or optional `--max-attempts`. Timeout and attempt-limit results
