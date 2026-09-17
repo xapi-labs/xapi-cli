@@ -9,6 +9,9 @@ test("manual resource drift shows the binding and ongoing-charge warning", () =>
   const warning = "Remote resource remains bound and may keep accruing charges; explicitly delete it, then deploy again";
   const rendered = formatWorkerPlan({ ...plan, actions: [{ operation: "MANUAL", kind: "resource", key: "OLD_DB", message: warning, current: { type: "d1_database" } }] });
   expect(rendered).toContain(warning);
+  expect(rendered).toContain("REVIEW — 1 manual item must be reconciled");
+  expect(rendered).toContain("resources pull --env preview");
+  expect(rendered).not.toContain("No deployment changes are required");
 });
 
 const plan: WorkerDeploymentPlan = {

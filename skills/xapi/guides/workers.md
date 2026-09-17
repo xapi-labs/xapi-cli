@@ -30,10 +30,20 @@ Do not send the key directly to Cloudflare or any non-xAPI host. xAPI owns the C
 For a normal application or Agent, use the project commands instead of manually
 passing Worker IDs, Artifact IDs, and idempotency keys. `xapi.worker.json` stores
 only xAPI-specific desired state and the remote `workerId`; Wrangler remains the
-source of truth for the entrypoint, compatibility settings, and Cloudflare-style
-bindings. The file contains no credential and may be committed.
+source of truth for the entrypoint, compatibility settings, and static assets.
+Managed KV, D1, R2, Durable Object, Queue, and Workflow declarations belong in
+`xapi.worker.json`. The file contains no credential and may be committed.
 
-Create a new project:
+Choose the `init` form from the project you actually have:
+
+| Starting point | Command | What `init` does |
+| --- | --- | --- |
+| Empty directory / new service | `xapi workers init my-agent --template persistent-agent` | Creates a complete Worker package from a versioned local template. |
+| Existing React, Vite, Vue, or static Next.js package | `cd app && xapi workers init` | Detects the framework, keeps existing scripts, and adds only the xAPI adapter, Wrangler config, desired-state file, and xAPI package scripts. |
+| Existing Worker with Wrangler | `xapi workers init --from-wrangler ./wrangler.jsonc` | Imports supported settings after showing what is managed, ignored, or must be re-entered. |
+| Next.js SSR | Run `npx vinext check`, `npx vinext init`, then `xapi workers init --from-wrangler <generated-config>` | Uses the framework adapter's complete Worker bundle instead of treating SSR as static files. |
+
+For a new service:
 
 ```bash
 xapi workers templates
@@ -42,6 +52,32 @@ cd my-agent
 xapi workers plan --env preview
 xapi workers push --env preview
 ```
+
+For an existing browser application without Wrangler, initialize the package in
+place. Detection reads `package.json`; it supports Vite React, Vite Vue, plain
+Vite, Create React App, Vue CLI, and static Next.js. It does not replace the
+application's `dev`, `build`, or test scripts:
+
+```bash
+cd existing-web-app
+xapi workers init
+npm install
+npm run xapi:build
+xapi workers plan --env preview
+xapi workers push --env preview
+```
+
+The added files are `xapi.worker.json`, `wrangler.jsonc`, and
+`xapi-worker/index.ts`. The added package scripts are `xapi:build`,
+`xapi:worker:build`, and `xapi:worker:dev`. Review the generated diff before
+installing dependencies. Re-running `init` is not a synchronization command;
+once `xapi.worker.json` exists, manage it with the project and resource commands.
+
+Use `--framework react|vite|vue|next` only for ambiguous package metadata.
+Static Next.js requires `output: 'export'`. For Next.js SSR, do not generate a
+generic SPA Worker: run `npx vinext check` and `npx vinext init`, then import the
+generated Wrangler configuration. Local development remains a package concern
+(`xapi:worker:dev` runs Wrangler); there is no separate `workers dev` command.
 
 The templates are versioned files packaged with the CLI, so `init` neither
 downloads nor executes remote code. The `persistent-agent` starter declares KV,
@@ -82,6 +118,82 @@ absent, safely creates or updates declared resources, uploads one immutable
 Artifact, deploys preview, waits for the active state, and runs the configured
 health check. `push` never deletes an extra stateful resource or Secret; `plan`
 marks such drift `MANUAL` for explicit handling.
+
+## Resource state without drift
+
+There are only two resource states:
+
+- `xapi.worker.json` is the desired state that belongs in Git. It contains
+  binding names and portable options, never Cloudflare or xAPI resource IDs.
+- xAPI is the live state. `plan` reads it every time and compares it with the
+  selected environment in `xapi.worker.json`; there is no cached state file.
+
+Choose the command by intent:
+
+| Intent | Command | State changed |
+| --- | --- | --- |
+| Create a declaration | `resources add` | Local desired state only |
+| Adjust a declaration | `resources update` | Local desired state only |
+| Adopt live-only resources | `resources pull` | Live read, then safe local merge |
+| Stop declaring a resource | `resources remove` | Local desired state only |
+| Delete resource data | `resources destroy --yes` | Local desired state and one live environment |
+| Check convergence | `workers plan` | None |
+
+Use this normal flow to add a resource:
+
+```bash
+xapi workers resources add --env both --type kv --binding CACHE
+xapi workers resources add --env both --type d1 --binding DB --location apac
+xapi workers resources add --env both --type r2 --binding FILES --location apac
+xapi workers resources add --env both --type do --binding ROOM --class-name Room
+xapi workers resources add --env both --type queue --binding JOBS
+xapi workers resources add --env both --type workflow --binding PIPELINE
+xapi workers resources update --env preview --type d1 --binding DB \
+  --location weur --read-replication disabled
+xapi workers plan --env preview
+xapi workers push --env preview
+```
+
+`--env both` creates matching declarations, not shared storage. `resources add`
+is idempotent and rejects conflicting binding reuse. `resources update`
+replaces the complete declaration. Before linking it can correct any local
+field; after linking it rejects type and Durable Object class changes. A live
+location or D1 replication change is
+`BLOCKED` because the current API cannot update a managed resource in place;
+create another binding and migrate data instead.
+
+If a live resource was created before this file, or an older CLI changed only
+the control plane, adopt it explicitly:
+
+```bash
+xapi workers plan --env preview
+xapi workers resources pull --env preview
+git diff -- xapi.worker.json
+xapi workers plan --env preview
+```
+
+`pull` is an additive, all-or-nothing merge. It imports only supported healthy
+resources, preserves pending local declarations, never writes provider IDs,
+never deletes anything, and refuses to overwrite a binding whose type,
+Durable Object class, location, or D1 replication differs. `--env both` reads
+the environments independently because their physical resources are separate.
+
+`resources remove` changes desired state only. The following `plan` shows the
+live resource as `MANUAL`; keep it with `resources pull`, or back it up and use
+the project-aware destructive command:
+
+```bash
+xapi workers resources destroy --env preview --binding FILES --yes
+```
+
+`destroy` accepts one environment, removes the declaration before requesting
+live deletion, and reports a deletion request rather than claiming immediate
+physical destruction. If the request fails, the live resource remains and
+`resources pull` restores desired state before retrying.
+
+`resources list/create/delete <worker-id> ...` are recovery and debugging
+primitives. They mutate or inspect live state without updating
+`xapi.worker.json`; do not use `create` as the normal project workflow.
 
 `build.output` may point to one bundled JavaScript module or to a directory of
 Cloudflare code modules. A directory requires `build.main`, relative to that
@@ -153,8 +265,13 @@ rebuilding it:
 xapi workers promote --to production
 ```
 
-Production promotion verifies bindings, Secret names, budgets, Artifact
-identity, and health before reporting success. To restore code:
+Production promotion first reads the complete production state. Missing
+declared resources appear as `CREATE` and are created only after every budget,
+Secret, compatibility, and extra-resource check passes and the user confirms.
+Any blocked or undeclared production resource stops the command before all
+writes. Use `--retention-price-version <accepted-version>` when a new resource
+requires an accepted freeze quote. Promotion then activates the exact preview
+Artifact and verifies health before reporting success. To restore code:
 
 ```bash
 xapi workers rollback --env production --to previous
@@ -331,38 +448,30 @@ npx xapi-to workers deploy <worker-id> \
 
 Workers for Platforms switches User Worker uploads all at once. Treat preview validation as a release gate; do not imply gradual rollout.
 
-## Attach isolated Cloudflare resources
+## Low-level resource recovery
 
-Managed resources belong to one Worker environment. Create separate preview and production resources even when their binding names match. User code sees the binding through `env.<NAME>`; it never receives the xAPI Cloudflare account or API token.
+Managed resources belong to one Worker environment. Preview and production use
+separate physical resources even when binding names match. Normal projects use
+the commands in “Resource state without drift”; the commands below are for
+recovery and custom control-plane automation and do not update
+`xapi.worker.json`.
 
 ```bash
 # Inspect the active provider permissions first. A failed item names the exact
 # Cloudflare permission that the platform operator must add.
 npx xapi-to workers capabilities --format pretty
 
-# Durable key/value state
+# Recovery-only direct live creation
 npx xapi-to workers resources create <worker-id> \
   --env preview --type kv --binding STATE
-
-# SQL and object storage
-npx xapi-to workers resources create <worker-id> \
-  --env preview --type d1 --binding DB
-npx xapi-to workers resources create <worker-id> \
-  --env preview --type r2 --binding FILES
-
-# Stateful Agent coordination, asynchronous work, and durable multi-step jobs
-npx xapi-to workers resources create <worker-id> \
-  --env preview --type do --binding AGENT_STATE --class-name AgentState
-npx xapi-to workers resources create <worker-id> \
-  --env preview --type queue --binding TASK_QUEUE
-npx xapi-to workers resources create <worker-id> \
-  --env preview --type workflow --binding AGENT_WORKFLOW
 
 npx xapi-to workers resources list <worker-id> \
   --env preview --format table
 ```
 
-After creating or deleting a resource, deploy the Worker again so the new binding set becomes active. Durable Object creation needs the exported `--class-name`; xAPI adds its migration during deployment. Queue and Workflow resources are isolated per environment and are exposed only through their declared binding. Treat an `ERROR` resource as unavailable and surface its Cloudflare permission or provisioning error; do not deploy code that assumes it exists.
+After a direct low-level create or delete, run `resources pull` or reconcile the
+project declaration manually before the next deployment. Treat an `ERROR`
+resource as unavailable and surface its provider error.
 
 xAPI Queue creation includes the producer binding, an isolated Cloudflare Queue,
 and an xAPI-managed consumer. The User Worker sends a route envelope; the

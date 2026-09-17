@@ -351,6 +351,41 @@ xapi workers logs <worker-id> --env production --tail --since 10m
 xapi workers logs <worker-id> --env production --request-id <request-id>
 ```
 
+Choose `init` based on the starting point:
+
+| Starting point | Command |
+| --- | --- |
+| New Worker | `xapi workers init my-agent --template persistent-agent` |
+| Existing React, Vite, Vue, or static Next.js package | `cd app && xapi workers init` |
+| Existing Worker with Wrangler | `xapi workers init --from-wrangler ./wrangler.jsonc` |
+| Next.js SSR | Initialize vinext first, then import its generated Wrangler config |
+
+Existing browser applications can be initialized in place. Detection reads
+`package.json` and preserves the application's existing `dev`, `build`, and
+test scripts:
+
+```bash
+cd existing-web-app
+xapi workers init
+npm install
+npm run xapi:build
+xapi workers plan --env preview
+xapi workers push --env preview
+```
+
+The initializer adds `xapi:build`, `xapi:worker:build`, and
+`xapi:worker:dev`, plus a small `xapi-worker/index.ts`, `wrangler.jsonc`, and
+`xapi.worker.json`. `xapi:worker:dev` is only a package script around Wrangler;
+there is no separate xAPI local runtime. Use `--framework react|vite|vue|next`
+only when automatic package detection is ambiguous. `init` is a one-time
+adapter setup, not a synchronization command; after it creates
+`xapi.worker.json`, use resource commands and `plan` to manage state.
+
+Next.js with `output: 'export'` is treated as static assets. SSR Next.js must
+first create a Workers-compatible bundle with vinext (`npx vinext check`, then
+`npx vinext init`) and import its generated Wrangler configuration. The CLI
+refuses to misclassify an SSR application as a static SPA.
+
 Web projects can declare their browser build separately from Worker modules.
 The CLI preserves supported Wrangler `assets` settings and uploads the files
 through xAPI as Cloudflare native static assets:
@@ -390,22 +425,99 @@ The project workflow works without Git. `xapi.worker.json` may be committed,
 but Secret values must stay in environment variables or the encrypted Secret
 store. `push` never silently deletes extra stateful resources or Secrets.
 
+For project-managed resources, `xapi.worker.json` is the Git-tracked desired
+state and xAPI is live state. `plan` always fetches live state; the CLI keeps no
+third cached copy.
+
+| Intent | Project command | Effect |
+| --- | --- | --- |
+| Declare a new resource | `resources add` | Adds desired state only. |
+| Adjust an existing declaration | `resources update` | Replaces the complete declaration locally; `plan` decides whether live state can follow. |
+| Adopt live-only resources | `resources pull` | Reads live state and merges portable fields locally. |
+| Stop declaring a resource | `resources remove` | Removes desired state only; the live resource remains billable. |
+| Delete resource data | `resources destroy --yes` | Removes the one-environment declaration and requests live deletion. |
+| Reconcile | `workers plan` | Reads and compares current live state without mutation. |
+
+Add desired resources before applying them:
+
+```bash
+xapi workers resources add --env both --type kv --binding CACHE
+xapi workers resources add --env both --type d1 --binding DB \
+  --location apac --read-replication auto
+xapi workers resources add --env both --type r2 --binding FILES --location apac
+xapi workers resources add --env both --type do --binding ROOM --class-name Room
+xapi workers resources add --env both --type queue --binding JOBS
+xapi workers resources add --env both --type workflow --binding PIPELINE
+
+# Replace the complete desired declaration before it has been provisioned.
+xapi workers resources update --env preview --type d1 --binding DB \
+  --location weur --read-replication disabled
+
+xapi workers plan --env preview
+xapi workers push --env preview
+```
+
+`resources add` changes only `xapi.worker.json`; `plan` shows the resulting
+provider operations and `push` applies them. Repeating an identical add is a
+no-op, while reusing a binding for another type is rejected. `--env both`
+declares the same binding independently for preview and production; it does not
+make both environments share one physical resource.
+
+`push` creates missing preview resources only after its full plan passes.
+`promote` performs the same production preflight and, after confirmation,
+creates missing production declarations before activating the exact tested
+preview Artifact. A budget mismatch, missing Secret, incompatible binding, or
+undeclared production resource blocks the command before any resource or
+deployment write. If creation requires an accepted freeze quote, pass its exact
+version with `--retention-price-version`.
+
+`resources update` requires the resource type because it replaces the complete
+portable declaration. Before the project is linked, it can correct any local
+declaration. After linking, it rejects type and Durable Object class changes.
+Changing a live location or D1 replication mode is
+reported as `BLOCKED`: the current xAPI API has no in-place resource update, so
+create a new binding, migrate data, and switch the application explicitly.
+
+Adopt supported live resources that are missing locally with an explicit pull:
+
+```bash
+xapi workers plan --env preview
+xapi workers resources pull --env preview
+git diff -- xapi.worker.json
+xapi workers plan --env preview
+```
+
+`pull` performs an additive, all-or-nothing merge. It preserves local-only
+declarations, writes no provider IDs, deletes nothing, and rejects unhealthy,
+unsupported, duplicate, or conflicting remote bindings. `--env both` reads and
+merges preview and production independently.
+
+Use `resources remove --env ... --binding ...` only when the live resource must
+remain. `plan` then marks it `MANUAL`, and `resources pull` can adopt it again.
+To delete data, back it up first and run:
+
+```bash
+xapi workers resources destroy --env preview --binding FILES --yes
+```
+
+`destroy` accepts one environment at a time, removes the local declaration
+before requesting deletion, and reports deletion as requested until the live
+resource disappears. If the request fails, the live resource remains visible
+and `resources pull` restores the declaration. `resources list/create/delete
+<worker-id> ...` remain low-level recovery primitives and do not update project
+files.
+
 Deployment identity includes the code Artifact, remote resource identities,
 Secret versions, environment bindings and compatibility settings. Changing only
 resources or compatibility settings therefore deploys again; repeating an
 unchanged push reuses the current activation. Older deployments without this
 configuration fingerprint require one deployment to establish the baseline.
 
-Removing a resource from `xapi.worker.json` does **not** unbind or destroy it:
-`plan` reports `MANUAL`, and the resource remains billable and its reserve stays
-frozen. To destroy it, first stop application access to that resource and remove
-its declaration, run `workers resources delete <worker-id> <resource-id> --env
-preview --yes`, then push again to publish the reduced binding set. Do not keep
-the declaration, or a subsequent push will create a replacement resource.
-If deletion fails, the cloud resource and reserve remain; inspect the reported
-error rather than assuming the data has been removed. Preserve a backup before
-deleting data you need. A successful deployment alone is not proof of deletion
-or final billing settlement.
+Removing a resource from `xapi.worker.json` does **not** destroy it: `plan`
+reports `MANUAL`, and the resource remains billable. `resources destroy` is the
+project-aware destructive operation. Preserve a backup before using it and wait
+until `resources list` no longer returns the binding. A successful deployment
+alone is not proof of deletion or final billing settlement.
 
 In CI,
 set `XAPI_KEY` and `XAPI_API_HOST` explicitly, use a Key restricted to the target
@@ -445,28 +557,13 @@ xapi-to workers deploy <worker-id> \
   --env preview \
   --idempotency-key preview-v1
 
-# Add per-environment state and object storage, then deploy again so the
-# bindings are attached to that User Worker.
-xapi-to workers resources create <worker-id> \
-  --env preview --type kv --binding STATE
-xapi-to workers resources create <worker-id> \
-  --env preview --type r2 --binding FILES
-
 # Secrets are encrypted at rest; prefer reading them from a local env variable.
 MODEL_KEY='...' xapi-to workers secrets set <worker-id> MODEL_KEY \
   --env preview --from-env MODEL_KEY
 xapi-to workers resources list <worker-id> --env preview --format table
 xapi-to workers secrets list <worker-id> --env preview --format table
 
-# Durable Agent state, asynchronous tasks, workflows, and persistent schedules.
-xapi-to workers resources create <worker-id> \
-  --env preview --type do --binding AGENT_STATE --class-name AgentState
-xapi-to workers resources create <worker-id> \
-  --env preview --type d1 --binding DB --location apac --read-replication disabled
-xapi-to workers resources create <worker-id> \
-  --env preview --type queue --binding TASK_QUEUE
-xapi-to workers resources create <worker-id> \
-  --env preview --type workflow --binding AGENT_WORKFLOW
+# Persistent schedules remain Worker-scoped rather than project resource declarations.
 # Queue includes an xAPI-managed consumer. Send a local route envelope from
 # Worker code; delivery is at least once, so make /tasks/run idempotent:
 # await env.TASK_QUEUE.send({

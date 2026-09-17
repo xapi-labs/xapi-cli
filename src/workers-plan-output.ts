@@ -137,6 +137,9 @@ function nextSteps(plan: WorkerDeploymentPlan): string[] {
   const blockers = plan.actions.filter(
     (action) => action.operation === "BLOCKED",
   );
+  const manual = plan.actions.filter(
+    (action) => action.operation === "MANUAL",
+  );
   const missingSecrets = blockers
     .filter((action) => action.kind === "secret")
     .map((action) => action.key);
@@ -147,6 +150,27 @@ function nextSteps(plan: WorkerDeploymentPlan): string[] {
     (action) => action.operation === "CREATE" || action.operation === "UPDATE",
   );
 
+  if (!blockers.length && manual.length) {
+    const remoteResources = manual.filter(
+      (action) => action.kind === "resource",
+    );
+    const deleteCommands = remoteResources
+      .map(
+        (action) =>
+          `     xapi workers resources destroy --env ${plan.environment} --binding ${action.key} --yes`,
+      );
+    return [
+      "  1. Resolve the MANUAL items before treating this environment as synchronized.",
+      ...(remoteResources.length
+        ? [
+            `  2. Keep remote-only resources: xapi workers resources pull --env ${plan.environment}`,
+            "     Or back up and destroy resources that should no longer exist:",
+            ...deleteCommands,
+            `  3. Re-run: xapi workers plan --env ${plan.environment}`,
+          ]
+        : [`  2. Re-run: xapi workers plan --env ${plan.environment}`]),
+    ];
+  }
   if (!blockers.length) {
     if (!changes.length) {
       return [
@@ -196,9 +220,11 @@ export function formatWorkerPlan(plan: WorkerDeploymentPlan): string {
   const rootBlocked = blocked.filter(
     (action) => action.kind !== "deployment",
   ).length;
-  const result = plan.canApply
-    ? "READY — safe to apply"
-    : `BLOCKED — ${rootBlocked || blocked.length} prerequisite${(rootBlocked || blocked.length) === 1 ? "" : "s"} ${(rootBlocked || blocked.length) === 1 ? "needs" : "need"} attention`;
+  const result = blocked.length
+    ? `BLOCKED — ${rootBlocked || blocked.length} prerequisite${(rootBlocked || blocked.length) === 1 ? "" : "s"} ${(rootBlocked || blocked.length) === 1 ? "needs" : "need"} attention`
+    : manual.length
+      ? `REVIEW — ${manual.length} manual item${manual.length === 1 ? "" : "s"} must be reconciled`
+      : "READY — safe to apply";
   const remote = plan.remote.linked
     ? `Linked · ${plan.remote.workerId || plan.project.workerId || "existing Worker"}`
     : "Not linked · a new Worker will be created";

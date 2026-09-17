@@ -411,6 +411,38 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(loadWorkerProject(root).config.workerId).toBe(workerId);
   });
 
+  test("refuses to deploy through remote-only resource drift", async () => {
+    const root = fixture({ linked: true });
+    const platform = fakePlatform({ exists: true });
+    platform.state.resources.push({
+      id: "resource-old-db",
+      bindingName: "OLD_DB",
+      type: "D1_DATABASE",
+      status: "ACTIVE",
+    });
+    let confirmations = 0;
+    await expect(
+      pushWorkerProject({
+        cwd: root,
+        environment: "preview",
+        clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+        client: platform.client,
+        confirm: async () => {
+          confirmations += 1;
+          return true;
+        },
+      }),
+    ).rejects.toThrow("requires reconciliation");
+    expect(confirmations).toBe(0);
+    expect(platform.calls).toEqual({
+      createWorker: 0,
+      updateBudget: 0,
+      createResource: 0,
+      uploadArtifact: 0,
+      deploy: 0,
+    });
+  });
+
   test("non-interactive mode fails a missing-Secret plan before any mutation", async () => {
     const root = fixture({ secrets: ["MODEL_KEY"] });
     const platform = fakePlatform();
@@ -422,7 +454,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
         client: platform.client,
         nonInteractive: true,
       }),
-    ).rejects.toThrow("plan is blocked");
+    ).rejects.toThrow("requires reconciliation");
     expect(platform.calls.createWorker).toBe(0);
     expect(loadWorkerProject(root).config.workerId).toBeUndefined();
   });

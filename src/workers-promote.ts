@@ -6,13 +6,16 @@ import {
   WorkerPushError,
   checkWorkerHealth,
   ensureActiveDeployment,
+  ensureManagedResources,
+  type ManagedResourceClient,
+  resourceMatches,
 } from "./workers-push.ts";
 import { loadWorkerProject } from "./workers-project.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
 
 type UnknownRecord = Record<string, unknown>;
 
-export interface PromotionClient extends DeploymentClient {
+export interface PromotionClient extends DeploymentClient, ManagedResourceClient {
   listWorkerResources(
     options: WorkersClientOptions,
     id: string,
@@ -25,7 +28,11 @@ export interface PromotionClient extends DeploymentClient {
   ): Promise<unknown>;
 }
 
-export type PromotionCheckStatus = "NO_CHANGE" | "MANUAL" | "BLOCKED";
+export type PromotionCheckStatus =
+  | "CREATE"
+  | "NO_CHANGE"
+  | "MANUAL"
+  | "BLOCKED";
 
 export interface WorkerPromotionCheck {
   status: PromotionCheckStatus;
@@ -55,6 +62,7 @@ export interface PromoteWorkerProjectOptions {
   artifactId?: string;
   clientOptions: WorkersClientOptions;
   nonInteractive?: boolean;
+  retentionPriceVersion?: string;
   client?: PromotionClient;
   confirm?: (plan: WorkerPromotionPlan) => Promise<boolean>;
   onPlan?: (plan: WorkerPromotionPlan) => void;
@@ -68,6 +76,7 @@ export interface WorkerPromotionResult {
   plan: WorkerPromotionPlan;
   workerId: string;
   artifact: { id: string; contentSha256: string; sizeBytes?: number };
+  resources: { created: string[]; unchanged: string[] };
   deployment: { id: string; status: "ACTIVE"; idempotencyKey: string };
   publicUrl: string;
   health: { url: string; status: number; attempts: number };
@@ -193,41 +202,21 @@ function productionChecks(
       `${resource.bindingName} (${resource.type}) keeps production state independent from preview`,
     );
     const current = remoteResources.get(resource.bindingName);
-    const command = `xapi workers resources create ${workerId} --env production --type ${
-      {
-        kv_namespace: "kv",
-        d1_database: "d1",
-        r2_bucket: "r2",
-        durable_object: "do",
-        queue: "queue",
-        workflow: "workflow",
-      }[resource.type]
-    } --binding ${resource.bindingName}${
-      resource.className ? ` --class-name ${resource.className}` : ""
-    }`;
     if (!current) {
       checks.push({
-        status: "BLOCKED",
+        status: "CREATE",
         kind: "resource",
         key: resource.bindingName,
-        message: "Required production managed resource is missing",
-        command,
+        message: "Create the missing production managed resource after confirmation",
       });
       continue;
     }
     remoteResources.delete(resource.bindingName);
-    const currentClassName = text(
-      record(current.config || {}, "resource config").className,
-    );
-    const typeMatches = remoteType(current.type) === resource.type;
-    const classMatches =
-      resource.type !== "durable_object" ||
-      currentClassName === resource.className;
     const status = text(current.status) || "UNKNOWN";
     const statusReady =
       status === "ACTIVE" ||
       (resource.type === "durable_object" && status === "PROVISIONING");
-    if (!typeMatches || !classMatches || !statusReady) {
+    if (!resourceMatches(current, resource) || !statusReady) {
       checks.push({
         status: "BLOCKED",
         kind: "resource",
@@ -420,7 +409,11 @@ export async function createWorkerPromotionPlan(
         : {}),
     },
     production: checked,
-    canPromote: !checked.checks.some((item) => item.status === "BLOCKED"),
+    canPromote: !checked.checks.some(
+      (item) =>
+        item.status === "BLOCKED" ||
+        (item.status === "MANUAL" && item.kind === "resource"),
+    ),
   };
   return { plan, worker, artifact };
 }
@@ -433,12 +426,18 @@ export async function promoteWorkerProject(
   const prepared = await createWorkerPromotionPlan({ ...options, client: api });
   options.onPlan?.(prepared.plan);
   if (!prepared.plan.canPromote) {
+    const blockingChecks = prepared.plan.production.checks.filter(
+      (item) =>
+        item.status === "BLOCKED" ||
+        (item.status === "MANUAL" && item.kind === "resource"),
+    );
     throw new WorkerPushError(
-      "Production preflight is blocked; no deployment was created",
+      blockingChecks.some((item) => item.status === "BLOCKED")
+        ? "Production preflight is blocked; no changes were applied"
+        : "Production resource drift requires reconciliation; no changes were applied",
       {
-        checks: prepared.plan.production.checks.filter(
-          (item) => item.status === "BLOCKED",
-        ),
+        checks: prepared.plan.production.checks,
+        blockers: blockingChecks,
       },
     );
   }
@@ -456,6 +455,14 @@ export async function promoteWorkerProject(
     ((milliseconds: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   try {
+    const resources = await ensureManagedResources(
+      api,
+      options.clientOptions,
+      prepared.plan.workerId,
+      "production",
+      project.config.environments.production.resources,
+      options.retentionPriceVersion,
+    );
     const deployed = await ensureActiveDeployment(
       api,
       options.clientOptions,
@@ -487,6 +494,7 @@ export async function promoteWorkerProject(
       plan: prepared.plan,
       workerId: prepared.plan.workerId,
       artifact: prepared.plan.artifact,
+      resources,
       deployment: {
         id: deploymentId,
         status: "ACTIVE",

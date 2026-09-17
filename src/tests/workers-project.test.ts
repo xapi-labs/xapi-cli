@@ -191,6 +191,19 @@ describe("Worker project configuration", () => {
     );
   });
 
+  test("does not mistake a public xapi-prefixed Worker slug for a credential", () => {
+    const root = fixture({
+      worker: {
+        name: "xAPI existing Vite demo",
+        slug: "xapi-existing-vite-demo",
+        template: "worker",
+      },
+    });
+    expect(loadWorkerProject(root).config.worker.slug).toBe(
+      "xapi-existing-vite-demo",
+    );
+  });
+
   test("allows declared secret names but never credential-shaped values", () => {
     const namesRoot = fixture({
       environments: {

@@ -108,6 +108,9 @@ function fakePlatform(
     },
   ];
   const productionDeployments: Array<Record<string, unknown>> = [];
+  const productionResources: Array<Record<string, unknown>> = options.resources
+    ? [...options.resources]
+    : [{ bindingName: "STATE", type: "KV_NAMESPACE", status: "ACTIVE" }];
   const artifacts = [
     {
       id: "artifact-latest",
@@ -122,7 +125,7 @@ function fakePlatform(
   ];
   let productionReads = 0;
   let failDeploy = !!options.failDeployOnce;
-  const calls = { deploy: 0, health: 0 };
+  const calls = { createResource: 0, deploy: 0, health: 0 };
   const snapshot = () => {
     if (productionDeployments.length) {
       productionReads += 1;
@@ -153,10 +156,13 @@ function fakePlatform(
   };
   const client: PromotionClient = {
     getWorker: async () => snapshot(),
-    listWorkerResources: async () =>
-      options.resources || [
-        { bindingName: "STATE", type: "KV_NAMESPACE", status: "ACTIVE" },
-      ],
+    listWorkerResources: async () => productionResources,
+    createWorkerResource: async (_api, _id, _environment, input) => {
+      calls.createResource += 1;
+      const created = { ...input, status: "ACTIVE" };
+      productionResources.push(created);
+      return created;
+    },
     listWorkerSecrets: async () =>
       (options.secrets ?? ["MODEL_KEY"]).map((bindingName) => ({
         bindingName,
@@ -260,7 +266,7 @@ describe("workers promote", () => {
     ).rejects.toThrow("no visible ACTIVE preview deployment");
   });
 
-  test("blocks budget, resource, and Secret gaps without deploying", async () => {
+  test("blocks budget and Secret gaps before creating a planned production resource", async () => {
     const root = fixture();
     const platform = fakePlatform({
       budget: 1,
@@ -282,10 +288,39 @@ describe("workers promote", () => {
     expect(caught?.message).toContain("preflight is blocked");
     const recovery = JSON.stringify(caught?.recovery);
     expect(recovery).toContain("workers budget");
-    expect(recovery).toContain("resources create");
+    expect(recovery).toContain('"status":"CREATE"');
     expect(recovery).toContain("secrets set");
     expect(platform.calls.deploy).toBe(0);
     expect(platform.calls.health).toBe(0);
+    expect(platform.calls.createResource).toBe(0);
+  });
+
+  test("creates missing production resources after confirmation and before deployment", async () => {
+    const root = fixture();
+    const platform = fakePlatform({ resources: [] });
+    const result = await promoteWorkerProject({
+      cwd: root,
+      to: "production",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: platform.client,
+      retentionPriceVersion: "accepted-production-v1",
+      confirm: async (plan) => {
+        expect(plan.production.checks).toContainEqual(
+          expect.objectContaining({
+            status: "CREATE",
+            kind: "resource",
+            key: "STATE",
+          }),
+        );
+        return true;
+      },
+      fetchPublic: (async () =>
+        Response.json({ ok: true })) as unknown as typeof fetch,
+      sleep: async () => undefined,
+    });
+    expect(result.resources).toEqual({ created: ["STATE"], unchanged: [] });
+    expect(platform.calls.createResource).toBe(1);
+    expect(platform.calls.deploy).toBe(1);
   });
 
   test("surfaces path-fallback review without blocking compatible static web apps", async () => {
@@ -330,7 +365,7 @@ describe("workers promote", () => {
       clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
       client: platform.client,
     });
-    expect(prepared.plan.canPromote).toBe(true);
+    expect(prepared.plan.canPromote).toBe(false);
     expect(prepared.plan.production.checks).toContainEqual(
       expect.objectContaining({
         status: "MANUAL",
@@ -343,15 +378,20 @@ describe("workers promote", () => {
         risk.includes("does not copy preview data"),
       ),
     ).toBe(true);
+    let confirmations = 0;
     await expect(
       promoteWorkerProject({
         cwd: root,
         to: "production",
         clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
         client: platform.client,
-        confirm: async () => false,
+        confirm: async () => {
+          confirmations += 1;
+          return false;
+        },
       }),
-    ).rejects.toThrow("cancelled");
+    ).rejects.toThrow("resource drift requires reconciliation");
+    expect(confirmations).toBe(0);
     expect(platform.calls.deploy).toBe(0);
   });
 });

@@ -32,6 +32,7 @@ import {
   type WorkerDeploymentPlan,
 } from "./workers-plan.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
+import { remoteWorkerResourceState } from "./workers-resource-state.ts";
 import { deploymentPrefix, deploymentKey, currentMatchingDeployment } from "./workers-deployment-state.ts";
 
 const WORKER_ID =
@@ -86,6 +87,27 @@ export interface PushClient extends PlanClient, DeploymentClient {
     options: WorkersClientOptions,
     id: string,
     input: WorkerArtifactUploadRequest,
+  ): Promise<unknown>;
+}
+
+export interface ManagedResourceClient {
+  listWorkerResources(
+    options: WorkersClientOptions,
+    id: string,
+    environment: string,
+  ): Promise<unknown>;
+  createWorkerResource(
+    options: WorkersClientOptions,
+    id: string,
+    environment: string,
+    input: {
+      type: string;
+      bindingName: string;
+      className?: string;
+      location?: string;
+      readReplication?: string;
+      retentionPriceVersion?: string;
+    },
   ): Promise<unknown>;
 }
 
@@ -430,58 +452,49 @@ async function ensureBudget(
   }
 }
 
-function resourceMatches(
+export function resourceMatches(
   remote: UnknownRecord,
   desired: UnknownRecord,
 ): boolean {
-  const typeMap: Record<string, string> = {
-    KV_NAMESPACE: "kv_namespace",
-    D1_DATABASE: "d1_database",
-    R2_BUCKET: "r2_bucket",
-    DURABLE_OBJECT: "durable_object",
-    QUEUE: "queue",
-    WORKFLOW: "workflow",
-  };
-  const remoteType = typeMap[text(remote.type) || ""] || remote.type;
-  const remoteClassName =
-    remote.config && typeof remote.config === "object"
-      ? text((remote.config as UnknownRecord).className)
-      : undefined;
-  const config =
-    remote.config && typeof remote.config === "object"
-      ? (remote.config as UnknownRecord)
-      : {};
-  const remoteLocation = text(
-    config.requestedLocation ??
-      config.created_in_region ??
-      config.running_in_region ??
-      config.location,
-  )?.toLowerCase();
-  const replication = config.readReplication ?? config.read_replication;
-  const remoteReadReplication =
-    replication && typeof replication === "object"
-      ? text((replication as UnknownRecord).mode)
-      : text(replication);
+  const state = remoteWorkerResourceState(remote);
+  const remoteLocation = state.requestedLocation || state.effectiveLocation;
   return (
-    remoteType === desired.type &&
-    (desired.type !== "durable_object" || remoteClassName === desired.className) &&
+    state.type === desired.type &&
+    (desired.type !== "durable_object" || state.className === desired.className) &&
     (!desired.location || remoteLocation === desired.location) &&
     (!desired.readReplication ||
-      remoteReadReplication === desired.readReplication)
+      state.readReplication === desired.readReplication)
   );
 }
 
-async function ensureResources(
-  api: PushClient,
+export async function ensureManagedResources(
+  api: ManagedResourceClient,
   options: WorkersClientOptions,
   workerId: string,
+  environment: "preview" | "production",
   desired: LoadedWorkerProject["config"]["environments"]["preview"]["resources"],
   retentionPriceVersion?: string,
 ): Promise<{ created: string[]; unchanged: string[] }> {
   let remote = records(
-    await api.listWorkerResources(options, workerId, "preview"),
+    await api.listWorkerResources(options, workerId, environment),
     "managed resources",
   );
+  const remoteBindings = new Set<string>();
+  for (const item of remote) {
+    const bindingName = text(item.bindingName);
+    if (!bindingName) {
+      throw new WorkerPushError("xAPI returned a managed resource without bindingName", {
+        workerId,
+      });
+    }
+    if (remoteBindings.has(bindingName)) {
+      throw new WorkerPushError(
+        `xAPI returned duplicate managed resource binding ${bindingName}`,
+        { workerId, bindingName },
+      );
+    }
+    remoteBindings.add(bindingName);
+  }
   const created: string[] = [];
   const unchanged: string[] = [];
   for (const resource of [...desired].sort((a, b) =>
@@ -501,14 +514,14 @@ async function ensureResources(
       continue;
     }
     try {
-      await api.createWorkerResource(options, workerId, "preview", {
+      await api.createWorkerResource(options, workerId, environment, {
         ...resource,
         ...(retentionPriceVersion ? { retentionPriceVersion } : {}),
       });
     } catch (error) {
       if (!shouldReconcileWrite(error)) throw error;
       remote = records(
-        await api.listWorkerResources(options, workerId, "preview"),
+        await api.listWorkerResources(options, workerId, environment),
         "managed resources",
       );
       existing = remote.find(
@@ -786,7 +799,11 @@ function unsafePlanBlockers(
   unlinked: boolean,
 ): string[] {
   return plan.actions
-    .filter((action) => action.operation === "BLOCKED")
+    .filter(
+      (action) =>
+        action.operation === "BLOCKED" ||
+        (action.operation === "MANUAL" && action.kind === "resource"),
+    )
     .filter(
       (action) =>
         !(
@@ -821,15 +838,20 @@ export async function pushWorkerProject(
   const blockers = unsafePlanBlockers(initialPlan, !project.config.workerId);
   if (blockers.length || (options.nonInteractive && !initialPlan.canApply)) {
     throw new WorkerPushError(
-      "Preview plan is blocked and no changes were applied",
+      "Preview plan requires reconciliation and no changes were applied",
       {
         blockers:
           blockers.length > 0
             ? blockers
             : initialPlan.actions
-                .filter((action) => action.operation === "BLOCKED")
+                .filter(
+                  (action) =>
+                    action.operation === "BLOCKED" ||
+                    (action.operation === "MANUAL" &&
+                      action.kind === "resource"),
+                )
                 .map((action) => `${action.kind}:${action.key}`),
-        next: "Resolve BLOCKED items and rerun xapi workers plan --env preview",
+        next: "Resolve BLOCKED and MANUAL resource items, then rerun xapi workers plan --env preview",
       },
     );
   }
@@ -865,10 +887,11 @@ export async function pushWorkerProject(
       workerState.id,
       linkedProject.config.environments.preview.dailyBudgetUsd,
     );
-    const resources = await ensureResources(
+    const resources = await ensureManagedResources(
       api,
       options.clientOptions,
       workerState.id,
+      "preview",
       linkedProject.config.environments.preview.resources,
       options.retentionPriceVersion,
     );
