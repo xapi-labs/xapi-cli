@@ -206,7 +206,9 @@ npx xapi-to task wait <task_id> --interval 2s --timeout 10m
 
 For application integrations, read `guides/ai_gateway.md` before configuring an
 Anthropic/OpenAI-compatible client. Read `guides/ws_gateway.md` before opening a
-persistent Realtime, ASR, TTS, interpretation, or podcast WebSocket session.
+persistent GPT Live, Realtime, ASR, TTS, interpretation, or podcast WebSocket
+session. GPT Live uses `/v1/live/sessions` and is not the Realtime protocol at
+`/v1/realtime`.
 
 ## Input Format
 
@@ -331,7 +333,7 @@ When the user's task involves these workflows, read the corresponding guide file
 - **`guides/domains.md`**, **`guides/blockpi.md`**, **`guides/binance_web3.md`** — domain purchase and DNS writes, BlockPI EVM JSON-RPC, and the official Binance Web3 API catalog; read the matching guide before any purchase, mutation, transaction build, signing, or broadcast
 - **`guides/ai.md`** — AI (人工智能): synchronous or SSE-streamed text, embeddings, asynchronous image/video generation with `task wait`, text-to-speech, and speech-to-text
 - **`guides/ai_gateway.md`** — xAPI AI Gateway: Claude Code and Anthropic/OpenAI SDK setup, model discovery, routing strategies, streaming, fallback, routing/billing headers, direct media endpoints, and known limitations
-- **`guides/ws_gateway.md`** — xAPI WebSocket Gateway: OpenAI Realtime, streaming ASR/TTS, simultaneous interpretation, podcast generation, service/path routing, browser authentication, native binary protocols, limits, billing, close codes, and reconnects
+- **`guides/ws_gateway.md`** — xAPI WebSocket Gateway: GPT Live, OpenAI Realtime, streaming ASR/TTS, simultaneous interpretation, podcast generation, service/path routing, browser authentication, native protocols, limits, billing, close codes, and reconnects
 - **`guides/sandbox.md`** — managed Sandbox compute: AI tool selection, one-shot and multi-step lifecycles, provider pinning, files, Cloudflare Web previews, suspension, GPU jobs, parallel agents, cleanup recovery, audit/history, and billing verification
 - **`guides/sms.md`** — SMS verification: buy virtual phone numbers, receive verification codes, finish/cancel orders (5SIM)
 - **`guides/provider.md`** — Provider management: create/update services, About/changelog, version lifecycle, metrics/events and request receipts, Skill upload/linking, rollback/delete, earnings transfer

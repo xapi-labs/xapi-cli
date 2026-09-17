@@ -17,17 +17,21 @@ record change, and obtain explicit approval before either mutation.
 | `domain.check` | Check exact-domain availability | No |
 | `domain.price` | Read the current USD registration price | No |
 | `domain.register` | Register a domain | **Purchase** |
+| `domain.registration.get` | Read an asynchronous registration task | No |
 | `domain.list` | List domains owned through xAPI | No |
 | `domain.get` | Inspect one domain by `domain_id` | No |
 | `dns.list` | List a domain's DNS records | No |
 | `dns.upsert` | Create or update a DNS record | **Write** |
 | `dns.delete` | Delete a DNS record | **Write** |
+| `dns.dnssec.get` | Read desired, effective, and provider DNSSEC state | No |
+| `dns.dnssec.set` | Enable or disable Cloudflare DNSSEC | **Write** |
 
 Fetch the live schemas before use:
 
 ```bash
 npx xapi-to get-batch domain.search domain.check domain.price domain.register \
-  domain.list domain.get dns.list dns.upsert dns.delete
+  domain.registration.get domain.list domain.get dns.list dns.upsert dns.delete \
+  dns.dnssec.get dns.dnssec.set
 ```
 
 ## Search, check, and price
@@ -82,8 +86,24 @@ npx xapi-to call domain.register --input '{
 
 `max_price_usd` is a hard final-charge ceiling, not the expected price.
 `auto_renew` must currently remain `false`; renewal billing is not available.
-Registration is non-refundable. Do not retry with a new key after an ambiguous
-failure: first inspect `domain.list` to determine whether the purchase completed.
+Registration is non-refundable. A successful submission can return a `task_id`
+before the registrar has finished. Poll that exact task rather than repeating the
+purchase:
+
+```bash
+npx xapi-to call domain.registration.get \
+  --input '{"task_id":"<task-id-from-domain-register>"}'
+```
+
+Continue polling only while `status` is `pending` or `processing`. Treat
+`succeeded`, `failed`, and `expired` as terminal. Preserve `phase`, `action`,
+`error`, `final_cost`, and `confirmation_sent_to` when reporting the result;
+some registrations can require external confirmation or manual review.
+
+Do not retry with a new idempotency key after an ambiguous response. If a
+`task_id` was returned, read it with `domain.registration.get`. Otherwise reuse
+the original key only for the exact same request, then inspect `domain.list`
+before deciding whether another purchase attempt is safe.
 
 `domain.get` intentionally does not return the registrant contact. Treat that
 privacy boundary as expected rather than assuming registration lost the data.
@@ -129,3 +149,41 @@ For every write, confirm the domain, record type/name/value, and stable record
 identifier. Reuse an idempotency key only for an identical retry; use a new key
 when any requested value changes. After a successful write, call `dns.list`
 again and verify the intended state instead of assuming propagation or success.
+
+## DNSSEC lifecycle
+
+DNSSEC is currently available only for domains whose authoritative provider is
+Cloudflare. Read the current state before changing it:
+
+```bash
+npx xapi-to call dns.dnssec.get \
+  --input '{"domain_id":"<domain-id>"}'
+```
+
+After explicit approval, request the desired state with one stable idempotency
+key. Reuse that key only when retrying this exact domain and `enabled` value:
+
+```bash
+npx xapi-to call dns.dnssec.set --input '{
+  "domain_id":"<domain-id>",
+  "enabled":true,
+  "idempotency_key":"dnssec-enable-example-20260917"
+}'
+```
+
+The mutation can finish its request while Cloudflare or the parent registry is
+still reconciling. Interpret the response fields together:
+
+- `desired_enabled` is the requested target.
+- `effective_enabled` is the state currently protecting DNS responses.
+- `transition` is `enabling`, `disabling`, or `null` when settled.
+- `provider_status` preserves the upstream lifecycle state.
+- `action_required` means operator intervention is needed.
+
+`pending` and `pending-disabled` are transitions, not success. Poll
+`dns.dnssec.get` until the state settles, becomes `error`, or the user's
+deadline is reached. Do not report DNSSEC as enabled until
+`effective_enabled=true` with no transition, and do not report it as disabled
+until `effective_enabled=false` with no transition. Preserve DS metadata when
+the caller needs to inspect delegation, but never invent or manually publish a
+DS record unless the live response explicitly says operator action is required.

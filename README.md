@@ -112,6 +112,13 @@ WebSocket client. Active SSE and raw downloads may run longer than 60 seconds,
 but abort after 60 seconds without data by default. Set
 `XAPI_TRANSFER_IDLE_TIMEOUT_MS` to change that idle timeout.
 
+GPT Live is a WebSocket protocol and cannot be invoked with `xapi-to call`.
+Read [the WebSocket Gateway guide](skills/xapi/guides/ws_gateway.md) and use a
+real WebSocket client. The packaged
+[`examples/openai-gpt-live-text.mjs`](examples/openai-gpt-live-text.mjs)
+demonstrates `session.start`, managed Responses delegation, text events, and a
+graceful `session.close` without placing an xAPI key in source or CLI arguments.
+
 ### Async Task Commands
 
 Task helpers built on top of the `task.poll` capability.
