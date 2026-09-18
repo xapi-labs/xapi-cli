@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -193,5 +194,51 @@ database_id = "old-d1-id"
     expect(() =>
       importWranglerProject({ cwd: root, wranglerPath: path }),
     ).toThrow("Invalid Wrangler JSONC");
+  });
+
+  test("imports a generated framework Wrangler config from a nested build directory", () => {
+    const root = workspace();
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({ name: "framework-app", scripts: { build: "vinext build" } }),
+    );
+    const serverDir = join(root, "dist", "server");
+    const clientDir = join(root, "dist", "client");
+    mkdirSync(serverDir, { recursive: true });
+    mkdirSync(clientDir, { recursive: true });
+    const path = join(serverDir, "wrangler.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        topLevelName: "framework-app",
+        name: "framework-app",
+        main: "index.js",
+        compatibility_date: "2026-09-10",
+        compatibility_flags: ["nodejs_compat"],
+        assets: { directory: "../client" },
+        durable_objects: { bindings: [] },
+        queues: { producers: [], consumers: [] },
+        workflows: [],
+        services: [],
+        exports: {},
+        migrations: [],
+        jsx_factory: "React.createElement",
+        jsx_fragment: "React.Fragment",
+        python_modules: { exclude: ["**/*.pyc"] },
+      }),
+    );
+
+    const result = importWranglerProject({
+      cwd: root,
+      wranglerPath: "dist/server/wrangler.json",
+    });
+
+    expect(result.wrote).toBe(true);
+    expect(result.rootDir).toBe(root);
+    expect(result.report.summary.UNSUPPORTED).toBe(0);
+    const project = loadWorkerProject(root);
+    expect(project.config.wrangler).toBe("dist/server/wrangler.json");
+    expect(project.config.assets).toEqual({ directory: "dist/client" });
+    expect(existsSync(join(serverDir, "xapi.worker.json"))).toBe(false);
   });
 });

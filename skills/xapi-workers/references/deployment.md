@@ -10,7 +10,7 @@ cd my-service
 xapi workers plan --env preview
 ```
 
-For an existing project use `xapi workers init --from-wrangler ./wrangler.jsonc` (TOML also supported). Read its import report; do not auto-accept unsupported settings. xAPI creates environment-specific resources; do not copy another Cloudflare account's IDs.
+For an existing project use `xapi workers init --from-wrangler ./wrangler.jsonc` (TOML also supported). Generated framework configs may live below the project root, for example `dist/server/wrangler.json`; run the command from the package directory so xAPI writes `xapi.worker.json` beside `package.json` and resolves generated asset paths back to that root. Read its import report; do not auto-accept unsupported settings. xAPI creates environment-specific resources; do not copy another Cloudflare account's IDs.
 
 `xapi.worker.json` holds desired xAPI state and Worker ID; Wrangler holds entrypoint, compatibility and binding declarations. The persistent-agent template declares all six managed resource types; it is a starter, not proof those paths work. Install/build according to the generated project instructions. Inspect plans for missing permissions, prices, secrets, budget, and policy requirements.
 
@@ -22,6 +22,19 @@ xapi workers logs <worker-id> --env preview --since 10m
 ```
 
 If provisioning requires an accepted retention quote, follow lifecycle.md and pass its exact `--retention-price-version VERSION`; do not invent a version. Supply secrets when the Worker exists and rerun the unchanged project command if a missing secret blocked deployment. Never report a blocked preflight as successful deployment.
+
+Use the Node and package-manager version required by the application before `plan` or `push`; the CLI runs the configured build command unchanged. If the project declares `engines.node`, activate a compatible runtime first. A build-runtime failure is an application build failure and must occur before any deployment write; rerun the same push only after correcting the local runtime.
+
+For SSR frameworks that generate a complete Wrangler bundle, preserve that native bundle rather than uploading source files one at a time. For vinext/Next.js, a typical build command is:
+
+```sh
+npm run build
+npx wrangler deploy --dry-run \
+  --config dist/server/wrangler.json \
+  --outfile dist/app.worker.bundle
+```
+
+Set `build.output` to the generated `.worker.bundle`, omit `build.main`, and set `assets.directory` to the generated client directory. `--dry-run` only creates the local Cloudflare upload artifact; `xapi workers push` remains the only publisher. The import report must show every unmapped Wrangler field; never split a framework application into per-file API uploads to work around an import problem.
 
 Use the environment's returned `publicUrl` for actual requests. A custom-domain URL needs verified DNS/TLS readiness; do not construct a hostname or infer readiness from the organization name. Use application authentication, never the control-plane key, on this URL.
 
@@ -48,5 +61,7 @@ xapi workers push --env preview --non-interactive
 ```
 
 Promote in the already authorized release job after preview acceptance. Follow repository AGENTS.md and branch/PR rules; do not infer release authorization from a successful preview push. On uncertain results inspect deployments/logs and retry unchanged inputs so stable idempotency keys can recover the same operation. Do not change IDs or clear deletion flags to force deployment through.
+
+A `worker_control_*` conflict is a server rollout or environment-enrollment failure, not a hint to bypass xAPI with Wrangler. Preserve the existing deployment and resources, record the exact error code, inspect `workers audit`, and have the platform operator restore a compatible control-plane configuration before retrying the unchanged deployment.
 
 For explicit artifact operations: `workers upload <worker-id> --file dist/worker.mjs --idempotency-key <stable-key>`, then `workers deploy <worker-id> --artifact <artifact-id> --env preview --idempotency-key <stable-release-key>`. Reuse a key only for identical inputs. `workers build` is an optional managed Sandbox build, not a requirement for deploying locally built code.
