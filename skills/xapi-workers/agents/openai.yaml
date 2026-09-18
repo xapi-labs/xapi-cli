@@ -1,0 +1,4 @@
+interface:
+  display_name: "xAPI Workers for Platforms"
+  short_description: "Deploy Workers, verify resources, and reconcile usage"
+  default_prompt: "Use $xapi-workers to deploy and verify this project, then check its resource usage and charges."

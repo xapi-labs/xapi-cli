@@ -30,6 +30,7 @@ import {
   removeProjectResource,
   updateProjectResource,
 } from "../workers-project-resources.ts";
+import { collectWorkerBillingLedger } from "../workers-billing-ledger.ts";
 import { formatWorkerMetering } from "../workers-metering-output.ts";
 import {
   loadWorkerArtifactInput,
@@ -67,6 +68,7 @@ COMMANDS
   usage <worker-id> [--env preview|production]
   metering <worker-id> --env preview|production [--json]
   billing-status
+  billing ledger <worker-id> --env ENV [--all] [--snapshot-time ISO] [--json]
   retention show|quote|accept|pause|resume|keep-paused|delete <worker-id> --env ENV
   billing prices|overview|usage|ledger|forecast|risk|lifecycle <worker-id> --env preview|production
   domains list <worker-id>
@@ -1040,6 +1042,7 @@ export async function workersCommand(
       if (kind === "ledger") {
         allowed.push(
           "snapshot-time",
+          "all",
           "cursor",
           "limit",
           "metric",
@@ -1069,24 +1072,29 @@ export async function workersCommand(
       ]) {
         if (flags[flag] === "true") err(`--${flag} requires a value`);
       }
-      const response = await client.workerBillingQuery(
-        options(),
-        oneId(
-          billingArgs,
-          `usage: xapi-to workers billing ${kind} <worker-id> --env ENV`,
-        ),
-        environment(flags.env),
-        kind,
-        {
-          snapshotTime: flags["snapshot-time"],
-          from: flags.from,
-          to: flags.to,
-          metric: flags.metric,
-          resourceId: flags["resource-id"],
-          cursor: flags.cursor,
-          limit: flags.limit,
-        },
+      if (Object.hasOwn(flags, "all") && flags.all !== "true") {
+        err("--all does not accept a value");
+      }
+      if (flags.all && flags.cursor) err("--all cannot be combined with --cursor");
+      const workerId = oneId(
+        billingArgs,
+        `usage: xapi-to workers billing ${kind} <worker-id> --env ENV`,
       );
+      const env = environment(flags.env);
+      const query: client.WorkerBillingQuery = {
+        snapshotTime: flags["snapshot-time"],
+        from: flags.from,
+        to: flags.to,
+        metric: flags.metric,
+        resourceId: flags["resource-id"],
+        cursor: flags.cursor,
+        limit: flags.limit,
+      };
+      const fetchPage = (pageQuery: client.WorkerBillingQuery) =>
+        client.workerBillingQuery(options(), workerId, env, kind, pageQuery);
+      const response = flags.all
+        ? await collectWorkerBillingLedger(fetchPage, query)
+        : await fetchPage(query);
       printWorkerBillingResponse(kind, response, mode);
       return;
     }
