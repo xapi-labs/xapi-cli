@@ -9,6 +9,14 @@ const guide = readFileSync(
   new URL('../../skills/xapi/guides/workers.md', import.meta.url),
   'utf8',
 );
+const standaloneDeployment = readFileSync(
+  new URL('../../skills/xapi-workers/references/deployment.md', import.meta.url),
+  'utf8',
+);
+const standaloneResources = readFileSync(
+  new URL('../../skills/xapi-workers/references/resources.md', import.meta.url),
+  'utf8',
+);
 
 describe('bundled xAPI Workers skill guide', () => {
   it('routes hosted Worker tasks to the progressively loaded guide', () => {
@@ -63,5 +71,13 @@ describe('bundled xAPI Workers skill guide', () => {
     expect(guide).toContain('fails closed');
     expect(guide).toContain('workers domains retry');
     expect(guide).toContain('D1 Edit');
+  });
+
+  it('keeps application resources independent from full-matrix acceptance', () => {
+    for (const text of [guide, standaloneDeployment, standaloneResources]) {
+      expect(text).toMatch(/separate disposable (?:acceptance )?Worker/);
+      expect(text).toContain('application');
+    }
+    expect(standaloneResources).toContain('independent bindings');
   });
 });

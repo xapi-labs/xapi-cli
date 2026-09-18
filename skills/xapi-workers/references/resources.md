@@ -2,6 +2,8 @@
 
 Run `workers capabilities` and `workers resources list <worker-id> --env preview --format json`. Permissions, availability, and price configuration are independent: provisioned alone does not mean priced or exercised.
 
+Keep resource declarations driven by application behavior. R2, D1, KV, Durable Objects, Queues, and Workflows are independent bindings; none must be added or deleted just because another resource is used. When the goal is to verify every platform resource, use a separate disposable acceptance Worker so those checks cannot change a real application's storage or lifecycle.
+
 Prefer declarations plus plan/push. For granular provisioning:
 
 ```sh
