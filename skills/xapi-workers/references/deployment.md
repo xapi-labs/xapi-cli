@@ -10,6 +10,12 @@ cd my-service
 xapi workers plan --env preview
 ```
 
+Choose the API host explicitly: `api.test.xapi.to` operates test-platform
+resources; `api.xapi.to` operates production-platform resources. `--env preview`
+selects a project's preview environment on that host, not the test API. A
+production acceptance deployment can therefore use `api.xapi.to` with
+`--env preview`. Do not silently fall back to a saved test key or host.
+
 For an existing project use `xapi workers init --from-wrangler ./wrangler.jsonc` (TOML also supported). Generated framework configs may live below the project root, for example `dist/server/wrangler.json`; run the command from the package directory so xAPI writes `xapi.worker.json` beside `package.json` and resolves generated asset paths back to that root. Read its import report; do not auto-accept unsupported settings. xAPI creates environment-specific resources; do not copy another Cloudflare account's IDs.
 
 `xapi.worker.json` holds desired xAPI state and Worker ID; Wrangler holds entrypoint, compatibility and binding declarations. The persistent-agent template declares all six managed resource types so it can demonstrate the complete platform, but an ordinary application should declare only the resources its business logic uses. Do not add unrelated bindings merely to complete an acceptance checklist. Test the full resource matrix in a separate disposable Worker or environment, then clean up only that isolated test state. Install/build according to the generated project instructions. Inspect plans for missing permissions, prices, secrets, budget, and policy requirements.
@@ -37,6 +43,13 @@ npx wrangler deploy --dry-run \
 Set `build.output` to the generated `.worker.bundle`, omit `build.main`, and set `assets.directory` to the generated client directory. `--dry-run` only creates the local Cloudflare upload artifact; `xapi workers push` remains the only publisher. The import report must show every unmapped Wrangler field; never split a framework application into per-file API uploads to work around an import problem.
 
 Use the environment's returned `publicUrl` for actual requests. A custom-domain URL needs verified DNS/TLS readiness; do not construct a hostname or infer readiness from the organization name. Use application authentication, never the control-plane key, on this URL.
+
+The dispatcher reserves and strips incoming `x-xapi-*` headers. Use an
+application-owned header such as `x-my-app-token`, or normal application
+authentication, for your own probes and APIs. Do not disable this filtering to
+make a probe pass. Also inspect returned state: `domains retry` can return a
+domain record with `status: ERROR`; command completion does not certify DNS,
+TLS, root-relative assets or OAuth callback readiness.
 
 After deployment reaches ACTIVE, run health plus business persistence and asynchronous completion checks in resources.md. Review data/schema compatibility before promoting the same preview artifact:
 
