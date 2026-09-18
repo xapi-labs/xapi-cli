@@ -126,12 +126,46 @@ const IGNORED_TOP_LEVEL = new Set([
   "limits",
   "version_metadata",
   "tail_consumers",
+  // Wrangler-generated framework configs can include build-time defaults that
+  // have already been applied to the emitted Worker bundle. They are not
+  // control-plane settings and do not need an xAPI desired-state mapping.
+  "topLevelName",
+  "jsx_factory",
+  "jsx_fragment",
+  "python_modules",
 ]);
 
 function record(value: unknown): UnknownRecord | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as UnknownRecord)
     : undefined;
+}
+
+function structurallyEmpty(value: unknown): boolean {
+  if (Array.isArray(value)) return value.length === 0;
+  const object = record(value);
+  return !!object && Object.values(object).every(structurallyEmpty);
+}
+
+function discoverProjectRoot(cwd: string, sourcePath: string): string {
+  const sourceDir = dirname(sourcePath);
+  const fromCwd = relative(cwd, sourcePath);
+  if (
+    fromCwd &&
+    fromCwd !== ".." &&
+    !fromCwd.startsWith(`..${sep}`) &&
+    existsSync(resolve(cwd, "package.json"))
+  ) {
+    return realpathSync(cwd);
+  }
+
+  let cursor = sourceDir;
+  while (true) {
+    if (existsSync(resolve(cursor, "package.json"))) return cursor;
+    const parent = dirname(cursor);
+    if (parent === cursor) return sourceDir;
+    cursor = parent;
+  }
 }
 
 function array(value: unknown): UnknownRecord[] {
@@ -249,6 +283,8 @@ function staticAssets(
   preview: UnknownRecord,
   production: UnknownRecord,
   entries: WranglerCompatibilityEntry[],
+  sourceDir: string,
+  rootDir: string,
 ): WorkerProjectConfig["assets"] | undefined {
   const previewAssets = record(preview.assets);
   const productionAssets = record(production.assets);
@@ -258,8 +294,16 @@ function staticAssets(
     return undefined;
   }
   const source = previewAssets || productionAssets!;
+  const sourceDirectory = source.directory;
+  const absoluteDirectory =
+    typeof sourceDirectory === "string"
+      ? resolve(sourceDir, sourceDirectory)
+      : undefined;
+  const projectDirectory = absoluteDirectory
+    ? relative(rootDir, absoluteDirectory).split(sep).join("/")
+    : sourceDirectory;
   const candidate = {
-    directory: source.directory,
+    directory: projectDirectory,
     ...(source.binding !== undefined ? { binding: source.binding } : {}),
     ...(source.html_handling !== undefined ? { htmlHandling: source.html_handling } : {}),
     ...(source.not_found_handling !== undefined ? { notFoundHandling: source.not_found_handling } : {}),
@@ -405,7 +449,10 @@ function resourceList(
       new Set(["binding"]),
     ),
   );
-  if (queues?.consumers !== undefined) {
+  if (
+    queues?.consumers !== undefined &&
+    !structurallyEmpty(queues.consumers)
+  ) {
     compatibilityEntry(
       entries,
       "UNSUPPORTED",
@@ -523,6 +570,7 @@ function inspectTopLevel(
           : "This Wrangler deployment option is not copied into xAPI project state",
       );
     } else {
+      if (structurallyEmpty(root[key])) continue;
       compatibilityEntry(
         entries,
         "UNSUPPORTED",
@@ -564,6 +612,7 @@ function inspectTopLevel(
           { environment: name },
         );
       } else {
+        if (structurallyEmpty(environment?.[key])) continue;
         compatibilityEntry(
           entries,
           "UNSUPPORTED",
@@ -634,7 +683,8 @@ export function importWranglerProject(
   const requestedSourcePath = resolve(cwd, options.wranglerPath);
   const { format, config: wrangler } = parseWrangler(requestedSourcePath);
   const sourcePath = realpathSync(requestedSourcePath);
-  const rootDir = dirname(sourcePath);
+  const sourceDir = dirname(sourcePath);
+  const rootDir = discoverProjectRoot(cwd, sourcePath);
   const configPath = resolve(rootDir, WORKER_PROJECT_CONFIG_FILE);
   const entries: WranglerCompatibilityEntry[] = [];
   inspectTopLevel(wrangler, entries);
@@ -655,6 +705,8 @@ export function importWranglerProject(
     desired.preview.config,
     desired.production.config,
     entries,
+    sourceDir,
+    rootDir,
   );
   const previewResources = resourceList(
     desired.preview.config,

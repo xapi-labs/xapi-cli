@@ -87,6 +87,13 @@ changes; `push` creates environment-specific resources and binds their provider
 IDs without writing those IDs into application source. Set secret values after
 the Worker ID exists:
 
+That broad resource set demonstrates the complete platform; it is not the
+default architecture for every application. Keep only resources used by the
+application's business logic. Do not add or couple independent bindings merely
+to complete an acceptance checklist. Verify the full resource matrix in a
+separate disposable Worker or environment so cleanup cannot alter application
+data.
+
 ```bash
 xapi workers secrets set <worker-id> APP_TOKEN --env preview --from-env APP_TOKEN
 xapi workers secrets set <worker-id> MODEL_KEY --env preview --from-env MODEL_KEY
