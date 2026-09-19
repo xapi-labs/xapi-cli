@@ -9,6 +9,9 @@ import {
   listWorkers,
   runWorkerScheduleNow,
   listWorkerDomains,
+  createWorkerDomainChallenge,
+  attachWorkerDomain,
+  deleteWorkerDomain,
   retryWorkerDomain,
   rollbackWorker,
   workerBillingStatus,
@@ -270,6 +273,36 @@ describe("workers client", () => {
       "https://test.xapi.to/api/v1/workers/provider/capabilities",
     ]);
     expect((fetchSpy.mock.calls[5][1] as RequestInit).method).toBe("POST");
+  });
+
+  it("creates, attaches, and removes a DNS-verified custom domain", async () => {
+    fetchSpy = spyOn(globalThis, "fetch").mockImplementation(
+      (async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })) as any,
+    ) as any;
+
+    await createWorkerDomainChallenge(
+      options,
+      "worker/id",
+      "preview",
+      "kanby.example.com",
+    );
+    await attachWorkerDomain(options, "worker/id", "signed.challenge");
+    await deleteWorkerDomain(options, "worker/id", "domain/id");
+
+    expect(fetchSpy.mock.calls.map((call: any[]) => call[0])).toEqual([
+      "https://test.xapi.to/api/v1/workers/worker%2Fid/domains/challenges",
+      "https://test.xapi.to/api/v1/workers/worker%2Fid/domains",
+      "https://test.xapi.to/api/v1/workers/worker%2Fid/domains/domain%2Fid",
+    ]);
+    expect(JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string)).toEqual({
+      environment: "preview",
+      hostname: "kanby.example.com",
+    });
+    expect((fetchSpy.mock.calls[2][1] as RequestInit).method).toBe("DELETE");
   });
 
   it("targets every environment billing family and preserves an opaque ledger cursor", async () => {

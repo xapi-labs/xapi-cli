@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
-import { XAPI_API_HOST, getConfig, requireApiKey } from "../config.ts";
+import { XAPI_ACTION_HOST, XAPI_API_HOST, getConfig, requireApiKey } from "../config.ts";
 import { err, output, type OutputFormat } from "../format.ts";
 import * as client from "../workers-client.ts";
 import {
@@ -40,6 +40,7 @@ import {
   printWorkerBillingResponse,
   workerBillingOutputMode,
 } from "../workers-billing-output.ts";
+import { bindXdomainWorker } from "../workers-domain-bind.ts";
 
 export const WORKERS_HELP = `xapi-to workers - Deploy and manage xAPI-hosted Cloudflare Workers
 
@@ -72,6 +73,8 @@ COMMANDS
   retention show|quote|accept|pause|resume|keep-paused|delete <worker-id> --env ENV
   billing prices|overview|usage|ledger|forecast|risk|lifecycle <worker-id> --env preview|production
   domains list <worker-id>
+  domains attach <worker-id> --env ENV --xdomain-domain-id ID [--subdomain @]
+  domains detach <worker-id> <domain-id> --yes
   domains retry <worker-id> <domain-id>
   schedules list <worker-id>
   schedules create <worker-id> --name NAME --cron "*/15 * * * *" --env preview --path /cron
@@ -350,6 +353,19 @@ function budget(value: string | undefined, flag: string): number {
     err(`${flag} must be between 0.10 and 100`);
   }
   return amount;
+}
+
+function durationMs(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const match = /^(\d+)(ms|s|m)$/.exec(value);
+  if (!match) err("--timeout must use ms, s, or m, for example 120s");
+  const amount = Number(match![1]);
+  const scale = match![2] === "ms" ? 1 : match![2] === "s" ? 1_000 : 60_000;
+  const result = amount * scale;
+  if (!Number.isSafeInteger(result) || result < 1_000 || result > 10 * 60_000) {
+    err("--timeout must be between 1s and 10m");
+  }
+  return result;
 }
 
 function assertFlags(
@@ -1100,8 +1116,8 @@ export async function workersCommand(
     }
     case "domains": {
       const [action, ...domainArgs] = rest;
-      assertFlags(flags);
       if (action === "list") {
+        assertFlags(flags);
         output(
           await client.listWorkerDomains(
             options(),
@@ -1113,7 +1129,49 @@ export async function workersCommand(
         );
         return;
       }
+      if (action === "attach") {
+        assertFlags(flags, ["env", "xdomain-domain-id", "subdomain", "timeout"]);
+        const workerId = oneId(
+          domainArgs,
+          "usage: xapi-to workers domains attach <worker-id> --env ENV --xdomain-domain-id ID [--subdomain @]",
+        );
+        const cfg = getConfig();
+        requireApiKey(cfg);
+        output(
+          await bindXdomainWorker({
+            workerOptions: options(),
+            actionOptions: {
+              actionHost: cfg.actionHost || XAPI_ACTION_HOST,
+              apiKey: cfg.apiKey!,
+            },
+            workerId,
+            environment: environment(flags.env) as "preview" | "production",
+            domainId: required(flags["xdomain-domain-id"], "--xdomain-domain-id"),
+            subdomain: flags.subdomain || "@",
+            waitMs: durationMs(flags.timeout, 120_000),
+          }),
+        );
+        return;
+      }
+      if (action === "detach") {
+        assertFlags(flags, ["yes"]);
+        if (domainArgs.length !== 2) {
+          err("usage: xapi-to workers domains detach <worker-id> <domain-id> --yes");
+        }
+        if (flags.yes !== "true") {
+          err("refusing to detach a custom domain without --yes");
+        }
+        output(
+          await client.deleteWorkerDomain(
+            options(),
+            domainArgs[0],
+            domainArgs[1],
+          ),
+        );
+        return;
+      }
       if (action === "retry") {
+        assertFlags(flags);
         if (domainArgs.length !== 2) {
           err("usage: xapi-to workers domains retry <worker-id> <domain-id>");
         }
@@ -1126,7 +1184,7 @@ export async function workersCommand(
         );
         return;
       }
-      err("usage: xapi-to workers domains <list|retry> ...");
+      err("usage: xapi-to workers domains <list|attach|detach|retry> ...");
     }
     case "schedules": {
       const [action, ...scheduleArgs] = rest;
