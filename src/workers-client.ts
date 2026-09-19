@@ -323,6 +323,62 @@ export function listWorkerDomains(options: WorkersClientOptions, id: string) {
   );
 }
 
+export interface WorkerDomainChallenge {
+  challengeToken: string;
+  expiresAt: string;
+  hostname: string;
+  environment: string;
+  dns: { type: "TXT"; name: string; value: string; ttl: number };
+}
+
+export function createWorkerDomainChallenge(
+  options: WorkersClientOptions,
+  id: string,
+  environment: string,
+  hostname: string,
+) {
+  return request<WorkerDomainChallenge>(
+    url(options, `/${encodeURIComponent(id)}/domains/challenges`),
+    {
+      method: "POST",
+      headers: headers(options, true),
+      body: JSON.stringify({ environment, hostname }),
+    },
+    30_000,
+  );
+}
+
+export function attachWorkerDomain(
+  options: WorkersClientOptions,
+  id: string,
+  challengeToken: string,
+) {
+  return request<Record<string, unknown>>(
+    url(options, `/${encodeURIComponent(id)}/domains`),
+    {
+      method: "POST",
+      headers: headers(options, true),
+      body: JSON.stringify({ challengeToken }),
+    },
+    60_000,
+  );
+}
+
+export function deleteWorkerDomain(
+  options: WorkersClientOptions,
+  id: string,
+  domainId: string,
+) {
+  return request<{ id: string; deleted: boolean }>(
+    url(
+      options,
+      `/${encodeURIComponent(id)}/domains/${encodeURIComponent(domainId)}`,
+    ),
+    { method: "DELETE", headers: headers(options) },
+    60_000,
+  );
+}
+
 export function retryWorkerDomain(
   options: WorkersClientOptions,
   id: string,
