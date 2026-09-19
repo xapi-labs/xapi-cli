@@ -17,12 +17,33 @@ const standaloneResources = readFileSync(
   new URL('../../skills/xapi-workers/references/resources.md', import.meta.url),
   'utf8',
 );
+const dedicatedSkill = readFileSync(
+  new URL('../../skills/xapi-workers/SKILL.md', import.meta.url),
+  'utf8',
+);
+const domainGuide = readFileSync(
+  new URL('../../skills/xapi-workers/references/domains.md', import.meta.url),
+  'utf8',
+);
 
 describe('bundled xAPI Workers skill guide', () => {
   it('routes hosted Worker tasks to the progressively loaded guide', () => {
     expect(skill).toContain('Read `guides/workers.md`');
     expect(skill).toContain('`workers init`');
     expect(skill).toContain('`workers promote --to production`');
+  });
+
+  it('combines xdomain ownership with native Worker Custom Domains safely', () => {
+    expect(dedicatedSkill).toContain('[domains.md](references/domains.md)');
+    expect(domainGuide).toContain('xapi workers domains attach');
+    expect(domainGuide).toContain('domain.get');
+    expect(domainGuide).toContain('dns.upsert');
+    expect(domainGuide).toContain('dns.delete');
+    expect(domainGuide).toContain('temporary TXT');
+    expect(domainGuide).toContain('Cloudflare owns the final DNS record');
+    expect(domainGuide).toContain('non-refundable');
+    expect(domainGuide).toContain('Never invent missing contact fields');
+    expect(domainGuide).not.toContain('wrangler deploy');
   });
 
   it('prefers project deployment and covers import, CI, recovery, and rollback boundaries', () => {
