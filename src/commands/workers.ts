@@ -63,6 +63,7 @@ COMMANDS
   builds <worker-id>
   deploy <worker-id> --artifact ARTIFACT_ID --env preview|production
   budget <worker-id> <environment> --daily-usd USD
+  environment <worker-id> <environment> [--daily-usd USD] [--data-location apac] [--placement smart]
   audit <worker-id>
   invocations <worker-id> --env preview|production
   logs <worker-id> --env preview|production [--tail] [--since 10m]
@@ -102,6 +103,8 @@ CREATE FLAGS
   --description TEXT
   --preview-budget 0.10..100    Explicit preview daily budget
   --production-budget 0.10..100 Explicit production daily budget
+  --data-location REGION        Default for new D1/R2: wnam|enam|weur|eeur|apac|oc
+  --placement MODE              Worker execution placement: off|smart
 
 INIT FLAGS
   --template TEMPLATE                   worker|agent|chat|webhook|persistent-agent
@@ -111,6 +114,8 @@ INIT FLAGS
   --slug SLUG                           Stable lowercase Worker slug
   --preview-budget 0.10..100            Default: 0.25
   --production-budget 0.10..100         Default: 2
+  --data-location REGION                Default for newly created D1/R2 resources
+  --placement off|smart                 Cloudflare Worker placement metadata
   --force                               Overwrite template-managed files only
   --framework auto|react|vite|vue|next  Override existing package detection
 
@@ -255,6 +260,8 @@ FLAGS
   --slug SLUG
   --preview-budget USD
   --production-budget USD
+  --data-location wnam|enam|weur|eeur|apac|oc
+  --placement off|smart
   --force
 `;
 
@@ -353,6 +360,21 @@ function budget(value: string | undefined, flag: string): number {
     err(`${flag} must be between 0.10 and 100`);
   }
   return amount;
+}
+
+type WorkerDataLocation = "wnam" | "enam" | "weur" | "eeur" | "apac" | "oc";
+
+function dataLocation(value: string | undefined): WorkerDataLocation | undefined {
+  if (!value) return undefined;
+  if (!["wnam", "enam", "weur", "eeur", "apac", "oc"].includes(value))
+    err("--data-location must be wnam, enam, weur, eeur, apac, or oc");
+  return value as WorkerDataLocation;
+}
+
+function placementMode(value: string | undefined): "off" | "smart" | undefined {
+  if (!value) return undefined;
+  if (!["off", "smart"].includes(value)) err("--placement must be off or smart");
+  return value as "off" | "smart";
 }
 
 function durationMs(value: string | undefined, fallback: number): number {
@@ -487,6 +509,8 @@ export async function workersCommand(
         "production-budget",
         "force",
         "framework",
+        "data-location",
+        "placement",
       ]);
       if (rest.length > 1) {
         err("usage: xapi-to workers init [directory] [flags]");
@@ -518,6 +542,8 @@ export async function workersCommand(
             productionDailyBudgetUsd: flags["production-budget"]
               ? budget(flags["production-budget"], "--production-budget")
               : 2,
+            defaultResourceLocation: dataLocation(flags["data-location"]),
+            placementMode: placementMode(flags.placement),
           });
         } catch (error) {
           err(
@@ -557,6 +583,8 @@ export async function workersCommand(
             productionDailyBudgetUsd: flags["production-budget"]
               ? budget(flags["production-budget"], "--production-budget")
               : 2,
+            defaultResourceLocation: dataLocation(flags["data-location"]),
+            placementMode: placementMode(flags.placement),
             force: flags.force === "true",
             framework: flags.framework === "true" ? undefined : flags.framework,
           }),
@@ -781,6 +809,8 @@ export async function workersCommand(
         "template",
         "preview-budget",
         "production-budget",
+        "data-location",
+        "placement",
       ]);
       if (rest.length) err("usage: xapi-to workers create [flags]");
       const template = flags.template || "worker";
@@ -800,6 +830,8 @@ export async function workersCommand(
             flags["production-budget"],
             "--production-budget",
           ),
+          defaultResourceLocation: dataLocation(flags["data-location"]),
+          placementMode: placementMode(flags.placement),
         }),
       );
       return;
@@ -927,6 +959,22 @@ export async function workersCommand(
           budget(flags["daily-usd"], "--daily-usd"),
         ),
       );
+      return;
+    }
+    case "environment": {
+      assertFlags(flags, ["daily-usd", "data-location", "placement"]);
+      if (rest.length !== 2)
+        err("usage: xapi-to workers environment <worker-id> <preview|production> [--daily-usd USD] [--data-location REGION] [--placement off|smart]");
+      if (!["preview", "production"].includes(rest[1])) err("environment must be preview or production");
+      const location = dataLocation(flags["data-location"]);
+      const placement = placementMode(flags.placement);
+      if (!flags["daily-usd"] && !location && !placement)
+        err("provide --daily-usd, --data-location, or --placement");
+      output(await client.updateWorkerEnvironment(options(), rest[0], rest[1], {
+        ...(flags["daily-usd"] ? { dailyBudgetUsd: budget(flags["daily-usd"], "--daily-usd") } : {}),
+        ...(location ? { defaultResourceLocation: location } : {}),
+        ...(placement ? { placementMode: placement } : {}),
+      }));
       return;
     }
     case "audit":

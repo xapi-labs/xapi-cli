@@ -533,9 +533,26 @@ through xAPI as Cloudflare native static assets:
 `workers plan` shows whether the selected environment has a dedicated hostname.
 When `webAppReady` is false, production promotion asks you to review the base
 path, root-relative routes, and OAuth callbacks without blocking applications
-that deliberately support path-prefix hosting. The current JSON Artifact
-transport accepts 12 MiB of decoded Worker modules and static assets per
-deployment.
+that deliberately support path-prefix hosting. Project bundles use one
+authenticated multipart request: modules and static assets are not uploaded as
+independent deployments. Limits are 200 modules / 10 MiB module content,
+10,000 assets / 25 MiB per asset, and 100 MiB total decoded project content.
+
+Environment placement is declared beside the budget. Workers remain globally
+deployed; the data location is inherited only by newly created D1/R2 resources,
+and Smart Placement lets Cloudflare optimize execution near backends:
+
+```json
+{
+  "dailyBudgetUsd": 0.25,
+  "defaultResourceLocation": "apac",
+  "placementMode": "smart"
+}
+```
+
+Use `xapi workers environment <worker-id> preview --data-location apac
+--placement smart` for an already linked project. This changes the environment
+default and deployment metadata; it does not move existing D1/R2 data.
 
 Templates are versioned packages shipped with the CLI, not remote code fetched
 during `init`. `persistent-agent` includes buildable source plus KV, D1, R2,

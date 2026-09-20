@@ -68,6 +68,8 @@ describe("Worker project configuration", () => {
       "auto",
       "disabled",
     ]);
+    expect(schema.$defs.environment.properties.defaultResourceLocation.enum).toContain("apac");
+    expect(schema.$defs.environment.properties.placementMode.enum).toEqual(["off", "smart"]);
   });
 
   test("discovers the project config from a nested directory", () => {
@@ -131,6 +133,23 @@ describe("Worker project configuration", () => {
       binding: "ASSETS",
       htmlHandling: "auto-trailing-slash",
       runWorkerFirst: ["/api/*", "!/api/docs/*"],
+    });
+  });
+
+  test("accepts native environment data location and Smart Placement", () => {
+    const root = fixture({
+      environments: {
+        preview: {
+          dailyBudgetUsd: 0.25,
+          defaultResourceLocation: "apac",
+          placementMode: "smart",
+        },
+        production: { dailyBudgetUsd: 2, placementMode: "off" },
+      },
+    });
+    expect(loadWorkerProject(root).config.environments.preview).toMatchObject({
+      defaultResourceLocation: "apac",
+      placementMode: "smart",
     });
   });
 

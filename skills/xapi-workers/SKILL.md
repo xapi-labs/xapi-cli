@@ -13,6 +13,7 @@ Use the `xapi` CLI (`xapi-to` is the same executable). Verify `xapi workers --he
 - Authentication precedence: `XAPI_KEY`, `XAPI_API_KEY`, then `~/.xapi/config.json`. Keys need `workers:read` and, for changes, `workers:write`, plus access to the target Worker. A scoped-out Worker can return 404.
 - Production API host is `api.xapi.to`; testing uses `XAPI_API_HOST=api.test.xapi.to` (host only). Load secrets from the user's existing secure environment. Never print keys, include them in code/artifacts, or send the xAPI key to a public Worker URL or Cloudflare. Runtime application authentication is separate.
 - Start with `workers get <worker-id>`, `workers capabilities`, and `workers resources list <worker-id> --env <environment>`. Read-only inspection needs no extra approval. Use existing user authorization for changes; don't expand cleanup from a test environment to production.
+- Treat Worker execution and data placement separately. Worker code remains global. Use environment `defaultResourceLocation` only as the default for newly created D1/R2 resources and `placementMode: smart` only for Cloudflare Smart Placement. Never claim either setting migrates existing data.
 
 ## Load the relevant workflow
 

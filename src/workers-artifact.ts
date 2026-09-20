@@ -13,11 +13,11 @@ import { parse } from "acorn";
 const MAX_LEGACY_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_BUNDLE_CONTENT_BYTES = 10 * 1024 * 1024;
 const MAX_BUNDLE_MODULES = 200;
-const MAX_ASSET_FILES = 100_000;
+const MAX_ASSET_FILES = 10_000;
 const MAX_ASSET_FILE_BYTES = 25 * 1024 * 1024;
-// The current xAPI JSON Artifact endpoint has a 20 MiB request-body ceiling.
-// Base64 expansion leaves 12 MiB for decoded Worker modules plus assets.
-const MAX_XAPI_ARTIFACT_CONTENT_BYTES = 12 * 1024 * 1024;
+// Complete projects use one multipart binary request and content-addressed
+// server storage. This is an xAPI project quota, not Cloudflare's account cap.
+const MAX_XAPI_ARTIFACT_CONTENT_BYTES = 100 * 1024 * 1024;
 const SAFE_MODULE_PATH =
   /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._@+~/-]{1,240}$/;
 
@@ -239,7 +239,7 @@ function collectAssetFiles(input: WorkerStaticAssetsInput): WorkerArtifactAssets
       if (info.size > MAX_ASSET_FILE_BYTES) throw new WorkerArtifactError(`Static asset exceeds Cloudflare's 25 MiB per-file limit: ${relativePath}`);
       const bytes = readFileSync(absolute);
       files.push({ path: `/${relativePath}`, content: bytes.toString("base64"), encoding: "base64", contentType: assetContentType(relativePath) });
-      if (files.length > MAX_ASSET_FILES) throw new WorkerArtifactError(`Static assets exceed Cloudflare's ${MAX_ASSET_FILES} file limit`);
+      if (files.length > MAX_ASSET_FILES) throw new WorkerArtifactError(`Static assets exceed xAPI's ${MAX_ASSET_FILES} file limit`);
     }
   };
   walk(root);
@@ -272,7 +272,7 @@ function assertArtifactContentLimit(bundle: WorkerArtifactBundle): void {
     ) || 0;
   if (moduleBytes + assetBytes > MAX_XAPI_ARTIFACT_CONTENT_BYTES) {
     throw new WorkerArtifactError(
-      "Worker modules and static assets exceed the current xAPI Artifact transport limit of 12 MiB",
+      "Worker modules and static assets exceed the xAPI project limit of 100 MiB",
     );
   }
 }

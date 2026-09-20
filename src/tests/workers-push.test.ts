@@ -170,7 +170,7 @@ function fakePlatform(
       }
       return snapshot();
     },
-    updateWorkerBudget: async () => {
+    updateWorkerEnvironment: async () => {
       calls.updateBudget += 1;
       return { dailyBudgetUsd: 0.25 };
     },
@@ -531,6 +531,40 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(result.status).toBe("ACTIVE");
     expect(platform.calls.uploadArtifact).toBe(1);
     expect(platform.calls.deploy).toBe(1);
+  });
+
+  test("applies declared environment placement before preview deployment", async () => {
+    const root = fixture({ linked: true });
+    const path = join(root, "xapi.worker.json");
+    const config = JSON.parse(readFileSync(path, "utf8"));
+    config.environments.preview.defaultResourceLocation = "apac";
+    config.environments.preview.placementMode = "smart";
+    writeFileSync(path, JSON.stringify(config));
+    const platform = fakePlatform({ exists: true });
+    let update: Record<string, unknown> | undefined;
+    platform.client.updateWorkerEnvironment = async (_options, _id, _environment, input) => {
+      update = input;
+      return input;
+    };
+    await pushWorkerProject({
+      cwd: root,
+      environment: "preview",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: platform.client,
+      confirm: async () => true,
+      runBuild: async () => {
+        mkdirSync(join(root, "dist"), { recursive: true });
+        writeFileSync(join(root, "dist/worker.mjs"), "export default {};");
+      },
+      fetchPublic: (async () =>
+        Response.json({ ok: true })) as unknown as typeof fetch,
+      sleep: async () => undefined,
+    });
+    expect(update).toEqual({
+      dailyBudgetUsd: 0.25,
+      defaultResourceLocation: "apac",
+      placementMode: "smart",
+    });
   });
 
   test("reconciles an HTTP 500 and safely retries Artifact and Deployment writes with the same idempotency key", async () => {

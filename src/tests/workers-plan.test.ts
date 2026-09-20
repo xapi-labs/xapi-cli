@@ -76,6 +76,44 @@ function unexpected(name: string): () => Promise<never> {
 }
 
 describe("workers plan", () => {
+  test("shows native environment placement drift before deployment", async () => {
+    const root = project({ linked: true });
+    const path = join(root, "xapi.worker.json");
+    const config = JSON.parse(readFileSync(path, "utf8"));
+    config.environments.preview.defaultResourceLocation = "apac";
+    config.environments.preview.placementMode = "smart";
+    config.environments.preview.resources = [];
+    config.environments.preview.secrets = [];
+    writeFileSync(path, JSON.stringify(config));
+    const plan = await createWorkerPlan({
+      cwd: root,
+      environment: "preview",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: {
+        listWorkers: unexpected("listWorkers"),
+        getWorker: async () => ({
+          id: workerId,
+          slug: "plan-agent",
+          environments: [{
+            id: "env-preview",
+            name: "PREVIEW",
+            dailyBudgetUsd: 0.25,
+            placementMode: "off",
+          }],
+          artifacts: [],
+          deployments: [],
+        }),
+        listWorkerResources: async () => [],
+        listWorkerSecrets: async () => [],
+      },
+    });
+    expect(plan.actions).toContainEqual(expect.objectContaining({
+      operation: "UPDATE",
+      kind: "placement",
+      desired: { defaultResourceLocation: "apac", placementMode: "smart" },
+    }));
+  });
+
   test("plan compares the current remote binding snapshot, not only code", async () => {
     const bundle = "export default {fetch(){return new Response('ok')}}";
     const root = project({ linked: true, bundle });

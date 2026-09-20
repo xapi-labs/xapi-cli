@@ -8,6 +8,7 @@ const RULE = "─".repeat(72);
 const KIND_LABEL: Record<WorkerPlanAction["kind"], string> = {
   worker: "Worker",
   budget: "Budget",
+  placement: "Placement",
   resource: "Resource",
   secret: "Secret",
   routing: "Routing",
