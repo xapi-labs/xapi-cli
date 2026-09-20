@@ -31,6 +31,12 @@ AI services through this CLI. Then just ask
 — "what's the price of BTC" — and it takes it from there. Set up a key first;
 see [Quick Start](#quick-start).
 
+Workers projects can also install the standalone [`xapi-workers` skill](skills/xapi-workers/SKILL.md), covering deployment, all six managed resource types, complete consumption queries and cleanup:
+
+```bash
+npx skills add xapi-labs/xapi-cli --skill xapi-workers
+```
+
 ## Quick Start
 
 ```bash
@@ -422,6 +428,296 @@ XAPI_MODEL=deepseek-v4-pro \
 npm run example:sandbox:openai
 ```
 
+### Hosted Workers Commands
+
+Inspect delayed storage collection separately from the financial ledger:
+
+```bash
+xapi-to workers metering <worker-id> --env preview
+xapi-to workers metering <worker-id> --env preview --json
+```
+
+Human output lists each resource's UTC collection window, source status, sample
+count, last sample and retry times. Missing samples are not zero usage; observed
+samples are not final settlement. An empty or truncated list does not prove
+complete history. This source read is independent of the billing snapshot.
+
+`workers` manages continuously addressable JavaScript applications on
+xAPI-hosted Cloudflare Workers for Platforms.
+It is separate from `sandbox`: use Sandbox for arbitrary shell/build/GPU work,
+and Workers for HTTP, WebSocket, Webhook, Cron, and persistent Agent entrypoints.
+
+```bash
+# New project: build, create/update resources, deploy preview, then promote the
+# exact tested Artifact to production.
+xapi workers templates
+xapi workers init my-agent --template persistent-agent
+cd my-agent
+# Review the plan before resources are created.
+xapi workers plan --env preview
+xapi workers push --env preview
+xapi workers promote --to production
+
+# Existing Cloudflare Worker: Wrangler remains the source of runtime config.
+cd existing-worker
+xapi workers init --from-wrangler ./wrangler.jsonc
+xapi workers plan --env preview
+xapi workers push --env preview
+
+# Code rollback never rolls back KV/D1/R2/DO/Queue/Workflow data or Secrets.
+xapi workers rollback --env production --to previous
+
+# Follow Tail Worker logs and correlate one request or deployment.
+xapi workers logs <worker-id> --env production --tail --since 10m
+xapi workers logs <worker-id> --env production --request-id <request-id>
+```
+
+Choose `init` based on the starting point:
+
+| Starting point | Command |
+| --- | --- |
+| New Worker | `xapi workers init my-agent --template persistent-agent` |
+| Existing React, Vite, Vue, or static Next.js package | `cd app && xapi workers init` |
+| Existing Worker with Wrangler | `xapi workers init --from-wrangler ./wrangler.jsonc` |
+| Next.js SSR | Initialize vinext first, then import its generated Wrangler config |
+
+Existing browser applications can be initialized in place. Detection reads
+`package.json` and preserves the application's existing `dev`, `build`, and
+test scripts:
+
+```bash
+cd existing-web-app
+xapi workers init
+npm install
+npm run xapi:build
+xapi workers plan --env preview
+xapi workers push --env preview
+```
+
+The initializer adds `xapi:build`, `xapi:worker:build`, and
+`xapi:worker:dev`, plus a small `xapi-worker/index.ts`, `wrangler.jsonc`, and
+`xapi.worker.json`. `xapi:worker:dev` is only a package script around Wrangler;
+there is no separate xAPI local runtime. Use `--framework react|vite|vue|next`
+only when automatic package detection is ambiguous. `init` is a one-time
+adapter setup, not a synchronization command; after it creates
+`xapi.worker.json`, use resource commands and `plan` to manage state.
+
+Next.js with `output: 'export'` is treated as static assets. SSR Next.js must
+first create a Workers-compatible bundle with vinext (`npx vinext check`, then
+`npx vinext init`) and import its generated Wrangler configuration. The CLI
+refuses to misclassify an SSR application as a static SPA.
+
+Web projects can declare their browser build separately from Worker modules.
+The CLI preserves supported Wrangler `assets` settings and uploads the files
+through xAPI as Cloudflare native static assets:
+
+```json
+{
+  "assets": {
+    "directory": "dist/client",
+    "binding": "ASSETS",
+    "notFoundHandling": "single-page-application",
+    "runWorkerFirst": ["/api/*"]
+  }
+}
+```
+
+`workers plan` shows whether the selected environment has a dedicated hostname.
+When `webAppReady` is false, production promotion asks you to review the base
+path, root-relative routes, and OAuth callbacks without blocking applications
+that deliberately support path-prefix hosting. The current JSON Artifact
+transport accepts 12 MiB of decoded Worker modules and static assets per
+deployment.
+
+Templates are versioned packages shipped with the CLI, not remote code fetched
+during `init`. `persistent-agent` includes buildable source plus KV, D1, R2,
+Durable Object, Queue, and Workflow declarations. `push` provisions the
+environment-specific resources and returns their binding state; secret values
+remain a separate operation:
+
+```bash
+export APP_TOKEN='replace-with-an-incoming-request-token'
+export MODEL_KEY='replace-with-an-ai.xapi.to-key'
+xapi workers secrets set <worker-id> APP_TOKEN --env preview --from-env APP_TOKEN
+xapi workers secrets set <worker-id> MODEL_KEY --env preview --from-env MODEL_KEY
+```
+
+The project workflow works without Git. `xapi.worker.json` may be committed,
+but Secret values must stay in environment variables or the encrypted Secret
+store. `push` never silently deletes extra stateful resources or Secrets.
+
+For project-managed resources, `xapi.worker.json` is the Git-tracked desired
+state and xAPI is live state. `plan` always fetches live state; the CLI keeps no
+third cached copy.
+
+| Intent | Project command | Effect |
+| --- | --- | --- |
+| Declare a new resource | `resources add` | Adds desired state only. |
+| Adjust an existing declaration | `resources update` | Replaces the complete declaration locally; `plan` decides whether live state can follow. |
+| Adopt live-only resources | `resources pull` | Reads live state and merges portable fields locally. |
+| Stop declaring a resource | `resources remove` | Removes desired state only; the live resource remains billable. |
+| Delete resource data | `resources destroy --yes` | Removes the one-environment declaration and requests live deletion. |
+| Reconcile | `workers plan` | Reads and compares current live state without mutation. |
+
+Add desired resources before applying them:
+
+```bash
+xapi workers resources add --env both --type kv --binding CACHE
+xapi workers resources add --env both --type d1 --binding DB \
+  --location apac --read-replication auto
+xapi workers resources add --env both --type r2 --binding FILES --location apac
+xapi workers resources add --env both --type do --binding ROOM --class-name Room
+xapi workers resources add --env both --type queue --binding JOBS
+xapi workers resources add --env both --type workflow --binding PIPELINE
+
+# Replace the complete desired declaration before it has been provisioned.
+xapi workers resources update --env preview --type d1 --binding DB \
+  --location weur --read-replication disabled
+
+xapi workers plan --env preview
+xapi workers push --env preview
+```
+
+`resources add` changes only `xapi.worker.json`; `plan` shows the resulting
+provider operations and `push` applies them. Repeating an identical add is a
+no-op, while reusing a binding for another type is rejected. `--env both`
+declares the same binding independently for preview and production; it does not
+make both environments share one physical resource.
+
+`push` creates missing preview resources only after its full plan passes.
+`promote` performs the same production preflight and, after confirmation,
+creates missing production declarations before activating the exact tested
+preview Artifact. A budget mismatch, missing Secret, incompatible binding, or
+undeclared production resource blocks the command before any resource or
+deployment write. If creation requires an accepted freeze quote, pass its exact
+version with `--retention-price-version`.
+
+`resources update` requires the resource type because it replaces the complete
+portable declaration. Before the project is linked, it can correct any local
+declaration. After linking, it rejects type and Durable Object class changes.
+Changing a live location or D1 replication mode is
+reported as `BLOCKED`: the current xAPI API has no in-place resource update, so
+create a new binding, migrate data, and switch the application explicitly.
+
+Adopt supported live resources that are missing locally with an explicit pull:
+
+```bash
+xapi workers plan --env preview
+xapi workers resources pull --env preview
+git diff -- xapi.worker.json
+xapi workers plan --env preview
+```
+
+`pull` performs an additive, all-or-nothing merge. It preserves local-only
+declarations, writes no provider IDs, deletes nothing, and rejects unhealthy,
+unsupported, duplicate, or conflicting remote bindings. `--env both` reads and
+merges preview and production independently.
+
+Use `resources remove --env ... --binding ...` only when the live resource must
+remain. `plan` then marks it `MANUAL`, and `resources pull` can adopt it again.
+To delete data, back it up first and run:
+
+```bash
+xapi workers resources destroy --env preview --binding FILES --yes
+```
+
+`destroy` accepts one environment at a time, removes the local declaration
+before requesting deletion, and reports deletion as requested until the live
+resource disappears. If the request fails, the live resource remains visible
+and `resources pull` restores the declaration. `resources list/create/delete
+<worker-id> ...` remain low-level recovery primitives and do not update project
+files.
+
+Deployment identity includes the code Artifact, remote resource identities,
+Secret versions, environment bindings and compatibility settings. Changing only
+resources or compatibility settings therefore deploys again; repeating an
+unchanged push reuses the current activation. Older deployments without this
+configuration fingerprint require one deployment to establish the baseline.
+
+Removing a resource from `xapi.worker.json` does **not** destroy it: `plan`
+reports `MANUAL`, and the resource remains billable. `resources destroy` is the
+project-aware destructive operation. Preserve a backup before using it and wait
+until `resources list` no longer returns the binding. A successful deployment
+alone is not proof of deletion or final billing settlement.
+
+In CI,
+set `XAPI_KEY` and `XAPI_API_HOST` explicitly, use a Key restricted to the target
+Worker, and pass `--non-interactive`; safety preflights are still enforced:
+
+```bash
+export XAPI_API_HOST=test.xapi.to
+export XAPI_KEY="$CI_XAPI_KEY"
+xapi workers plan --env preview --format json
+xapi workers push --env preview --non-interactive
+xapi workers promote --to production --non-interactive
+```
+
+The lower-level commands remain available for diagnosis and custom automation:
+
+```bash
+# API keys need workers:read / workers:write scopes.
+xapi-to workers provider-status
+xapi-to workers capabilities --format table
+xapi-to workers bindings --format table
+
+# Both environment budgets are explicit ($0.10-$100/day).
+xapi-to workers create \
+  --name "Daily research agent" \
+  --slug daily-research-agent \
+  --template agent \
+  --preview-budget 0.25 \
+  --production-budget 2
+
+# Upload one bundled ES module, or use --file dist/ --main worker.js for code splitting.
+xapi-to workers upload <worker-id> \
+  --file dist/worker.mjs \
+  --idempotency-key artifact-v1
+
+xapi-to workers deploy <worker-id> \
+  --artifact <artifact-id> \
+  --env preview \
+  --idempotency-key preview-v1
+
+# Secrets are encrypted at rest; prefer reading them from a local env variable.
+MODEL_KEY='...' xapi-to workers secrets set <worker-id> MODEL_KEY \
+  --env preview --from-env MODEL_KEY
+xapi-to workers resources list <worker-id> --env preview --format table
+xapi-to workers secrets list <worker-id> --env preview --format table
+
+# Persistent schedules remain Worker-scoped rather than project resource declarations.
+# Queue includes an xAPI-managed consumer. Send a local route envelope from
+# Worker code; delivery is at least once, so make /tasks/run idempotent:
+# await env.TASK_QUEUE.send({
+#   path: '/tasks/run', method: 'POST', body: { taskId: 'task_123' }
+# });
+xapi-to workers schedules create <worker-id> \
+  --name heartbeat --cron "*/15 * * * *" --timezone UTC \
+  --env preview --path /cron --method POST
+
+# Optional: build source in an ephemeral xAPI Sandbox. A successful result
+# contains artifactId, which is deployed exactly like an upload.
+xapi-to workers build <worker-id> \
+  --project . \
+  --entrypoint src/index.ts \
+  --command "npm install --ignore-scripts && npm run build" \
+  --output dist/worker.mjs \
+  --idempotency-key build-v1
+
+xapi-to workers get <worker-id> --format pretty
+xapi-to workers audit <worker-id> --format table
+xapi-to workers invocations <worker-id> --env production --format table
+xapi-to workers logs <worker-id> --env production --format table
+xapi-to workers usage <worker-id> --env production --format pretty
+xapi-to workers billing-status --format pretty
+xapi-to workers domains list <worker-id> --format table
+xapi-to workers budget <worker-id> production --daily-usd 3
+xapi-to workers delete <worker-id> --yes
+```
+
+Set `XAPI_API_HOST=test.xapi.to` for the test control plane. Mutating requests
+are not retried automatically; when a deployment result is uncertain, inspect
+the Worker and retry with the same idempotency key.
+
 ### OAuth
 
 Bind third-party OAuth accounts (e.g. Twitter) to your API key.
@@ -544,17 +840,17 @@ xapi-to list --format table                             # human-readable table
 
 ## Environment Variables
 
-| Variable | Description |
-|---|---|
-| `XAPI_KEY` | API key (overrides config file) |
-| `XAPI_API_KEY` | Compatible API key alias (overrides config file; lower priority than `XAPI_KEY`) |
-| `XAPI_SANDBOX_KEY` | Sandbox-only credential for OpenAI SandboxAgent examples/tests |
-| `XAPI_AI_KEY` | AI Gateway credential for OpenAI-compatible model calls |
-| `XAPI_ACTION_HOST` | Action service host (default: `action.xapi.to`) |
-| `XAPI_API_HOST` | Auth/account service host (default: `api.xapi.to`) |
-| `XAPI_SANDBOX_HOST` | Sandbox gateway host (default: `sandbox.xapi.to`) |
-| `XAPI_OUTPUT` | Default output format (`json`\|`pretty`\|`table`) |
-| `XAPI_TRANSFER_IDLE_TIMEOUT_MS` | SSE/download idle timeout in milliseconds (default: `60000`) |
+| Variable                        | Description                                                                      |
+| ------------------------------- | -------------------------------------------------------------------------------- |
+| `XAPI_KEY`                      | API key (overrides config file)                                                  |
+| `XAPI_API_KEY`                  | Compatible API key alias (overrides config file; lower priority than `XAPI_KEY`) |
+| `XAPI_SANDBOX_KEY`              | Sandbox-only credential for OpenAI SandboxAgent examples/tests                   |
+| `XAPI_AI_KEY`                   | AI Gateway credential for OpenAI-compatible model calls                          |
+| `XAPI_ACTION_HOST`              | Action service host (default: `action.xapi.to`)                                  |
+| `XAPI_API_HOST`                 | Auth/account service host (default: `api.xapi.to`)                               |
+| `XAPI_SANDBOX_HOST`             | Sandbox gateway host (default: `sandbox.xapi.to`)                                |
+| `XAPI_OUTPUT`                   | Default output format (`json`\|`pretty`\|`table`)                                |
+| `XAPI_TRANSFER_IDLE_TIMEOUT_MS` | SSE/download idle timeout in milliseconds (default: `60000`)                     |
 
 Config is stored at `~/.xapi/config.json`.
 
@@ -564,28 +860,28 @@ This is a small quick-reference subset, not the complete or permanently fixed
 catalog. Use `xapi-to list --source capability`, `search`, and `get` for the
 current IDs and schemas.
 
-| ID | Description |
-|---|---|
-| `twitter.tweet_detail` | Get tweet details and replies |
-| `twitter.user_by_screen_name` | Get user profile by username |
-| `twitter.user_tweets` | Get tweets from a user |
-| `twitter.user_tweets_and_replies` | Get tweets and replies from a user |
-| `twitter.user_media` | Get media posts from a user |
-| `twitter.following` | Get user following list |
-| `twitter.followers` | Get user followers |
-| `twitter.retweeters` | Get tweet retweeters |
-| `twitter.search` | Search tweets |
-| `ai.text.chat.fast` | Fast AI chat completion |
-| `ai.text.chat.reasoning` | Advanced reasoning chat |
-| `ai.text.chat.auto` | Model-selected chat with provider fallback |
-| `ai.text.summarize` | Summarize long text |
-| `ai.text.rewrite` | Rewrite text with different styles |
-| `ai.embedding.generate` | Generate vector embeddings |
-| `web.search` | Web search |
-| `web.search.realtime` | Realtime web search with time filters |
-| `web.search.news` | News search |
-| `crypto.token.price` | Crypto token price and changes |
-| `crypto.token.metadata` | Crypto token metadata |
+| ID                                | Description                                |
+| --------------------------------- | ------------------------------------------ |
+| `twitter.tweet_detail`            | Get tweet details and replies              |
+| `twitter.user_by_screen_name`     | Get user profile by username               |
+| `twitter.user_tweets`             | Get tweets from a user                     |
+| `twitter.user_tweets_and_replies` | Get tweets and replies from a user         |
+| `twitter.user_media`              | Get media posts from a user                |
+| `twitter.following`               | Get user following list                    |
+| `twitter.followers`               | Get user followers                         |
+| `twitter.retweeters`              | Get tweet retweeters                       |
+| `twitter.search`                  | Search tweets                              |
+| `ai.text.chat.fast`               | Fast AI chat completion                    |
+| `ai.text.chat.reasoning`          | Advanced reasoning chat                    |
+| `ai.text.chat.auto`               | Model-selected chat with provider fallback |
+| `ai.text.summarize`               | Summarize long text                        |
+| `ai.text.rewrite`                 | Rewrite text with different styles         |
+| `ai.embedding.generate`           | Generate vector embeddings                 |
+| `web.search`                      | Web search                                 |
+| `web.search.realtime`             | Realtime web search with time filters      |
+| `web.search.news`                 | News search                                |
+| `crypto.token.price`              | Crypto token price and changes             |
+| `crypto.token.metadata`           | Crypto token metadata                      |
 
 ## Security
 
@@ -596,3 +892,11 @@ current IDs and schemas.
 ## License
 
 MIT
+
+### Native framework deployment bundles
+
+Framework output can be exported with Wrangler's `deploy --dry-run --outfile
+dist/app.worker.bundle` and published through `xapi workers push`. The CLI
+retains native module names/types/bytes and separately publishes static Assets.
+See [the Workers guide](skills/xapi/guides/workers.md#framework-builds-publish-wranglers-complete-bundle)
+for configuration, supported metadata and current transport boundaries.
