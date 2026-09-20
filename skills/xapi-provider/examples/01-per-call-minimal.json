@@ -1,0 +1,21 @@
+{
+  "name": "Health Check API",
+  "description": "Simple status endpoint with fixed per-call billing.",
+  "category": "Public-Utils",
+  "host": "health-check-demo",
+  "baseUrl": "https://api.example.com",
+  "authType": "HEADER",
+  "privateHeaders": { "X-API-Key": "replace-with-upstream-secret" },
+  "accessMode": "PROXY",
+  "isPublic": true,
+  "endpoints": [
+    {
+      "name": "Get health status",
+      "description": "Returns upstream health and version information.",
+      "method": "GET",
+      "path": "/health",
+      "billingType": "PER_CALL",
+      "costPerCall": 0.001
+    }
+  ]
+}

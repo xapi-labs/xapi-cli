@@ -1,0 +1,30 @@
+{
+  "name": "Embeddings API",
+  "description": "Text embeddings with input-token billing.",
+  "category": "AI-Models",
+  "host": "embeddings-demo",
+  "baseUrl": "https://api.example.com",
+  "authType": "BEARER",
+  "privateHeaders": { "Authorization": "replace-with-upstream-token" },
+  "accessMode": "PROXY",
+  "endpoints": [
+    {
+      "name": "Generate embeddings",
+      "method": "POST",
+      "path": "/v1/embeddings",
+      "billingType": "PER_TOKEN",
+      "servedModels": ["embedding-model"],
+      "tokenPricing": {
+        "embedding-model": {
+          "inputPricePerToken": 0.0000001,
+          "outputPricePerToken": 0
+        },
+        "default": {
+          "inputPricePerToken": 0.0000001,
+          "outputPricePerToken": 0
+        }
+      },
+      "estimatedMaxTokens": 8191
+    }
+  ]
+}

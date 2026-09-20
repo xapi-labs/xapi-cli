@@ -31,6 +31,14 @@ AI services through this CLI. Then just ask
 — "what's the price of BTC" — and it takes it from there. Set up a key first;
 see [Quick Start](#quick-start).
 
+Providers can install the CLI-native [`xapi-provider` skill](skills/xapi-provider/SKILL.md),
+which covers service registration, billing and WebSocket configuration,
+revision publishing, observability, earnings, and linked usage Skills:
+
+```bash
+npx skills add xapi-labs/xapi-cli --skill xapi-provider
+```
+
 Workers projects can also install the standalone [`xapi-workers` skill](skills/xapi-workers/SKILL.md), covering deployment, all six managed resource types, complete consumption queries and cleanup:
 
 ```bash
