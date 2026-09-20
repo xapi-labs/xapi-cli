@@ -295,6 +295,7 @@ async function validateBundle(project: LoadedWorkerProject): Promise<LoadedWorke
             ),
           }
         : undefined,
+      project.config.containers,
     );
   } catch (error) {
     if (error instanceof WorkerArtifactError) {

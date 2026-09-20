@@ -15,6 +15,8 @@ xapi workers retention show <worker-id> --env preview --format json
 
 `billing-status` is platform configuration status, not an individual consumption bill. `workers usage` is a different diagnostic; it is not a replacement for complete ledger evidence. `billing prices` is the live xAPI price book: record its version and units, do not hard-code past acceptance prices.
 
+Container Applications add four provider-metered metrics: CPU seconds, memory byte-seconds, disk byte-seconds, and egress bytes. Worker request/CPU and Durable Object charges remain separate and can appear for the same business request. Match Container ledger rows by the saved Cloudflare application ID; never attribute account-wide Container totals by image name or class name. The five-minute collector is delayed postpaid observation and does not reserve or authorize each request.
+
 `metering` is a bounded diagnostic and may return truncated facts. There is no `metering --all` command. Use supported billing usage ranges/filters and the complete ledger for reconciliation; if raw facts remain truncated, request platform-operator evidence through an available authorized interface and mark coverage incomplete. Do not invent a pagination endpoint.
 
 ## One consistent snapshot

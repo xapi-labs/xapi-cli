@@ -185,6 +185,12 @@ RESOURCE FLAGS
   --binding NAME                Uppercase env binding, for example STATE or FILES
   --yes                         Required for physical resource destruction
 
+CONTAINERS
+  Declare prebuilt Container images in Wrangler and xapi.worker.json. Each
+  Container class must have a Durable Object resource in preview and production.
+  Container Applications are reconciled by plan/push; do not create them with
+  workers resources create.
+
 ADVANCED REMOTE RESOURCE COMMANDS
   These recovery/debug commands mutate live state without updating xapi.worker.json.
   resources list <worker-id> --env preview|production

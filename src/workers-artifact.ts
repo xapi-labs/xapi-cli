@@ -67,6 +67,17 @@ export interface WorkerArtifactBundle {
   modules: WorkerArtifactBundleModule[];
   observability?: { enabled: boolean };
   assets?: WorkerArtifactAssets;
+  containers?: WorkerContainerInput[];
+}
+
+export interface WorkerContainerInput {
+  name: string;
+  className: string;
+  image: string;
+  instanceType: 'lite' | 'basic' | 'standard-1' | 'standard-2' | 'standard-3' | 'standard-4';
+  maxInstances: number;
+  constraints?: { regions?: string[]; jurisdiction?: 'eu' | 'fedramp' };
+  rolloutActiveGracePeriod: number;
 }
 
 export type WorkerArtifactUploadInput =
@@ -513,8 +524,9 @@ export async function loadWorkerArtifactInput(
   outputPath: string,
   mainModule?: string,
   staticAssets?: WorkerStaticAssetsInput,
+  containers?: WorkerContainerInput[],
 ): Promise<LoadedWorkerArtifact> {
-  if (!outputPath.endsWith(".bundle")) return loadWorkerArtifact(outputPath, mainModule, staticAssets);
+  if (!outputPath.endsWith(".bundle")) return attachContainers(loadWorkerArtifact(outputPath, mainModule, staticAssets), containers);
   if (mainModule) throw new WorkerArtifactError("Wrangler bundles contain their own main_module; omit --main/build.main");
   if (!existsSync(outputPath) || !lstatSync(outputPath).isFile() || lstatSync(outputPath).isSymbolicLink()) {
     throw new WorkerArtifactError("Wrangler bundle must be a regular file");
@@ -552,7 +564,7 @@ export async function loadWorkerArtifactInput(
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) throw new WorkerArtifactError("Invalid Wrangler metadata");
   // Resource identities and credentials are owned by xAPI's control plane.
   // Do not silently import a native binding that has no managed equivalent here.
-  const known = new Set(["main_module", "bindings", "compatibility_date", "compatibility_flags", "observability"]);
+  const known = new Set(["main_module", "bindings", "compatibility_date", "compatibility_flags", "observability", "containers"]);
   const unknown = Object.keys(metadata).filter(key => !known.has(key));
   if (unknown.length) throw new WorkerArtifactError(`Native metadata needs explicit platform mapping: ${unknown.join(", ")}`);
   if (metadata.bindings !== undefined && (!Array.isArray(metadata.bindings) || metadata.bindings.some((binding: UnknownRecord) =>
@@ -588,12 +600,78 @@ export async function loadWorkerArtifactInput(
   if (!modules.some(module => module.path === main && module.contentType === "application/javascript+module")) throw new WorkerArtifactError("Native main_module is missing or not ESM");
   modules.sort((a,b) => a.path.localeCompare(b.path));
   const assets = staticAssets ? collectAssetFiles(staticAssets) : undefined;
-  const bundle: WorkerArtifactBundle = { version: 1, mainModule: main, modules, ...(observability ? {observability} : {}), ...(assets ? {assets} : {}) };
+  const nativeContainers = metadata.containers;
+  if (nativeContainers !== undefined && (!Array.isArray(nativeContainers) || nativeContainers.some((item) => !item || typeof item !== 'object' || Array.isArray(item) || typeof (item as UnknownRecord).class_name !== 'string' || Object.keys(item as UnknownRecord).some((key) => key !== 'class_name')))) {
+    throw new WorkerArtifactError('Native Container metadata needs explicit platform mapping');
+  }
+  const configuredClasses = [...(containers || [])].map((item) => item.className).sort();
+  const nativeClasses = [...((nativeContainers || []) as UnknownRecord[])].map((item) => String(item.class_name)).sort();
+  if (JSON.stringify(nativeClasses) !== JSON.stringify(configuredClasses)) {
+    throw new WorkerArtifactError('Wrangler Container classes differ from xapi.worker.json; rebuild or re-import before publishing');
+  }
+  const bundle: WorkerArtifactBundle = { version: 1, mainModule: main, modules, ...(observability ? {observability} : {}), ...(assets ? {assets} : {}), ...(containers?.length ? {containers} : {}) };
   assertArtifactContentLimit(bundle);
-  const stored = Buffer.from(JSON.stringify({ ...(observability ? {observability} : {}), version: 1, mainModule: main, modules: modules.map(module => ({
-    path: module.path, contentBase64: Buffer.from(module.content, module.encoding === "base64" ? "base64" : "utf8").toString("base64"), contentType: module.contentType,
-  })), ...(assets ? {assets} : {}) }));
+  const stored = storedBundleBytes(bundle);
   return { kind: "bundle", contentSha256: sha256(stored), sizeBytes: stored.length, upload: {bundle}, nativeMetadata: metadata };
+}
+
+function attachContainers(
+  artifact: LoadedWorkerArtifact,
+  containers?: WorkerContainerInput[],
+): LoadedWorkerArtifact {
+  if (!containers?.length) return artifact;
+  if (!('bundle' in artifact.upload)) {
+    const moduleCode = artifact.upload.moduleCode;
+    const bundle: WorkerArtifactBundle = {
+      version: 1,
+      mainModule: 'index.mjs',
+      modules: [{
+        path: 'index.mjs',
+        content: moduleCode,
+        encoding: 'utf8',
+        contentType: 'application/javascript+module',
+      }],
+      containers,
+    };
+    const bytes = storedBundleBytes(bundle);
+    return { kind: 'bundle', contentSha256: sha256(bytes), sizeBytes: bytes.length, upload: { bundle } };
+  }
+  const bundle = { ...artifact.upload.bundle, containers };
+  const bytes = storedBundleBytes(bundle);
+  return { ...artifact, contentSha256: sha256(bytes), sizeBytes: bytes.length, upload: { bundle } };
+}
+
+function storedBundleBytes(bundle: WorkerArtifactBundle): Buffer {
+  const modules = [...bundle.modules]
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map((module) => ({
+      path: module.path,
+      contentBase64:
+        module.encoding === 'base64'
+          ? module.content
+          : Buffer.from(module.content, 'utf8').toString('base64'),
+      contentType: module.contentType,
+    }));
+  const assets = bundle.assets
+    ? {
+        files: [...bundle.assets.files].sort((a, b) =>
+          a.path.localeCompare(b.path),
+        ),
+        ...(bundle.assets.binding ? { binding: bundle.assets.binding } : {}),
+        ...(bundle.assets.config ? { config: bundle.assets.config } : {}),
+      }
+    : undefined;
+  return Buffer.from(
+    JSON.stringify({
+      ...(bundle.observability ? { observability: bundle.observability } : {}),
+      ...(bundle.containers?.length ? { containers: bundle.containers } : {}),
+      version: 1,
+      mainModule: bundle.mainModule,
+      modules,
+      ...(assets ? { assets } : {}),
+    }),
+    'utf8',
+  );
 }
 
 export function validateNativeDeploymentMetadata(

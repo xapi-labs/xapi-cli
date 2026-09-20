@@ -44,7 +44,8 @@
     "demo:sandbox": "npm run build && node examples/sandbox-api-cli-openai.mjs",
     "example:sandbox:openai": "bun run examples/openai-agents-sandbox-local.ts",
     "test:sandbox:playground": "npm run build && node scripts/sandbox-playground-e2e.mjs",
-    "test:sandbox:openai": "bun run scripts/openai-sandbox-agent-e2e.ts"
+    "test:sandbox:openai": "bun run scripts/openai-sandbox-agent-e2e.ts",
+    "test:workers:container-local": "npm run build && node scripts/workers-container-local-e2e.mjs"
   },
   "engines": {
     "node": ">=18"

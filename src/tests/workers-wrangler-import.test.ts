@@ -28,6 +28,49 @@ function workspace(): string {
 }
 
 describe("Wrangler project import", () => {
+  test('imports a prebuilt native Container application and its Durable Object link', () => {
+    const root = workspace();
+    writeFileSync(join(root, 'package.json'), '{}');
+    writeFileSync(join(root, 'wrangler.jsonc'), JSON.stringify({
+      name: 'container-worker',
+      main: 'src/index.ts',
+      compatibility_date: '2026-09-21',
+      durable_objects: {
+        bindings: [{ name: 'TRADER', class_name: 'TraderContainer' }],
+      },
+      containers: [{
+        name: 'trader',
+        class_name: 'TraderContainer',
+        image: 'docker.io/example/trader:v1',
+        instance_type: 'lite',
+        max_instances: 3,
+        constraints: { regions: ['APAC'] },
+      }],
+    }, null, 2));
+    const result = importWranglerProject({ cwd: root, wranglerPath: 'wrangler.jsonc' });
+    expect(result.wrote).toBe(true);
+    expect(result.report.entries).toContainEqual(expect.objectContaining({
+      category: 'MANAGED', path: 'containers[0]',
+    }));
+    expect(loadWorkerProject(root).config.containers).toEqual([expect.objectContaining({
+      name: 'trader', className: 'TraderContainer', instanceType: 'lite', maxInstances: 3,
+    })]);
+  });
+
+  test('does not silently import a local Dockerfile as a remotely deployable image', () => {
+    const root = workspace();
+    writeFileSync(join(root, 'wrangler.jsonc'), JSON.stringify({
+      name: 'container-worker', main: 'src/index.ts',
+      durable_objects: { bindings: [{ name: 'APP', class_name: 'AppContainer' }] },
+      containers: [{ name: 'app', class_name: 'AppContainer', image: './Dockerfile' }],
+    }));
+    const result = importWranglerProject({ cwd: root, wranglerPath: 'wrangler.jsonc' });
+    expect(result.wrote).toBe(false);
+    expect(result.report.entries).toContainEqual(expect.objectContaining({
+      category: 'UNSUPPORTED', path: 'containers[0]',
+    }));
+  });
+
   test("reports every JSONC compatibility decision and blocks unsupported input", () => {
     const root = workspace();
     const path = join(root, "wrangler.jsonc");
