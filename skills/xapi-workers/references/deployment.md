@@ -75,6 +75,16 @@ npx wrangler deploy --dry-run \
 
 Set `build.output` to the generated `.worker.bundle`, omit `build.main`, and set `assets.directory` to the generated client directory. `--dry-run` only creates the local Cloudflare upload artifact; `xapi workers push` remains the only publisher. The CLI sends the complete modules/assets set in one authenticated multipart Artifact request. The import report must show every unmapped Wrangler field; never split a framework application into per-file API uploads to work around an import problem.
 
+Generated Wrangler configs may omit provider resource IDs and emit an
+`inherit` binding in the dry-run bundle. Declare that binding exactly once in
+the selected environment's `resources`; xAPI maps it by binding name and
+injects the environment-owned resource during deployment. Do not add a copied
+or placeholder Cloudflare resource ID merely to make the local bundle pass.
+
+For a package inside a pnpm, Yarn, or Bun workspace, run `init` from that
+package directory. The CLI uses the nearest lockfile up to the repository root
+and keeps the generated build command on the repository's package manager.
+
 Use the environment's returned `publicUrl` for actual requests. A custom-domain URL needs verified DNS/TLS readiness; do not construct a hostname or infer readiness from the organization name. Use application authentication, never the control-plane key, on this URL.
 
 The dispatcher reserves and strips incoming `x-xapi-*` headers. Use an

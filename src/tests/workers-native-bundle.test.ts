@@ -46,6 +46,14 @@ test('requires declared native bindings and own main_module',async()=>{
  await expect(loadWorkerArtifactInput(path,'index.js')).rejects.toThrow('omit');
 });
 
+test('maps Wrangler inherit bindings only through one declared xAPI resource',async()=>{
+ const path=bundle([{...metadata,content:JSON.stringify({main_module:'index.js',compatibility_date:'2026-09-10',bindings:[{name:'DB',type:'inherit'}]})},entry]);
+ const a=await loadWorkerArtifactInput(path);
+ expect(()=>validateNativeDeploymentMetadata(a,{compatibilityDate:'2026-09-10'},[])).toThrow('DB');
+ validateNativeDeploymentMetadata(a,{compatibilityDate:'2026-09-10'},[{bindingName:'DB',type:'d1_database'}]);
+ expect(JSON.stringify(a.upload)).not.toContain('inherit');
+});
+
 test('preserves observability in artifact identity and rejects unmapped settings', async () => {
  const path = bundle([{...metadata, content:JSON.stringify({...JSON.parse(metadata.content),observability:{enabled:true}})},entry]);
  const a = await loadWorkerArtifactInput(path);
