@@ -148,15 +148,22 @@ function detectFramework(
 }
 
 function packageManager(rootDir: string): { command: string; install: string } {
-  if (existsSync(join(rootDir, "pnpm-lock.yaml")))
-    return { command: "pnpm", install: "pnpm install" };
-  if (existsSync(join(rootDir, "yarn.lock")))
-    return { command: "yarn", install: "yarn install" };
-  if (
-    existsSync(join(rootDir, "bun.lock")) ||
-    existsSync(join(rootDir, "bun.lockb"))
-  )
-    return { command: "bun", install: "bun install" };
+  let current = rootDir;
+  while (true) {
+    if (existsSync(join(current, "pnpm-lock.yaml")))
+      return { command: "pnpm", install: "pnpm install" };
+    if (existsSync(join(current, "yarn.lock")))
+      return { command: "yarn", install: "yarn install" };
+    if (
+      existsSync(join(current, "bun.lock")) ||
+      existsSync(join(current, "bun.lockb"))
+    )
+      return { command: "bun", install: "bun install" };
+    if (existsSync(join(current, ".git"))) break;
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
   return { command: "npm", install: "npm install" };
 }
 

@@ -556,7 +556,7 @@ export async function loadWorkerArtifactInput(
   const unknown = Object.keys(metadata).filter(key => !known.has(key));
   if (unknown.length) throw new WorkerArtifactError(`Native metadata needs explicit platform mapping: ${unknown.join(", ")}`);
   if (metadata.bindings !== undefined && (!Array.isArray(metadata.bindings) || metadata.bindings.some((binding: UnknownRecord) =>
-    !binding || !["d1", "r2_bucket", "kv_namespace"].includes(String(binding.type)) || typeof binding.name !== "string"
+    !binding || !["d1", "r2_bucket", "kv_namespace", "inherit"].includes(String(binding.type)) || typeof binding.name !== "string"
   ))) throw new WorkerArtifactError("Native binding metadata needs explicit platform mapping; keep credentials in xAPI Secrets");
   if (metadata.compatibility_flags !== undefined && (!Array.isArray(metadata.compatibility_flags) || metadata.compatibility_flags.some(flag => typeof flag !== "string"))) throw new WorkerArtifactError("Invalid native compatibility flags");
   const observation = metadata.observability as UnknownRecord | undefined;
@@ -609,7 +609,11 @@ export function validateNativeDeploymentMetadata(
   }
   const managed: Record<string,string> = {d1: "d1_database", r2_bucket: "r2_bucket", kv_namespace: "kv_namespace"};
   for (const binding of (metadata.bindings || []) as UnknownRecord[]) {
-    if (!resources.some(resource => resource.bindingName === binding.name && resource.type === managed[String(binding.type)])) {
+    const matching = resources.filter(resource => resource.bindingName === binding.name);
+    const declared = binding.type === "inherit"
+      ? matching.length === 1 && Object.values(managed).includes(matching[0].type)
+      : matching.some(resource => resource.type === managed[String(binding.type)]);
+    if (!declared) {
       throw new WorkerArtifactError(`Native binding ${binding.name} is missing from xAPI resource declarations`);
     }
   }

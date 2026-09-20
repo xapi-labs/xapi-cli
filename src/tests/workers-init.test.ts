@@ -250,6 +250,31 @@ describe("workers init", () => {
     });
   });
 
+  test("uses the repository package manager for a nested workspace package", () => {
+    const cwd = workspace();
+    writeFileSync(join(cwd, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    mkdirSync(join(cwd, ".git"));
+    const target = join(cwd, "apps", "web");
+    mkdirSync(target, { recursive: true });
+    writeFileSync(
+      join(target, "package.json"),
+      JSON.stringify({
+        name: "nested-vite",
+        private: true,
+        scripts: { build: "vite build" },
+        dependencies: { react: "latest" },
+        devDependencies: { vite: "latest" },
+      }),
+    );
+
+    const result = initWorkerProject({ cwd, target: "apps/web" });
+    const pkg = JSON.parse(readFileSync(join(target, "package.json"), "utf8"));
+    expect(pkg.scripts["xapi:build"]).toBe(
+      "pnpm run build && pnpm run xapi:worker:build",
+    );
+    expect(result.nextSteps[0]).toBe("pnpm install");
+  });
+
   test("adopts a statically exported Next project and rejects SSR without mutation", () => {
     const cwd = workspace();
     const staticTarget = join(cwd, "next-static");
