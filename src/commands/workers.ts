@@ -89,7 +89,9 @@ COMMANDS
   resources remove --env preview|production|both --binding NAME
   resources destroy --env preview|production --binding NAME --yes
   secrets list <worker-id> --env preview|production
-  secrets set <worker-id> <NAME> --env ENV --from-env VARIABLE
+  secrets status <worker-id> --env preview|production
+  secrets set <worker-id> <NAME> --env ENV (--from-env VARIABLE | --stdin | --env-file .env)
+  secrets apply <worker-id> --env ENV --env-file .env [--delete OLD_NAME,OTHER_NAME]
   secrets delete <worker-id> <NAME> --env ENV --yes
   provider-status
   capabilities
@@ -191,7 +193,9 @@ ADVANCED REMOTE RESOURCE COMMANDS
 
 SECRET FLAGS
   --from-env VARIABLE           Read value from a local environment variable
-  --value VALUE                 Direct value (prefer --from-env to avoid shell history)
+  --stdin                       Read one value from stdin without shell history
+  --env-file PATH               Read one named value or apply all entries in memory
+  --delete NAME,NAME            Delete names in the same batch apply
 
 AUTHORIZATION
   API keys need workers:read for reads and workers:write for mutations.
@@ -395,6 +399,48 @@ function environment(value: string | undefined): string {
     err("--env must be preview or production");
   }
   return result;
+}
+
+export function parseWorkerSecretEnv(source:string):Record<string,string> {
+  const values:Record<string,string>={};
+  for(const [index,raw] of source.split(/\r?\n/).entries()) {
+    const line=raw.trim();
+    if(!line||line.startsWith('#'))continue;
+    const normalized=line.startsWith('export ')?line.slice(7).trim():line;
+    const separator=normalized.indexOf('=');
+    if(separator<=0)err(`invalid secret env entry on line ${index+1}`);
+    const name=normalized.slice(0,separator).trim();
+    if(!/^[A-Z][A-Z0-9_]{0,63}$/.test(name))err(`invalid secret name on line ${index+1}`);
+    let value=normalized.slice(separator+1).trim();
+    if((value.startsWith('"')&&value.endsWith('"'))||(value.startsWith("'")&&value.endsWith("'")))value=value.slice(1,-1);
+    if(!value)err(`secret ${name} is empty`);
+    values[name]=value;
+  }
+  return values;
+}
+
+async function readSecretStdin() {
+  let value='';
+  for await(const chunk of process.stdin)value+=chunk.toString();
+  value=value.replace(/[\r\n]+$/,'');
+  if(!value)err('stdin secret value is empty');
+  return value;
+}
+
+async function secretValue(flags:Record<string,string>,bindingName:string) {
+  const sources=['from-env','stdin','env-file'].filter(flag=>flags[flag]!==undefined);
+  if(sources.length!==1)err('choose exactly one of --from-env, --stdin, or --env-file');
+  if(flags['from-env']) {
+    const value=process.env[flags['from-env']];
+    if(!value)err(`environment variable ${flags['from-env']} is empty or missing`);
+    return value;
+  }
+  if(flags.stdin==='true')return readSecretStdin();
+  if(!flags['env-file']||flags['env-file']==='true')err('--env-file requires a path');
+  const values=parseWorkerSecretEnv(await readFile(resolve(flags['env-file']),'utf8'));
+  const key=flags['from-env']||bindingName;
+  if(!values[key])err(`secret ${key} is empty or missing from ${flags['env-file']}`);
+  return values[key];
 }
 
 const IGNORED_DIRECTORIES = new Set([
@@ -1542,26 +1588,19 @@ export async function workersCommand(
         );
         return;
       }
+      if (action === "status") {
+        assertFlags(flags,["env"]);
+        output(await client.workerSecretProviderStatus(options(),oneId(secretArgs,"usage: xapi-to workers secrets status <worker-id> --env ENV"),environment(flags.env)));
+        return;
+      }
       if (action === "set") {
-        assertFlags(flags, ["env", "from-env", "value"]);
+        assertFlags(flags, ["env", "from-env", "stdin", "env-file"]);
         if (secretArgs.length !== 2) {
           err(
-            "usage: xapi-to workers secrets set <worker-id> <NAME> --env ENV --from-env VARIABLE",
+            "usage: xapi-to workers secrets set <worker-id> <NAME> --env ENV (--from-env VARIABLE | --stdin | --env-file .env)",
           );
         }
-        if (flags["from-env"] && flags.value) {
-          err("use either --from-env or --value, not both");
-        }
-        const value = flags["from-env"]
-          ? process.env[flags["from-env"]]
-          : flags.value;
-        if (value === undefined || value === "true" || value === "") {
-          err(
-            flags["from-env"]
-              ? `environment variable ${flags["from-env"]} is empty or missing`
-              : "provide --from-env VARIABLE (recommended) or --value VALUE",
-          );
-        }
+        const value=await secretValue(flags,secretArgs[1]);
         output(
           await client.putWorkerSecret(
             options(),
@@ -1571,6 +1610,21 @@ export async function workersCommand(
             value,
           ),
         );
+        return;
+      }
+      if(action==="apply") {
+        assertFlags(flags,["env","env-file","delete"]);
+        const id=oneId(secretArgs,"usage: xapi-to workers secrets apply <worker-id> --env ENV --env-file .env [--delete NAME,NAME]");
+        if(!flags['env-file']||flags['env-file']==='true')err('--env-file requires a path');
+        const values=parseWorkerSecretEnv(await readFile(resolve(flags['env-file']),'utf8'));
+        const deletes=(flags.delete&&flags.delete!=='true'?flags.delete.split(',').map(name=>name.trim()).filter(Boolean):[]);
+        if(!Object.keys(values).length&&!deletes.length)err('secret apply input is empty');
+        const duplicates=deletes.filter(name=>Object.hasOwn(values,name));
+        if(duplicates.length)err(`cannot set and delete the same secret: ${duplicates.join(', ')}`);
+        output(await client.applyWorkerSecrets(options(),id,environment(flags.env),[
+          ...Object.entries(values).map(([name,value])=>({name,value})),
+          ...deletes.map(name=>({name,delete:true})),
+        ]));
         return;
       }
       if (action === "delete") {
@@ -1593,7 +1647,7 @@ export async function workersCommand(
         );
         return;
       }
-      err("usage: xapi-to workers secrets <list|set|delete> ...");
+      err("usage: xapi-to workers secrets <list|status|set|apply|delete> ...");
     }
     case "provider-status":
       assertFlags(flags);
