@@ -27,7 +27,7 @@ xapi workers secrets set <worker-id> APP_TOKEN --env preview --from-env APP_TOKE
 xapi workers logs <worker-id> --env preview --since 10m
 ```
 
-If provisioning requires an accepted retention quote, follow lifecycle.md and pass its exact `--retention-price-version VERSION`; do not invent a version. Supply secrets when the Worker exists and rerun the unchanged project command if a missing secret blocked deployment. Never report a blocked preflight as successful deployment.
+If provisioning requires an accepted retention quote, follow lifecycle.md and pass its exact `--retention-price-version VERSION`; do not invent a version. Configure credentials with [secrets.md](secrets.md); xAPI never needs a code deployment to retain or replay their values. Never report a blocked preflight as successful deployment.
 
 Use the Node and package-manager version required by the application before `plan` or `push`; the CLI runs the configured build command unchanged. If the project declares `engines.node`, activate a compatible runtime first. A build-runtime failure is an application build failure and must occur before any deployment write; rerun the same push only after correcting the local runtime.
 

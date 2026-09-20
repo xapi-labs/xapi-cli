@@ -18,6 +18,7 @@ Use the `xapi` CLI (`xapi-to` is the same executable). Verify `xapi workers --he
 
 - **Build/deploy/import/CI:** read [deployment.md](references/deployment.md).
 - **Use and verify resources:** read [resources.md](references/resources.md).
+- **Configure runtime credentials:** read [secrets.md](references/secrets.md). Values go to the environment's Cloudflare User Worker binding; never ask xAPI to reveal them.
 - **How much did it cost?** Read [billing.md](references/billing.md) before answering, collecting, or reconciling consumption.
 - **Pause/recover/delete/refund:** read [lifecycle.md](references/lifecycle.md) before lifecycle mutations.
 - **Buy or bind an xdomain domain:** read [domains.md](references/domains.md). Use the combined CLI command; do not manually create a CNAME to the Dispatcher or expose Cloudflare zone IDs.
