@@ -11,6 +11,7 @@ import {
   listWorkerDomains,
   createWorkerDomainChallenge,
   attachWorkerDomain,
+  applyWorkerSecrets,
   deleteWorkerDomain,
   retryWorkerDomain,
   rollbackWorker,
@@ -18,6 +19,7 @@ import {
   workerBillingQuery,
   workerInvocationLogs,
   workerProviderCapabilities,
+  workerSecretProviderStatus,
   workerRuntimeLogs,
   workerUsage,
   workerMeteredUsage,
@@ -30,6 +32,21 @@ let fetchSpy: ReturnType<typeof spyOn> | undefined;
 afterEach(() => fetchSpy?.mockRestore());
 
 describe("workers client", () => {
+  it("applies secret mutations without retrying or exposing values in the URL", async () => {
+    fetchSpy = spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({status:"ACTIVE"}),{status:200,headers:{"content-type":"application/json"}})) as any;
+    await applyWorkerSecrets(options,"worker/1","preview",[{name:"MODEL_KEY",value:"private-value"},{name:"OLD_KEY",delete:true}]);
+    const [target,init]=fetchSpy.mock.calls[0] as any[];
+    expect(target).toBe("https://test.xapi.to/api/v1/workers/worker%2F1/environments/preview/secrets");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body)).toEqual({secrets:[{name:"MODEL_KEY",value:"private-value"},{name:"OLD_KEY",delete:true}]});
+    expect(target).not.toContain("private-value");
+  });
+
+  it("reads provider secret status without values", async () => {
+    fetchSpy = spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({secrets:[{bindingName:"MODEL_KEY",providerPresent:true}]}),{status:200,headers:{"content-type":"application/json"}})) as any;
+    await workerSecretProviderStatus(options,"worker/1","production");
+    expect(fetchSpy.mock.calls[0][0]).toBe("https://test.xapi.to/api/v1/workers/worker%2F1/environments/production/secrets/provider-status");
+  });
   it("reads scoped source windows with the original xAPI authentication", async () => {
     fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ storageCollection: { items: [] } }), { status: 200, headers: { "content-type": "application/json" } })) as any;
     await workerMeteredUsage(options, "worker/1", "preview");
