@@ -1,0 +1,37 @@
+{
+  "name": "Multi-Model Chat API",
+  "description": "OpenAI-compatible chat with model-specific token pricing.",
+  "category": "AI-Models",
+  "host": "chat-multi-model",
+  "baseUrl": "https://api.example.com",
+  "authType": "BEARER",
+  "privateHeaders": { "Authorization": "replace-with-upstream-token" },
+  "accessMode": "PROXY",
+  "isPublic": true,
+  "endpoints": [
+    {
+      "name": "Create chat completion",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "billingType": "PER_TOKEN",
+      "servedModels": ["model-a", "model-b"],
+      "tokenPricing": {
+        "model-a": {
+          "inputPricePerToken": 0.000001,
+          "outputPricePerToken": 0.000003
+        },
+        "model-b": {
+          "inputPricePerToken": 0.000002,
+          "outputPricePerToken": 0.000006
+        },
+        "default": {
+          "inputPricePerToken": 0.000001,
+          "outputPricePerToken": 0.000003
+        }
+      },
+      "estimatedMaxTokens": 8192,
+      "supportsStreaming": true,
+      "streamFormat": "sse"
+    }
+  ]
+}

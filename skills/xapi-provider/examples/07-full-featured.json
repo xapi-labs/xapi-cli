@@ -1,0 +1,63 @@
+{
+  "name": "Provider Contract Demo",
+  "description": "HTTP and WebSocket endpoints with fixed, token, and resource billing.",
+  "category": "AI-Models",
+  "host": "provider-contract-demo",
+  "baseUrl": "https://api.example.com",
+  "authType": "HEADER",
+  "privateHeaders": { "X-API-Key": "replace-with-upstream-secret" },
+  "accessMode": "PROXY",
+  "isPublic": true,
+  "enableDetailedLogs": true,
+  "endpoints": [
+    {
+      "name": "Health",
+      "method": "GET",
+      "path": "/health",
+      "billingType": "PER_CALL",
+      "costPerCall": 0
+    },
+    {
+      "name": "Chat",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "billingType": "PER_TOKEN",
+      "tokenPricing": {
+        "default": {
+          "inputPricePerToken": 0.000001,
+          "outputPricePerToken": 0.000003
+        }
+      },
+      "estimatedMaxTokens": 4096,
+      "supportsStreaming": true,
+      "streamFormat": "sse"
+    },
+    {
+      "name": "Search",
+      "method": "GET",
+      "path": "/search",
+      "billingType": "PER_RESOURCE",
+      "costPerResource": 0.005,
+      "resourceCountJsonPath": "data.items",
+      "estimatedMaxResources": 100
+    },
+    {
+      "name": "Realtime session",
+      "method": "GET",
+      "path": "/v1/realtime",
+      "protocol": "WEBSOCKET",
+      "wsConfig": {
+        "upstreamUrl": "wss://realtime.example.com/v1/session",
+        "adapter": "openai-realtime",
+        "maxDurationSec": 900,
+        "maxConnPerKey": 2
+      },
+      "wsBilling": {
+        "kind": "realtime-token",
+        "inputTokenUsd": 0.000005,
+        "outputTokenUsd": 0.00002,
+        "holdUsd": 0.05
+      }
+    }
+  ]
+}

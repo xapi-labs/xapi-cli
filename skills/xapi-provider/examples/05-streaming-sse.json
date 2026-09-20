@@ -1,0 +1,27 @@
+{
+  "name": "Streaming Chat API",
+  "description": "SSE chat with token billing and final usage.",
+  "category": "AI-Models",
+  "host": "chat-streaming-sse",
+  "baseUrl": "https://api.example.com",
+  "authType": "BEARER",
+  "privateHeaders": { "Authorization": "replace-with-upstream-token" },
+  "accessMode": "PROXY",
+  "endpoints": [
+    {
+      "name": "Stream chat completion",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "billingType": "PER_TOKEN",
+      "tokenPricing": {
+        "default": {
+          "inputPricePerToken": 0.000001,
+          "outputPricePerToken": 0.000003
+        }
+      },
+      "estimatedMaxTokens": 4096,
+      "supportsStreaming": true,
+      "streamFormat": "sse"
+    }
+  ]
+}
