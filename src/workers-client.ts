@@ -609,6 +609,36 @@ export function putWorkerSecret(
   );
 }
 
+export function applyWorkerSecrets(
+  options: WorkersClientOptions,
+  id: string,
+  environment: string,
+  secrets: Array<{ name: string; value?: string; delete?: boolean }>,
+) {
+  return request<unknown>(
+    url(options,`/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/secrets`),
+    {
+      method: "PATCH",
+      headers: headers(options,true),
+      body: JSON.stringify({secrets}),
+    },
+    60_000,
+  );
+}
+
+export function workerSecretProviderStatus(
+  options: WorkersClientOptions,
+  id: string,
+  environment: string,
+) {
+  return request<unknown>(
+    url(options,`/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/secrets/provider-status`),
+    {headers:headers(options)},
+    30_000,
+    2,
+  );
+}
+
 export function deleteWorkerSecret(
   options: WorkersClientOptions,
   id: string,
