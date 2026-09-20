@@ -101,6 +101,14 @@
       "required": ["dailyBudgetUsd"],
       "properties": {
         "dailyBudgetUsd": { "type": "number", "minimum": 0.1, "maximum": 100 },
+        "defaultResourceLocation": {
+          "type": "string",
+          "enum": ["wnam", "enam", "weur", "eeur", "apac", "oc"]
+        },
+        "placementMode": {
+          "type": "string",
+          "enum": ["off", "smart"]
+        },
         "healthCheck": {
           "type": "string",
           "pattern": "^/(?!/)[^\\s]*$",

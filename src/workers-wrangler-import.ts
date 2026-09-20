@@ -58,6 +58,8 @@ export interface ImportWranglerProjectOptions {
   buildMain?: string;
   previewDailyBudgetUsd?: number;
   productionDailyBudgetUsd?: number;
+  defaultResourceLocation?: "wnam" | "enam" | "weur" | "eeur" | "apac" | "oc";
+  placementMode?: "off" | "smart";
 }
 
 export interface ImportWranglerProjectResult {
@@ -947,12 +949,16 @@ export function importWranglerProject(
     environments: {
       preview: {
         dailyBudgetUsd: budget(options.previewDailyBudgetUsd, "preview"),
+        ...(options.defaultResourceLocation ? { defaultResourceLocation: options.defaultResourceLocation } : {}),
+        ...(options.placementMode ? { placementMode: options.placementMode } : {}),
         healthCheck: "/health",
         resources: previewResources,
         secrets: previewSecrets,
       },
       production: {
         dailyBudgetUsd: budget(options.productionDailyBudgetUsd, "production"),
+        ...(options.defaultResourceLocation ? { defaultResourceLocation: options.defaultResourceLocation } : {}),
+        ...(options.placementMode ? { placementMode: options.placementMode } : {}),
         healthCheck: "/health",
         resources: productionResources,
         secrets: productionSecrets,

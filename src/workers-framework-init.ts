@@ -35,6 +35,8 @@ export interface InitExistingFrameworkOptions {
   compatibilityDate: string;
   previewDailyBudgetUsd: number;
   productionDailyBudgetUsd: number;
+  defaultResourceLocation?: "wnam" | "enam" | "weur" | "eeur" | "apac" | "oc";
+  placementMode?: "off" | "smart";
   framework?: string;
 }
 
@@ -284,12 +286,16 @@ export function initExistingFrameworkProject(
     environments: {
       preview: {
         dailyBudgetUsd: options.previewDailyBudgetUsd,
+        ...(options.defaultResourceLocation ? { defaultResourceLocation: options.defaultResourceLocation } : {}),
+        ...(options.placementMode ? { placementMode: options.placementMode } : {}),
         healthCheck: "/health",
         resources: [],
         secrets: [],
       },
       production: {
         dailyBudgetUsd: options.productionDailyBudgetUsd,
+        ...(options.defaultResourceLocation ? { defaultResourceLocation: options.defaultResourceLocation } : {}),
+        ...(options.placementMode ? { placementMode: options.placementMode } : {}),
         healthCheck: "/health",
         resources: [],
         secrets: [],

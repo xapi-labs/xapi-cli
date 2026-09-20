@@ -37,6 +37,12 @@ cd my-service
 xapi workers plan --env preview
 ```
 
+For an APAC-oriented service, initialize or edit the environment desired state
+with `defaultResourceLocation: "apac"` and `placementMode: "smart"`. The first
+setting applies only when xAPI creates new D1/R2 resources; the second emits
+Cloudflare's native Smart Placement metadata on Worker deployment. Workers
+remain global, and neither setting moves existing stored data.
+
 Choose the API host explicitly: `api.test.xapi.to` operates test-platform
 resources; `api.xapi.to` operates production-platform resources. `--env preview`
 selects a project's preview environment on that host, not the test API. A
@@ -67,7 +73,7 @@ npx wrangler deploy --dry-run \
   --outfile dist/app.worker.bundle
 ```
 
-Set `build.output` to the generated `.worker.bundle`, omit `build.main`, and set `assets.directory` to the generated client directory. `--dry-run` only creates the local Cloudflare upload artifact; `xapi workers push` remains the only publisher. The import report must show every unmapped Wrangler field; never split a framework application into per-file API uploads to work around an import problem.
+Set `build.output` to the generated `.worker.bundle`, omit `build.main`, and set `assets.directory` to the generated client directory. `--dry-run` only creates the local Cloudflare upload artifact; `xapi workers push` remains the only publisher. The CLI sends the complete modules/assets set in one authenticated multipart Artifact request. The import report must show every unmapped Wrangler field; never split a framework application into per-file API uploads to work around an import problem.
 
 Use the environment's returned `publicUrl` for actual requests. A custom-domain URL needs verified DNS/TLS readiness; do not construct a hostname or infer readiness from the organization name. Use application authentication, never the control-plane key, on this URL.
 

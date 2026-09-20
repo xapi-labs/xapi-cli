@@ -116,6 +116,8 @@ const desiredSecretsSchema = z
 const environmentSchema = z
   .object({
     dailyBudgetUsd: z.number().min(0.1).max(100),
+    defaultResourceLocation: z.enum(["wnam", "enam", "weur", "eeur", "apac", "oc"]).optional(),
+    placementMode: z.enum(["off", "smart"]).optional(),
     healthCheck: z
       .string()
       .max(500)

@@ -72,11 +72,11 @@ export interface PushClient extends PlanClient, DeploymentClient {
     options: WorkersClientOptions,
     input: Record<string, unknown>,
   ): Promise<unknown>;
-  updateWorkerBudget(
+  updateWorkerEnvironment(
     options: WorkersClientOptions,
     id: string,
     environment: string,
-    dailyBudgetUsd: number,
+    input: { dailyBudgetUsd?: number; defaultResourceLocation?: string; placementMode?: string },
   ): Promise<unknown>;
   createWorkerResource(
     options: WorkersClientOptions,
@@ -333,6 +333,12 @@ async function ensureWorker(
         previewDailyBudgetUsd: desired.environments.preview.dailyBudgetUsd,
         productionDailyBudgetUsd:
           desired.environments.production.dailyBudgetUsd,
+        ...(desired.environments.preview.defaultResourceLocation
+          ? { defaultResourceLocation: desired.environments.preview.defaultResourceLocation }
+          : {}),
+        ...(desired.environments.preview.placementMode
+          ? { placementMode: desired.environments.preview.placementMode }
+          : {}),
       }),
       "created Worker",
     );
@@ -353,28 +359,32 @@ async function ensureWorker(
   return { worker: created, id, created: true };
 }
 
-async function ensureBudget(
+async function ensureEnvironment(
   api: PushClient,
   options: WorkersClientOptions,
   workerId: string,
-  desired: number,
+  desired: LoadedWorkerProject["config"]["environments"]["preview"],
 ): Promise<void> {
   let worker = record(await api.getWorker(options, workerId), "Worker");
   let environment = environmentOf(worker, "preview");
-  if (
-    Math.abs((amount(environment.dailyBudgetUsd) ?? NaN) - desired) <= 0.00005
-  ) {
+  const matches = () =>
+    Math.abs((amount(environment.dailyBudgetUsd) ?? NaN) - desired.dailyBudgetUsd) <= 0.00005 &&
+    (!desired.defaultResourceLocation || text(environment.defaultResourceLocation) === desired.defaultResourceLocation) &&
+    (!desired.placementMode || (text(environment.placementMode) || "off") === desired.placementMode);
+  if (matches()) {
     return;
   }
   try {
-    await api.updateWorkerBudget(options, workerId, "preview", desired);
+    await api.updateWorkerEnvironment(options, workerId, "preview", {
+      dailyBudgetUsd: desired.dailyBudgetUsd,
+      ...(desired.defaultResourceLocation ? { defaultResourceLocation: desired.defaultResourceLocation } : {}),
+      ...(desired.placementMode ? { placementMode: desired.placementMode } : {}),
+    });
   } catch (error) {
     if (!shouldReconcileWrite(error)) throw error;
     worker = record(await api.getWorker(options, workerId), "Worker");
     environment = environmentOf(worker, "preview");
-    if (
-      Math.abs((amount(environment.dailyBudgetUsd) ?? NaN) - desired) > 0.00005
-    ) {
+    if (!matches()) {
       throw error;
     }
   }
@@ -823,11 +833,11 @@ export async function pushWorkerProject(
   }
   const linkedProject = loadWorkerProject(project.rootDir, project.configPath);
   try {
-    await ensureBudget(
+    await ensureEnvironment(
       api,
       options.clientOptions,
       workerState.id,
-      linkedProject.config.environments.preview.dailyBudgetUsd,
+      linkedProject.config.environments.preview,
     );
     const resources = await ensureManagedResources(
       api,

@@ -36,7 +36,7 @@ export type PromotionCheckStatus =
 
 export interface WorkerPromotionCheck {
   status: PromotionCheckStatus;
-  kind: "budget" | "resource" | "secret" | "routing";
+  kind: "budget" | "placement" | "resource" | "secret" | "routing";
   key: string;
   message: string;
   command?: string;
@@ -185,6 +185,32 @@ function productionChecks(
     });
   }
 
+  const currentDefaultLocation = text(remoteEnvironment.defaultResourceLocation);
+  const currentPlacementMode = text(remoteEnvironment.placementMode) || "off";
+  const placementMismatch =
+    (desired.defaultResourceLocation && currentDefaultLocation !== desired.defaultResourceLocation) ||
+    (desired.placementMode && currentPlacementMode !== desired.placementMode);
+  if (placementMismatch) {
+    const flags = [
+      desired.defaultResourceLocation ? `--data-location ${desired.defaultResourceLocation}` : "",
+      desired.placementMode ? `--placement ${desired.placementMode}` : "",
+    ].filter(Boolean).join(" ");
+    checks.push({
+      status: "BLOCKED",
+      kind: "placement",
+      key: "production",
+      message: "Production environment placement differs from desired state",
+      command: `xapi workers environment ${workerId} production ${flags}`,
+    });
+  } else if (desired.defaultResourceLocation || desired.placementMode) {
+    checks.push({
+      status: "NO_CHANGE",
+      kind: "placement",
+      key: "production",
+      message: "Production environment placement matches desired state",
+    });
+  }
+
   const remoteResources = new Map<string, UnknownRecord>();
   for (const resource of resources) {
     const bindingName = text(resource.bindingName);
@@ -286,8 +312,8 @@ function productionChecks(
   }
   checks.sort(
     (a, b) =>
-      ({ routing: 0, budget: 1, resource: 2, secret: 3 })[a.kind] -
-        { routing: 0, budget: 1, resource: 2, secret: 3 }[b.kind] ||
+      ({ routing: 0, budget: 1, placement: 2, resource: 3, secret: 4 })[a.kind] -
+        { routing: 0, budget: 1, placement: 2, resource: 3, secret: 4 }[b.kind] ||
       a.key.localeCompare(b.key),
   );
   return { checks, dataRisk: dataRisk.sort() };

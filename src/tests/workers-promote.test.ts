@@ -89,6 +89,8 @@ function fakePlatform(
     secrets?: string[];
     failDeployOnce?: boolean;
     webAppReady?: boolean;
+    defaultResourceLocation?: string;
+    placementMode?: string;
   } = {},
 ) {
   const previewDeployments: Array<Record<string, unknown>> = [
@@ -148,6 +150,8 @@ function fakePlatform(
           dailyBudgetUsd: options.budget ?? 2,
           publicUrl: "https://agent.example.test/w/ref/production",
           webAppReady: options.webAppReady,
+          defaultResourceLocation: options.defaultResourceLocation,
+          placementMode: options.placementMode,
         },
       ],
       artifacts,
@@ -189,6 +193,27 @@ function fakePlatform(
 }
 
 describe("workers promote", () => {
+  test("blocks production promotion until declared placement matches", async () => {
+    const root = fixture();
+    const path = join(root, "xapi.worker.json");
+    const config = JSON.parse(await Bun.file(path).text());
+    config.environments.production.defaultResourceLocation = "apac";
+    config.environments.production.placementMode = "smart";
+    writeFileSync(path, JSON.stringify(config));
+    const prepared = await createWorkerPromotionPlan({
+      cwd: root,
+      to: "production",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: fakePlatform({ placementMode: "off" }).client,
+    });
+    expect(prepared.plan.canPromote).toBe(false);
+    expect(prepared.plan.production.checks).toContainEqual(expect.objectContaining({
+      status: "BLOCKED",
+      kind: "placement",
+      command: expect.stringContaining("--data-location apac --placement smart"),
+    }));
+  });
+
   test("promotes the exact latest ACTIVE preview Artifact, waits, health-checks, and repeats safely", async () => {
     const root = fixture();
     const platform = fakePlatform({ failDeployOnce: true });

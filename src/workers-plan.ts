@@ -31,6 +31,7 @@ export type WorkerPlanOperation =
 export type WorkerPlanKind =
   | "worker"
   | "budget"
+  | "placement"
   | "resource"
   | "secret"
   | "routing"
@@ -125,11 +126,12 @@ type DesiredResource =
 const KIND_ORDER: Record<WorkerPlanKind, number> = {
   worker: 0,
   budget: 1,
-  resource: 2,
-  secret: 3,
-  routing: 4,
-  artifact: 5,
-  deployment: 6,
+  placement: 2,
+  resource: 3,
+  secret: 4,
+  routing: 5,
+  artifact: 6,
+  deployment: 7,
 };
 
 function record(value: unknown): UnknownRecord | undefined {
@@ -814,6 +816,35 @@ export async function createWorkerPlan(
       options.environment,
       "Daily budget already matches desired state",
       { dailyBudgetUsd: desired.dailyBudgetUsd },
+    );
+  }
+
+  const desiredPlacement = {
+    ...(desired.defaultResourceLocation ? { defaultResourceLocation: desired.defaultResourceLocation } : {}),
+    ...(desired.placementMode ? { placementMode: desired.placementMode } : {}),
+  };
+  if (Object.keys(desiredPlacement).length) {
+    const currentPlacement = {
+      ...(string(remoteEnvironmentState?.defaultResourceLocation)
+        ? { defaultResourceLocation: string(remoteEnvironmentState?.defaultResourceLocation) }
+        : {}),
+      placementMode: string(remoteEnvironmentState?.placementMode) || "off",
+    };
+    const matches =
+      (!desired.defaultResourceLocation || currentPlacement.defaultResourceLocation === desired.defaultResourceLocation) &&
+      (!desired.placementMode || currentPlacement.placementMode === desired.placementMode);
+    add(
+      actions,
+      remoteEnvironmentState ? (matches ? "NO_CHANGE" : "UPDATE") : "CREATE",
+      "placement",
+      options.environment,
+      remoteEnvironmentState
+        ? matches
+          ? "Environment placement already matches desired state"
+          : "Update native Cloudflare environment placement before deployment"
+        : "Set native Cloudflare environment placement during Worker creation",
+      desiredPlacement,
+      remoteEnvironmentState ? currentPlacement : undefined,
     );
   }
 

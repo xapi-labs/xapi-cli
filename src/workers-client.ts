@@ -129,6 +129,43 @@ export function uploadWorkerArtifact(
   id: string,
   input: WorkerArtifactUploadRequest,
 ) {
+  if ("bundle" in input) {
+    const form = new FormData();
+    const files: Blob[] = [];
+    const file = (content: string, encoding: "utf8" | "base64", type: string) => {
+      const bytes = Buffer.from(content, encoding === "base64" ? "base64" : "utf8");
+      const index = files.length;
+      files.push(new Blob([bytes], { type }));
+      return index;
+    };
+    const manifest = {
+      version: 2,
+      idempotencyKey: input.idempotencyKey,
+      mainModule: input.bundle.mainModule,
+      modules: input.bundle.modules.map((module) => ({
+        path: module.path,
+        contentType: module.contentType,
+        fileIndex: file(module.content, module.encoding, module.contentType),
+      })),
+      ...(input.bundle.observability ? { observability: input.bundle.observability } : {}),
+      ...(input.bundle.assets ? { assets: {
+        files: input.bundle.assets.files.map((asset) => ({
+          path: asset.path,
+          contentType: asset.contentType,
+          fileIndex: file(asset.content, "base64", asset.contentType),
+        })),
+        ...(input.bundle.assets.binding ? { binding: input.bundle.assets.binding } : {}),
+        ...(input.bundle.assets.config ? { config: input.bundle.assets.config } : {}),
+      } } : {}),
+    };
+    form.append("manifest", JSON.stringify(manifest));
+    files.forEach((blob, index) => form.append("files", blob, `artifact-${index}`));
+    return request<unknown>(
+      url(options, `/${encodeURIComponent(id)}/artifacts/bundle`),
+      { method: "POST", headers: headers(options), body: form },
+      180_000,
+    );
+  }
   return request<unknown>(
     url(options, `/${encodeURIComponent(id)}/artifacts`),
     {
@@ -137,6 +174,22 @@ export function uploadWorkerArtifact(
       body: JSON.stringify(input),
     },
     60_000,
+  );
+}
+
+export function updateWorkerEnvironment(
+  options: WorkersClientOptions,
+  id: string,
+  environment: string,
+  input: {
+    dailyBudgetUsd?: number;
+    defaultResourceLocation?: "wnam" | "enam" | "weur" | "eeur" | "apac" | "oc";
+    placementMode?: "off" | "smart";
+  },
+) {
+  return request<unknown>(
+    url(options, `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}`),
+    { method: "PATCH", headers: headers(options, true), body: JSON.stringify(input) },
   );
 }
 
@@ -195,17 +248,7 @@ export function updateWorkerBudget(
   environment: string,
   dailyBudgetUsd: number,
 ) {
-  return request<unknown>(
-    url(
-      options,
-      `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}`,
-    ),
-    {
-      method: "PATCH",
-      headers: headers(options, true),
-      body: JSON.stringify({ dailyBudgetUsd }),
-    },
-  );
+  return updateWorkerEnvironment(options, id, environment, { dailyBudgetUsd });
 }
 
 export function deleteWorker(options: WorkersClientOptions, id: string) {

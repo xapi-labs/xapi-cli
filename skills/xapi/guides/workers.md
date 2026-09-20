@@ -287,11 +287,12 @@ and must be configured through xAPI schedules. The granular `workers upload`
 command is artifact-only; use the project `push` workflow for coordinated
 compatibility, resource, secret and asset handling.
 
-Current xAPI transport limits remain 200 modules / 10 MiB decoded modules and
-12 MiB decoded modules plus assets. These are xAPI limits, not a statement of
-CF's full native capacity. If exceeded, report the unsupported deployment;
-never split a project into unrelated deployments or edit framework output to
-work around the limit.
+Project publishing uses one authenticated multipart Artifact request, then xAPI
+stores an immutable content-addressed manifest. Limits are 200 modules / 10 MiB
+decoded module content, 10,000 assets / 25 MiB per asset, and 100 MiB total
+decoded project content. These are xAPI limits, not a statement of CF's full
+native capacity. If exceeded, report the unsupported deployment; never split a
+project into unrelated deployments or edit framework output to work around it.
 
 A `PATH_FALLBACK` URL is not a root-hosted Web application URL. Do not rewrite
 application routes or configure GitHub callbacks against an invented host.
@@ -426,12 +427,11 @@ Artifact and the platform completes Cloudflare's native static-assets upload:
 }
 ```
 
-Wrangler imports preserve supported `assets` settings. Cloudflare permits up to
-25 MiB per asset and 100,000 assets per version. Asset content stays separate
-from Worker modules and is never silently dropped. The current xAPI JSON
-Artifact transport accepts at most 12 MiB of decoded modules and assets in one
-deployment; split larger sites before upload until the multipart Artifact
-transport is available.
+Wrangler imports preserve supported `assets` settings. xAPI accepts up to
+10,000 assets, 25 MiB per asset, and 100 MiB of decoded project content in one
+multipart Artifact request. Asset content stays separate from Worker modules
+and is never silently dropped. The backend stores content-addressed blobs and
+reassembles the exact immutable bundle for Cloudflare's native asset upload.
 
 Save the returned Artifact `id`, then deploy that exact Artifact to preview:
 
@@ -668,5 +668,21 @@ Choose the expected primary data-access region when a project creates D1 or R2. 
 ```
 
 Supported location hints are `wnam`, `enam`, `weur`, `eeur`, `apac`, and `oc`. `readReplication` is D1-only and accepts `auto` or `disabled`. Omitting these fields preserves the existing compatible behavior.
+
+Set an environment default when every newly created D1/R2 resource should use
+the same location, and optionally enable Cloudflare Smart Placement:
+
+```json
+{
+  "dailyBudgetUsd": 0.25,
+  "defaultResourceLocation": "apac",
+  "placementMode": "smart"
+}
+```
+
+The equivalent targeted command is `xapi workers environment <worker-id>
+preview --data-location apac --placement smart`. A resource-level `location`
+overrides the environment default. Worker code remains globally deployed;
+Smart Placement is native Worker execution metadata, not a fixed Worker region.
 
 Location is creation-time placement. Changing it on an existing binding is blocked because Cloudflare cannot move an existing D1 database or R2 bucket in place. Create a new binding, migrate and verify the data, switch the application binding, and retain the old resource for rollback before deleting it.

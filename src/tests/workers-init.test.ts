@@ -231,6 +231,25 @@ describe("workers init", () => {
     expect(existsSync(join(target, "xapi-worker/index.ts"))).toBe(true);
   });
 
+  test("writes APAC data defaults and Smart Placement into both environments", () => {
+    const cwd = workspace();
+    initWorkerProject({
+      cwd,
+      target: "apac-worker",
+      defaultResourceLocation: "apac",
+      placementMode: "smart",
+    });
+    const project = loadWorkerProject(join(cwd, "apac-worker"));
+    expect(project.config.environments.preview).toMatchObject({
+      defaultResourceLocation: "apac",
+      placementMode: "smart",
+    });
+    expect(project.config.environments.production).toMatchObject({
+      defaultResourceLocation: "apac",
+      placementMode: "smart",
+    });
+  });
+
   test("adopts a statically exported Next project and rejects SSR without mutation", () => {
     const cwd = workspace();
     const staticTarget = join(cwd, "next-static");
