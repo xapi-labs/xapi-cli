@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { loadWorkerArtifactInput, validateNativeDeploymentMetadata } from '../workers-artifact.ts';
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root,{recursive:true,force:true}); });
@@ -62,4 +62,33 @@ test('preserves observability in artifact identity and rejects unmapped settings
  const plain = await loadWorkerArtifactInput(bundle([metadata,entry]));
  expect(a.contentSha256).not.toBe(plain.contentSha256);
  await expect(loadWorkerArtifactInput(bundle([{...metadata,content:JSON.stringify({...JSON.parse(metadata.content),observability:{enabled:true,unknown:true}})},entry]))).rejects.toThrow('mapping');
+});
+
+test('accepts Wrangler package diagnostics and the declared static assets binding', async () => {
+ const path = bundle([{...metadata, content:JSON.stringify({
+   ...JSON.parse(metadata.content),
+   bindings:[{name:'ASSETS',type:'assets'}],
+   package_dependencies:[{name:'wrangler',packageJsonVersion:'^4.135.0',installedVersion:'4.135.0'}],
+ })},entry]);
+ const assets = join(dirname(path), 'public');
+ mkdirSync(assets);
+ writeFileSync(join(assets, 'index.html'), '<h1>Jev Trader</h1>');
+ const a = await loadWorkerArtifactInput(path, undefined, {
+   directory: assets,
+   binding: 'ASSETS',
+ });
+ validateNativeDeploymentMetadata(a,{compatibilityDate:'2026-09-10',compatibilityFlags:['nodejs_compat']},[]);
+ expect(JSON.stringify(a.upload)).not.toContain('package_dependencies');
+});
+
+test('rejects undeclared native assets bindings and malformed package diagnostics', async () => {
+ const assetMetadata = {...metadata, content:JSON.stringify({
+   ...JSON.parse(metadata.content),
+   bindings:[{name:'ASSETS',type:'assets'}],
+ })};
+ await expect(loadWorkerArtifactInput(bundle([assetMetadata,entry]))).rejects.toThrow('binding metadata');
+ await expect(loadWorkerArtifactInput(bundle([{...metadata, content:JSON.stringify({
+   ...JSON.parse(metadata.content),
+   package_dependencies:[{name:'wrangler',installedVersion:'4.135.0',unexpected:true}],
+ })},entry]))).rejects.toThrow('package dependency');
 });
