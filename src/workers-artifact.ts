@@ -567,12 +567,32 @@ export async function loadWorkerArtifactInput(
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) throw new WorkerArtifactError("Invalid Wrangler metadata");
   // Resource identities and credentials are owned by xAPI's control plane.
   // Do not silently import a native binding that has no managed equivalent here.
-  const known = new Set(["main_module", "bindings", "compatibility_date", "compatibility_flags", "observability", "containers"]);
+  const known = new Set(["main_module", "bindings", "compatibility_date", "compatibility_flags", "observability", "containers", "package_dependencies"]);
   const unknown = Object.keys(metadata).filter(key => !known.has(key));
   if (unknown.length) throw new WorkerArtifactError(`Native metadata needs explicit platform mapping: ${unknown.join(", ")}`);
-  if (metadata.bindings !== undefined && (!Array.isArray(metadata.bindings) || metadata.bindings.some((binding: UnknownRecord) =>
-    !binding || !["d1", "r2_bucket", "kv_namespace"].includes(String(binding.type)) || typeof binding.name !== "string"
-  ))) throw new WorkerArtifactError("Native binding metadata needs explicit platform mapping; keep credentials in xAPI Secrets");
+  const packageDependencies = metadata.package_dependencies;
+  if (packageDependencies !== undefined && (
+    !Array.isArray(packageDependencies) ||
+    packageDependencies.length > 1000 ||
+    packageDependencies.some((dependency: UnknownRecord) =>
+      !dependency ||
+      typeof dependency !== "object" ||
+      Array.isArray(dependency) ||
+      Object.keys(dependency).some(key => !["name", "packageJsonVersion", "installedVersion"].includes(key)) ||
+      typeof dependency.name !== "string" ||
+      dependency.name.length < 1 ||
+      dependency.name.length > 500 ||
+      typeof dependency.packageJsonVersion !== "string" ||
+      dependency.packageJsonVersion.length > 500 ||
+      typeof dependency.installedVersion !== "string" ||
+      dependency.installedVersion.length > 500
+    )
+  )) throw new WorkerArtifactError("Invalid native package dependency metadata");
+  if (metadata.bindings !== undefined && (!Array.isArray(metadata.bindings) || metadata.bindings.some((binding: UnknownRecord) => {
+    if (!binding || typeof binding.name !== "string") return true;
+    if (["d1", "r2_bucket", "kv_namespace", "inherit"].includes(String(binding.type))) return false;
+    return binding.type !== "assets" || !staticAssets?.binding || binding.name !== staticAssets.binding;
+  }))) throw new WorkerArtifactError("Native binding metadata needs explicit platform mapping; keep credentials in xAPI Secrets");
   if (metadata.compatibility_flags !== undefined && (!Array.isArray(metadata.compatibility_flags) || metadata.compatibility_flags.some(flag => typeof flag !== "string"))) throw new WorkerArtifactError("Invalid native compatibility flags");
   const observation = metadata.observability as UnknownRecord | undefined;
   if (observation !== undefined && (!observation || typeof observation !== "object" || Array.isArray(observation) || typeof observation.enabled !== "boolean" || Object.keys(observation).some(key => key !== "enabled"))) throw new WorkerArtifactError("Native observability config needs explicit mapping");
@@ -690,7 +710,13 @@ export function validateNativeDeploymentMetadata(
   }
   const managed: Record<string,string> = {d1: "d1_database", r2_bucket: "r2_bucket", kv_namespace: "kv_namespace"};
   for (const binding of (metadata.bindings || []) as UnknownRecord[]) {
-    if (!resources.some(resource => resource.bindingName === binding.name && resource.type === managed[String(binding.type)])) {
+    if (binding.type === "assets" && artifact.upload && "bundle" in artifact.upload &&
+      artifact.upload.bundle.assets?.binding === binding.name) continue;
+    const matching = resources.filter(resource => resource.bindingName === binding.name);
+    const declared = binding.type === "inherit"
+      ? matching.length === 1 && Object.values(managed).includes(matching[0].type)
+      : matching.some(resource => resource.type === managed[String(binding.type)]);
+    if (!declared) {
       throw new WorkerArtifactError(`Native binding ${binding.name} is missing from xAPI resource declarations`);
     }
   }
