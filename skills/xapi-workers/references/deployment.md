@@ -51,6 +51,14 @@ production acceptance deployment can therefore use `api.xapi.to` with
 
 For an existing project use `xapi workers init --from-wrangler ./wrangler.jsonc` (TOML also supported). Generated framework configs may live below the project root, for example `dist/server/wrangler.json`; run the command from the package directory so xAPI writes `xapi.worker.json` beside `package.json` and resolves generated asset paths back to that root. Read its import report; do not auto-accept unsupported settings. xAPI creates environment-specific resources; do not copy another Cloudflare account's IDs.
 
+An initial Wrangler Durable Object migration containing only
+`new_sqlite_classes` is managed when its class set exactly matches the imported
+Durable Object bindings. xAPI creates those SQLite classes through managed
+Workers for Platforms exports and does not copy provider migration tags.
+Renames, deletions, regular-class migrations, repeated classes, and partial
+class sets remain blocked because they need an explicit state migration plan.
+`preview_urls` is also not copied: xAPI assigns the environment hostname.
+
 `xapi.worker.json` holds desired xAPI state and Worker ID; Wrangler holds entrypoint, compatibility and binding declarations. The persistent-agent template declares the six ordinary managed binding types so it can demonstrate the platform; Containers remain deployment-owned and must be declared explicitly. An ordinary application should declare only the resources its business logic uses. Do not add unrelated bindings merely to complete an acceptance checklist. Test the full resource matrix in a separate disposable Worker or environment, then clean up only that isolated test state. Install/build according to the generated project instructions. Inspect plans for missing permissions, prices, secrets, budget, and policy requirements.
 
 ```sh
