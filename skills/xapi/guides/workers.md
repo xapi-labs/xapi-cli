@@ -118,6 +118,13 @@ xapi workers push --env preview
 write a partial project unless the user explicitly accepts the report with
 `--accept-partial`.
 
+Wrangler `vars` are public plain-text bindings. The importer never copies their
+values and never silently converts them into encrypted Secrets. A non-empty
+`vars` block is reported as `UNSUPPORTED` until xAPI desired state has an
+explicit plain-text binding workflow. Move only genuinely sensitive values to
+`secrets`, set them with `workers secrets set`, and keep public values out of
+the generated project until the binding is supported.
+
 The project workflow does not require Git. Git repository, branch, and commit
 are optional provenance, not authentication and not a deployment prerequisite.
 It runs the configured build, creates the remote Worker when `workerId` is
@@ -230,6 +237,17 @@ vinext), use that configuration to produce the native upload bundle:
 ```bash
 npm run build
 npx wrangler deploy --dry-run --config dist/server/wrangler.json --outfile dist/app.worker.bundle
+```
+
+When `package.json` contains a framework `build:worker` script with Wrangler's
+`--outfile`, `init --from-wrangler` infers both the command and `.bundle` path.
+Review the generated `xapi.worker.json`. If the framework uses a custom script,
+provide the values during import instead of editing an ambiguous default:
+
+```bash
+xapi workers init --from-wrangler dist/server/wrangler.json \
+  --build-command "pnpm run package:worker" \
+  --build-output dist/app.worker.bundle
 ```
 
 Point the project build output to `dist/app.worker.bundle`; omit `build.main`.

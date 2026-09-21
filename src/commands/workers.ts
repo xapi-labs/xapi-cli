@@ -109,6 +109,9 @@ INIT FLAGS
   --template TEMPLATE                   worker|agent|chat|webhook|persistent-agent
   --from-wrangler PATH                  Import an existing wrangler.jsonc or wrangler.toml
   --accept-partial                      Write only after explicitly accepting unsupported fields
+  --build-command COMMAND               Override the imported project build command
+  --build-output PATH                   Override the deployable bundle/module path
+  --build-main PATH                     Entrypoint inside a build-output directory
   --name NAME                           Worker display name
   --slug SLUG                           Stable lowercase Worker slug
   --preview-budget 0.10..100            Default: 0.25
@@ -255,6 +258,9 @@ FLAGS
   --framework auto|react|vite|vue|next
   --from-wrangler PATH
   --accept-partial
+  --build-command COMMAND
+  --build-output PATH
+  --build-main PATH
   --name NAME
   --slug SLUG
   --preview-budget USD
@@ -527,6 +533,9 @@ export async function workersCommand(
         "template",
         "from-wrangler",
         "accept-partial",
+        "build-command",
+        "build-output",
+        "build-main",
         "name",
         "slug",
         "preview-budget",
@@ -552,12 +561,20 @@ export async function workersCommand(
         if (flags.force && flags.force !== "true") {
           err("--force does not accept a value");
         }
+        for (const flag of ["build-command", "build-output", "build-main"]) {
+          if (flags[flag] === "true" || flags[flag] === "") {
+            err(`--${flag} requires a value`);
+          }
+        }
         let result;
         try {
           result = importWranglerProject({
             wranglerPath: flags["from-wrangler"],
             acceptPartial: flags["accept-partial"] === "true",
             force: flags.force === "true",
+            buildCommand: flags["build-command"],
+            buildOutput: flags["build-output"],
+            buildMain: flags["build-main"],
             previewDailyBudgetUsd: flags["preview-budget"]
               ? budget(flags["preview-budget"], "--preview-budget")
               : 0.25,
@@ -582,6 +599,9 @@ export async function workersCommand(
       }
       if (flags["accept-partial"]) {
         err("--accept-partial is only valid with --from-wrangler");
+      }
+      for (const flag of ["build-command", "build-output", "build-main"]) {
+        if (flags[flag]) err(`--${flag} is only valid with --from-wrangler`);
       }
       if (flags.framework === "true" || flags.framework === "") {
         err("--framework requires auto, react, vite, vue, or next");

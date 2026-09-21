@@ -10,6 +10,9 @@ describe("Workers focused help", () => {
     expect(WORKERS_INIT_HELP).toContain("Existing React, Vite, Vue");
     expect(WORKERS_INIT_HELP).toContain("Existing Worker with Wrangler");
     expect(WORKERS_INIT_HELP).toContain("Next.js SSR");
+    expect(WORKERS_INIT_HELP).toContain("--build-command");
+    expect(WORKERS_INIT_HELP).toContain("--build-output");
+    expect(WORKERS_INIT_HELP).toContain("--build-main");
     expect(WORKERS_INIT_HELP).toContain("Re-running init is not a");
   });
 

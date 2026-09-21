@@ -5,7 +5,7 @@ description: Deploy, operate, and verify applications on xAPI-managed Cloudflare
 
 # xAPI Workers for Platforms
 
-Use the `xapi` CLI (`xapi-to` is the same executable). Verify `xapi workers --help` before using it; an older installation may lack these commands. Do not silently replace managed deployment with Wrangler direct deployment.
+Use the `xapi` CLI (`xapi-to` is the same executable). Verify `xapi workers --help` before using it; an older published installation may lack these commands even when the repository already contains them. Stop and report the version mismatch instead of silently replacing managed deployment with Wrangler direct deployment. Wrangler `deploy --dry-run --outfile` is allowed only as a local framework packaging step; the resulting Artifact must still be published with xAPI.
 
 ## Start with scope
 
