@@ -96,6 +96,7 @@ const MANAGED_TOP_LEVEL = new Set([
   "d1_databases",
   "r2_buckets",
   "durable_objects",
+  "migrations",
   "queues",
   "workflows",
   "containers",
@@ -105,6 +106,7 @@ const IGNORED_TOP_LEVEL = new Set([
   "$schema",
   "account_id",
   "workers_dev",
+  "preview_urls",
   "route",
   "routes",
   "dev",
@@ -555,6 +557,97 @@ function resourceList(
     });
 }
 
+function managedDurableObjectMigrations(
+  config: UnknownRecord,
+  prefix: string,
+  environment: "preview" | "production",
+  resources: DesiredResource[],
+  entries: WranglerCompatibilityEntry[],
+): void {
+  if (config.migrations === undefined || structurallyEmpty(config.migrations)) {
+    return;
+  }
+  if (!Array.isArray(config.migrations)) {
+    compatibilityEntry(
+      entries,
+      "UNSUPPORTED",
+      `${prefix}migrations`,
+      "Wrangler migrations must be an array",
+      { environment },
+    );
+    return;
+  }
+
+  const declaredClasses = new Set(
+    resources.flatMap((resource) =>
+      resource.type === "durable_object" &&
+      typeof resource.className === "string"
+        ? [resource.className]
+        : [],
+    ),
+  );
+  const migratedClasses = new Set<string>();
+  let valid = true;
+
+  config.migrations.forEach((value, index) => {
+    const path = `${prefix}migrations[${index}]`;
+    const migration = record(value);
+    const keys = migration ? Object.keys(migration) : [];
+    const classes = migration?.new_sqlite_classes;
+    if (
+      !migration ||
+      typeof migration.tag !== "string" ||
+      !migration.tag.trim() ||
+      !Array.isArray(classes) ||
+      classes.length < 1 ||
+      classes.some(
+        (className) =>
+          typeof className !== "string" ||
+          !CLASS_NAME.test(className) ||
+          !declaredClasses.has(className) ||
+          migratedClasses.has(className),
+      ) ||
+      keys.some((key) => key !== "tag" && key !== "new_sqlite_classes")
+    ) {
+      valid = false;
+      compatibilityEntry(
+        entries,
+        "UNSUPPORTED",
+        path,
+        "Only initial new_sqlite_classes migrations that exactly match managed Durable Object bindings can be imported; rename, delete, regular-class, and repeated-class migrations require an explicit migration workflow",
+        { environment },
+      );
+      return;
+    }
+    for (const className of classes as string[]) migratedClasses.add(className);
+  });
+
+  if (
+    valid &&
+    (migratedClasses.size !== declaredClasses.size ||
+      [...declaredClasses].some((className) => !migratedClasses.has(className)))
+  ) {
+    compatibilityEntry(
+      entries,
+      "UNSUPPORTED",
+      `${prefix}migrations`,
+      "Initial SQLite migrations must exactly match the Durable Object classes managed by this environment",
+      { environment },
+    );
+    return;
+  }
+
+  if (valid) {
+    compatibilityEntry(
+      entries,
+      "MANAGED",
+      `${prefix}migrations`,
+      "xAPI will create the declared SQLite Durable Object classes through managed Workers for Platforms exports; provider migration tags are not copied",
+      { environment, resourceType: "durable_object" },
+    );
+  }
+}
+
 function secretNames(
   config: UnknownRecord,
   prefix: string,
@@ -632,7 +725,9 @@ function inspectTopLevel(
         key,
         key === "account_id" || key === "route" || key === "routes"
           ? "Provider ownership is not transferred; xAPI uses its own Cloudflare account and routing"
-          : "This Wrangler deployment option is not copied into xAPI project state",
+          : key === "preview_urls"
+            ? "xAPI assigns an environment hostname, so Cloudflare preview URL generation is not copied"
+            : "This Wrangler deployment option is not copied into xAPI project state",
       );
     } else {
       if (structurallyEmpty(root[key])) continue;
@@ -788,6 +883,20 @@ export function importWranglerProject(
     desired.production.config,
     desired.production.prefix,
     "production",
+    entries,
+  );
+  managedDurableObjectMigrations(
+    desired.preview.config,
+    desired.preview.prefix,
+    "preview",
+    previewResources,
+    entries,
+  );
+  managedDurableObjectMigrations(
+    desired.production.config,
+    desired.production.prefix,
+    "production",
+    productionResources,
     entries,
   );
   const previewSecrets = secretNames(

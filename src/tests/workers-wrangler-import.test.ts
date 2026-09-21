@@ -200,6 +200,75 @@ database_id = "old-d1-id"
     expect(readFileSync(path, "utf8")).toBe(original);
   });
 
+  test("maps initial SQLite Durable Object migrations to xAPI managed exports", () => {
+    const root = workspace();
+    const path = join(root, "wrangler.toml");
+    writeFileSync(
+      path,
+      `name = "collaborative-canvas"
+main = "worker/worker.ts"
+compatibility_date = "2026-09-21"
+preview_urls = true
+
+[durable_objects]
+bindings = [{ name = "ROOM", class_name = "Room" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
+`,
+    );
+
+    const result = importWranglerProject({ cwd: root, wranglerPath: path });
+
+    expect(result.wrote).toBe(true);
+    expect(result.report.compatible).toBe(true);
+    expect(result.report.entries).toContainEqual(
+      expect.objectContaining({ category: "IGNORED", path: "preview_urls" }),
+    );
+    expect(
+      result.report.entries.filter(
+        (entry) => entry.category === "MANAGED" && entry.path === "migrations",
+      ),
+    ).toHaveLength(2);
+    expect(
+      loadWorkerProject(root).config.environments.preview.resources,
+    ).toEqual([
+      { type: "durable_object", bindingName: "ROOM", className: "Room" },
+    ]);
+  });
+
+  test("blocks Durable Object migrations that managed exports cannot preserve", () => {
+    const root = workspace();
+    const path = join(root, "wrangler.jsonc");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        name: "unsafe-migration",
+        main: "worker.ts",
+        durable_objects: {
+          bindings: [{ name: "ROOM", class_name: "RoomV2" }],
+        },
+        migrations: [
+          {
+            tag: "v2",
+            renamed_classes: [{ from: "Room", to: "RoomV2" }],
+          },
+        ],
+      }),
+    );
+
+    const result = importWranglerProject({ cwd: root, wranglerPath: path });
+
+    expect(result.wrote).toBe(false);
+    expect(result.report.entries).toContainEqual(
+      expect.objectContaining({
+        category: "UNSUPPORTED",
+        path: "migrations[0]",
+      }),
+    );
+  });
+
   test("requires force to replace only an existing xAPI project config", () => {
     const root = workspace();
     const path = join(root, "wrangler.jsonc");
