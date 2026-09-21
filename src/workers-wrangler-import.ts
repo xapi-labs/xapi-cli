@@ -10,6 +10,7 @@ import { basename, dirname, extname, relative, resolve, sep } from "node:path";
 import { parse as parseJsonc, printParseErrorCode } from "jsonc-parser";
 import { parse as parseToml } from "smol-toml";
 import {
+  assertWorkerContainerBindings,
   WORKER_PROJECT_CONFIG_FILE,
   WORKER_PROJECT_SCHEMA_URL,
   type LoadedWorkerProject,
@@ -102,6 +103,7 @@ const MANAGED_TOP_LEVEL = new Set([
   "durable_objects",
   "queues",
   "workflows",
+  "containers",
 ]);
 const REENTER_TOP_LEVEL = new Set(["secrets", "secrets_store_secrets"]);
 const PUBLIC_VARIABLE_TOP_LEVEL = new Set(["vars"]);
@@ -330,6 +332,69 @@ function staticAssets(
   }
   compatibilityEntry(entries, "SUPPORTED", "assets", "Static asset directory, binding, and routing settings will be preserved");
   return parsed.data;
+}
+
+function containerApplications(
+  preview: UnknownRecord,
+  production: UnknownRecord,
+  entries: WranglerCompatibilityEntry[],
+): WorkerProjectConfig['containers'] | undefined {
+  const previewContainers = preview.containers;
+  const productionContainers = production.containers;
+  if (previewContainers === undefined && productionContainers === undefined) return undefined;
+  if (JSON.stringify(previewContainers) !== JSON.stringify(productionContainers)) {
+    compatibilityEntry(entries, 'UNSUPPORTED', 'containers', 'Environment-specific Container application settings are not portable; use one shared Container configuration');
+    return undefined;
+  }
+  const source = Array.isArray(previewContainers) ? previewContainers : productionContainers;
+  if (!Array.isArray(source)) {
+    compatibilityEntry(entries, 'UNSUPPORTED', 'containers', 'Wrangler containers must be an array');
+    return undefined;
+  }
+  const candidates = source.map((raw, index) => {
+    const item = record(raw);
+    const path = `containers[${index}]`;
+    if (!item) {
+      compatibilityEntry(entries, 'UNSUPPORTED', path, 'Container configuration must be an object');
+      return null;
+    }
+    const retained = new Set(['name', 'class_name', 'image', 'instance_type', 'max_instances', 'constraints', 'rollout_active_grace_period']);
+    for (const key of Object.keys(item)) {
+      if (!retained.has(key)) compatibilityEntry(entries, 'UNSUPPORTED', `${path}.${key}`, 'This native Container option is not supported by xAPI yet');
+    }
+    const constraints = record(item.constraints);
+    if (constraints) {
+      for (const key of Object.keys(constraints)) {
+        if (!['regions', 'jurisdiction'].includes(key)) compatibilityEntry(entries, 'UNSUPPORTED', `${path}.constraints.${key}`, 'This Container placement constraint is not supported by xAPI yet');
+      }
+    }
+    const candidate = {
+      name: item.name,
+      className: item.class_name,
+      image: item.image,
+      ...(item.instance_type !== undefined ? { instanceType: item.instance_type } : {}),
+      ...(item.max_instances !== undefined ? { maxInstances: item.max_instances } : {}),
+      ...(constraints
+        ? {
+            constraints: {
+              ...(constraints.regions !== undefined ? { regions: constraints.regions } : {}),
+              ...(constraints.jurisdiction !== undefined ? { jurisdiction: constraints.jurisdiction } : {}),
+            },
+          }
+        : {}),
+      ...(item.rollout_active_grace_period !== undefined
+        ? { rolloutActiveGracePeriod: item.rollout_active_grace_period }
+        : {}),
+    };
+    const parsed = workerProjectConfigSchema.shape.containers.unwrap().element.safeParse(candidate);
+    if (!parsed.success) {
+      compatibilityEntry(entries, 'UNSUPPORTED', path, `Container configuration is invalid: ${parsed.error.issues[0]?.message || 'invalid configuration'}`);
+      return null;
+    }
+    compatibilityEntry(entries, 'MANAGED', path, 'xAPI will deploy this native Container application after its Worker and Durable Object namespace');
+    return parsed.data;
+  }).filter((item): item is NonNullable<typeof item> => !!item);
+  return candidates.length ? candidates : undefined;
 }
 
 function physicalFields(
@@ -846,6 +911,11 @@ export function importWranglerProject(
     sourceDir,
     rootDir,
   );
+  const containers = containerApplications(
+    desired.preview.config,
+    desired.production.config,
+    entries,
+  );
   const previewResources = resourceList(
     desired.preview.config,
     desired.preview.prefix,
@@ -946,6 +1016,7 @@ export function importWranglerProject(
       ...(build.main ? { main: build.main } : {}),
     },
     ...(assets ? { assets } : {}),
+    ...(containers ? { containers } : {}),
     environments: {
       preview: {
         dailyBudgetUsd: budget(options.previewDailyBudgetUsd, "preview"),
@@ -973,6 +1044,7 @@ export function importWranglerProject(
       `Imported project field ${issue.path.join(".") || "<root>"}: ${issue.message}`,
     );
   }
+  assertWorkerContainerBindings(parsed.data);
   writeFileSync(configPath, `${JSON.stringify(parsed.data, null, 2)}\n`, {
     encoding: "utf8",
     flag: "w",

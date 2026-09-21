@@ -456,6 +456,7 @@ async function localArtifact(project: LoadedWorkerProject, environment: "preview
             ),
           }
         : undefined,
+      project.config.containers,
     );
     validateNativeDeploymentMetadata(artifact, readWranglerDeploymentSettings(project, environment), project.config.environments[environment].resources);
     return {
