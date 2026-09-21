@@ -134,6 +134,22 @@ describe("Worker project configuration", () => {
     });
   });
 
+  test('requires every Container class to be a Durable Object in both environments', () => {
+    const container = {
+      name: 'trader', className: 'TraderContainer', image: 'docker.io/example/trader:v1',
+    };
+    const valid = fixture({
+      containers: [container],
+      environments: {
+        preview: { dailyBudgetUsd: 0.25, resources: [{ type: 'durable_object', bindingName: 'TRADER', className: 'TraderContainer' }] },
+        production: { dailyBudgetUsd: 2, resources: [{ type: 'durable_object', bindingName: 'TRADER', className: 'TraderContainer' }] },
+      },
+    });
+    expect(loadWorkerProject(valid).config.containers?.[0].instanceType).toBe('lite');
+    const invalid = fixture({ containers: [container] });
+    expect(() => loadWorkerProject(invalid)).toThrow('must match exactly one durable_object class in preview');
+  });
+
   test("accepts D1 and R2 placement and rejects it on unrelated resources", () => {
     const validRoot = fixture({
       environments: {

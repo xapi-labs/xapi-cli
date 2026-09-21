@@ -159,6 +159,50 @@ const staticAssetsSchema = z
   })
   .strict();
 
+export const workerContainerSchema = z
+  .object({
+    name: z.string().regex(/^[a-z](?:[a-z0-9-]{0,62}[a-z0-9])?$/),
+    className: z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/),
+    image: z
+      .string()
+      .max(512)
+      .regex(
+        /^(?:registry\.cloudflare\.com\/[a-f0-9]{32}\/[a-z0-9._/-]+(?::[a-zA-Z0-9._-]+|@sha256:[a-f0-9]{64})?|docker\.io\/[a-z0-9._-]+\/[a-z0-9._/-]+(?::[a-zA-Z0-9._-]+|@sha256:[a-f0-9]{64})?|[a-z0-9.-]+\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com\/[a-z0-9._/-]+(?::[a-zA-Z0-9._-]+|@sha256:[a-f0-9]{64})?|[a-z0-9.-]+-docker\.pkg\.dev\/[a-z0-9._/-]+(?::[a-zA-Z0-9._-]+|@sha256:[a-f0-9]{64})?)$/,
+        'must be a remote image in Cloudflare Registry, Docker Hub, ECR, or Artifact Registry',
+      ),
+    instanceType: z
+      .enum(['lite', 'basic', 'standard-1', 'standard-2', 'standard-3', 'standard-4'])
+      .default('lite'),
+    maxInstances: z.number().int().min(1).max(100).default(20),
+    constraints: z
+      .object({
+        regions: z
+          .array(z.enum(['ENAM', 'WNAM', 'EEUR', 'WEUR', 'APAC', 'SAM', 'ME', 'OC', 'AFR']))
+          .min(1)
+          .max(8)
+          .optional(),
+        jurisdiction: z.enum(['eu', 'fedramp']).optional(),
+      })
+      .strict()
+      .optional(),
+    rolloutActiveGracePeriod: z.number().int().min(0).max(86_400).default(0),
+  })
+  .strict();
+
+const containersSchema = z
+  .array(workerContainerSchema)
+  .max(10)
+  .superRefine((containers, context) => {
+    const names = new Set<string>();
+    const classes = new Set<string>();
+    containers.forEach((container, index) => {
+      if (names.has(container.name)) context.addIssue({ code: 'custom', path: [index, 'name'], message: 'must be unique' });
+      if (classes.has(container.className)) context.addIssue({ code: 'custom', path: [index, 'className'], message: 'must be unique' });
+      names.add(container.name);
+      classes.add(container.className);
+    });
+  });
+
 export const workerProjectConfigSchema = z
   .object({
     $schema: z.literal(WORKER_PROJECT_SCHEMA_URL).optional(),
@@ -186,6 +230,7 @@ export const workerProjectConfigSchema = z
       })
       .strict(),
     assets: staticAssetsSchema.optional(),
+    containers: containersSchema.optional(),
     environments: z
       .object({
         preview: environmentSchema,
@@ -196,6 +241,24 @@ export const workerProjectConfigSchema = z
   .strict();
 
 export type WorkerProjectConfig = z.infer<typeof workerProjectConfigSchema>;
+
+export function assertWorkerContainerBindings(config: WorkerProjectConfig): void {
+  for (const container of config.containers || []) {
+    for (const environment of ['preview', 'production'] as const) {
+      const matching = config.environments[environment].resources.filter(
+        (resource) =>
+          resource.type === 'durable_object' &&
+          resource.className === container.className,
+      );
+      if (matching.length !== 1) {
+        throw new WorkerProjectConfigError(
+          'worker_container_durable_object_missing',
+          `Container ${container.name} className ${container.className} must match exactly one durable_object class in ${environment}`,
+        );
+      }
+    }
+  }
+}
 
 export interface LoadedWorkerProject {
   configPath: string;
@@ -331,6 +394,7 @@ export function loadWorkerProject(
       `Invalid Worker project config: ${validationMessage(parsed.error)}`,
     );
   }
+  assertWorkerContainerBindings(parsed.data);
   return { configPath, rootDir: dirname(configPath), config: parsed.data };
 }
 

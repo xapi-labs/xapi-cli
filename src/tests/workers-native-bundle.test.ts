@@ -2,6 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { loadWorkerArtifactInput, validateNativeDeploymentMetadata } from '../workers-artifact.ts';
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root,{recursive:true,force:true}); });
@@ -54,4 +55,24 @@ test('preserves observability in artifact identity and rejects unmapped settings
  const plain = await loadWorkerArtifactInput(bundle([metadata,entry]));
  expect(a.contentSha256).not.toBe(plain.contentSha256);
  await expect(loadWorkerArtifactInput(bundle([{...metadata,content:JSON.stringify({...JSON.parse(metadata.content),observability:{enabled:true,unknown:true}})},entry]))).rejects.toThrow('mapping');
+});
+
+test('requires native Container classes to match the explicit xAPI deployment intent', async () => {
+ const container = {
+  name:'trader', className:'TraderContainer', image:'docker.io/example/trader:v1',
+  instanceType:'lite' as const, maxInstances:2, rolloutActiveGracePeriod:0,
+ };
+ const native = {...metadata, content:JSON.stringify({...JSON.parse(metadata.content),containers:[{class_name:'TraderContainer'}]})};
+ const artifact = await loadWorkerArtifactInput(bundle([native,entry]), undefined, undefined, [container]);
+ if (!('bundle' in artifact.upload)) throw Error('bundle');
+ expect(artifact.upload.bundle.containers).toEqual([container]);
+ const expectedStored = Buffer.from(JSON.stringify({
+  containers:[container], version:1, mainModule:'index.js', modules:[{
+   path:'index.js', contentBase64:Buffer.from(entry.content).toString('base64'),
+   contentType:'application/javascript+module',
+  }],
+ }));
+ expect(artifact.contentSha256).toBe(createHash('sha256').update(expectedStored).digest('hex'));
+ expect(artifact.sizeBytes).toBe(expectedStored.length);
+ await expect(loadWorkerArtifactInput(bundle([native,entry]), undefined, undefined, [])).rejects.toThrow('Container classes differ');
 });
