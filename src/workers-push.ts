@@ -7,14 +7,10 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { HttpError, isRetryableRequestError } from "./client.ts";
 import {
   type LoadedWorkerArtifact,
-  loadWorkerArtifactInput,
-  validateNativeDeploymentMetadata,
-  WorkerArtifactError,
   type WorkerArtifactUploadRequest,
 } from "./workers-artifact.ts";
 import type { WorkersClientOptions } from "./workers-client.ts";
@@ -23,21 +19,27 @@ import {
   type LoadedWorkerProject,
   WorkerProjectConfigError,
   loadWorkerProject,
-  resolveWorkerProjectPath,
   workerProjectConfigSchema,
 } from "./workers-project.ts";
 import {
-  createWorkerPlan,
+  prepareWorkerPlan,
   type PlanClient,
   type WorkerDeploymentPlan,
 } from "./workers-plan.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
 import { remoteWorkerResourceState } from "./workers-resource-state.ts";
 import { deploymentPrefix, deploymentKey, currentMatchingDeployment } from "./workers-deployment-state.ts";
+import {
+  inspectWorker,
+  type WorkerInspection,
+} from "./workers-inspect.ts";
+import {
+  WorkerProjectBuildError,
+  type WorkerProjectBuildRunner,
+} from "./workers-project-build.ts";
 
 const WORKER_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const BUILD_TIMEOUT_MS = 15 * 60_000;
 const DEPLOYMENT_TIMEOUT_MS = 3 * 60_000;
 const HEALTH_ATTEMPTS = 10;
 const HEALTH_INTERVAL_MS = 1_000;
@@ -56,6 +58,16 @@ export interface DeploymentClient {
 }
 
 export interface PushClient extends PlanClient, DeploymentClient {
+  listWorkerDomains(
+    options: WorkersClientOptions,
+    id: string,
+  ): Promise<unknown>;
+  workerBillingQuery(
+    options: WorkersClientOptions,
+    id: string,
+    environment: string,
+    kind: "prices" | "overview",
+  ): Promise<unknown>;
   createWorker(
     options: WorkersClientOptions,
     input: Record<string, unknown>,
@@ -121,7 +133,7 @@ export interface PushWorkerProjectOptions {
   client?: PushClient;
   confirm?: (plan: WorkerDeploymentPlan) => Promise<boolean>;
   onPlan?: (plan: WorkerDeploymentPlan) => void;
-  runBuild?: (command: string, cwd: string) => Promise<void>;
+  runBuild?: WorkerProjectBuildRunner;
   fetchPublic?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
 }
@@ -137,7 +149,8 @@ export interface WorkerPushResult {
   publicUrl: string;
   routing?: { mode?: string; webAppReady: boolean; publicOrigin?: string; publicBasePath?: string };
   health: { url: string; status: number; attempts: number };
-  commands: { logs: string; promote: string };
+  inspection: WorkerInspection;
+  commands: { inspect: string; logs: string; promote: string };
 }
 
 export class WorkerPushError extends Error {
@@ -201,62 +214,6 @@ function shouldReconcileWrite(error: unknown): boolean {
   );
 }
 
-function sanitizedBuildEnvironment(): NodeJS.ProcessEnv {
-  return Object.fromEntries(
-    Object.entries(process.env).filter(
-      ([name]) =>
-        !/(?:^|_)(?:API_?KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS?)(?:$|_)/i.test(
-          name,
-        ) && name !== "XAPI_KEY",
-    ),
-  );
-}
-
-async function defaultRunBuild(command: string, cwd: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, {
-      cwd,
-      env: sanitizedBuildEnvironment(),
-      shell: true,
-      stdio: "inherit",
-    });
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(
-        new WorkerPushError(
-          `Build exceeded the ${BUILD_TIMEOUT_MS / 60_000} minute timeout`,
-        ),
-      );
-    }, BUILD_TIMEOUT_MS);
-    child.once("error", (error) => {
-      clearTimeout(timer);
-      reject(new WorkerPushError(`Unable to start build: ${error.message}`));
-    });
-    child.once("exit", (code, signal) => {
-      clearTimeout(timer);
-      if (code === 0) resolve();
-      else {
-        reject(
-          new WorkerPushError(
-            code === 127
-              ? "Build command could not run because a required executable was not found"
-              : `Build failed${signal ? ` with ${signal}` : ` with exit code ${code}`}`,
-            {
-              buildCommand: command,
-              projectRoot: cwd,
-              ...(code === 127
-                ? {
-                    next: "Install the package manager used by build.command, then rerun workers push",
-                  }
-                : {}),
-            },
-          ),
-        );
-      }
-    });
-  });
-}
-
 async function terminalConfirm(): Promise<boolean> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new WorkerPushError(
@@ -272,35 +229,6 @@ async function terminalConfirm(): Promise<boolean> {
     return /^(?:y|yes)$/i.test(answer.trim());
   } finally {
     prompt.close();
-  }
-}
-
-async function validateBundle(project: LoadedWorkerProject): Promise<LoadedWorkerArtifact> {
-  const path = resolveWorkerProjectPath(
-    project,
-    project.config.build.output,
-    "build.output",
-  );
-  try {
-    return await loadWorkerArtifactInput(
-      path,
-      project.config.build.main,
-      project.config.assets
-        ? {
-            ...project.config.assets,
-            directory: resolveWorkerProjectPath(
-              project,
-              project.config.assets.directory,
-              "assets.directory",
-            ),
-          }
-        : undefined,
-    );
-  } catch (error) {
-    if (error instanceof WorkerArtifactError) {
-      throw new WorkerPushError(error.message);
-    }
-    throw error;
   }
 }
 
@@ -553,7 +481,7 @@ async function ensureArtifact(
   api: PushClient,
   options: WorkersClientOptions,
   workerId: string,
-  bundle: Awaited<ReturnType<typeof validateBundle>>,
+  bundle: LoadedWorkerArtifact,
 ): Promise<UnknownRecord> {
   const idempotencyKey = stableKey(
     "xapi-worker-artifact-v1",
@@ -823,17 +751,31 @@ export async function pushWorkerProject(
     );
   }
   const api = options.client || (workersClient as PushClient);
+  let prepared: Awaited<ReturnType<typeof prepareWorkerPlan>>;
+  try {
+    prepared = await prepareWorkerPlan({
+      cwd: options.cwd,
+      configPath: options.configPath,
+      environment: "preview",
+      clientOptions: options.clientOptions,
+      client: api,
+      runBuild: options.runBuild,
+    });
+  } catch (error) {
+    if (error instanceof WorkerProjectBuildError) {
+      throw new WorkerPushError(error.message, {
+        remoteChangesApplied: false,
+        ...error.recovery,
+      });
+    }
+    throw error;
+  }
   const project = loadWorkerProject(options.cwd, options.configPath);
   const initialConfig = readFileSync(project.configPath, "utf8");
   const initialConfigSha256 = sha256(initialConfig);
   const compatibility = readWranglerDeploymentSettings(project, "preview");
-  const initialPlan = await createWorkerPlan({
-    cwd: project.rootDir,
-    configPath: project.configPath,
-    environment: "preview",
-    clientOptions: options.clientOptions,
-    client: api,
-  });
+  const initialPlan = prepared.plan;
+  const bundle = prepared.bundle;
   options.onPlan?.(initialPlan);
   const blockers = unsafePlanBlockers(initialPlan, !project.config.workerId);
   if (blockers.length || (options.nonInteractive && !initialPlan.canApply)) {
@@ -903,7 +845,7 @@ export async function pushWorkerProject(
     );
     if (missing.length) {
       throw new WorkerPushError(
-        "Worker prerequisites were saved, but required Secrets are missing; build and deployment were not started",
+        "Worker prerequisites were saved, but required Secrets are missing; the validated local build was not uploaded or deployed",
         {
           workerId: workerState.id,
           missingSecrets: missing,
@@ -914,12 +856,6 @@ export async function pushWorkerProject(
         },
       );
     }
-    await (options.runBuild || defaultRunBuild)(
-      linkedProject.config.build.command,
-      linkedProject.rootDir,
-    );
-    const bundle = await validateBundle(linkedProject);
-    validateNativeDeploymentMetadata(bundle, compatibility, linkedProject.config.environments.preview.resources);
     const artifact = await ensureArtifact(
       api,
       options.clientOptions,
@@ -968,6 +904,12 @@ export async function pushWorkerProject(
     );
     const publicUrl = text(environmentOf(finalWorker, "preview").publicUrl)!;
     const finalEnvironment = environmentOf(finalWorker, "preview");
+    const inspection = await inspectWorker({
+      workerId: workerState.id,
+      environment: "preview",
+      clientOptions: options.clientOptions,
+      client: api,
+    });
     return {
       schemaVersion: 1,
       status: "ACTIVE",
@@ -996,7 +938,9 @@ export async function pushWorkerProject(
         publicBasePath: text(finalEnvironment.publicBasePath),
       } } : {}),
       health,
+      inspection,
       commands: {
+        inspect: `xapi workers inspect ${workerState.id} --env preview`,
         logs: `xapi workers logs ${workerState.id} --env preview`,
         promote: "xapi workers promote --to production",
       },

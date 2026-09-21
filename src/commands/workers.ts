@@ -10,7 +10,10 @@ import {
 } from "../workers-init.ts";
 import { listWorkerTemplates } from "../workers-templates.ts";
 import { importWranglerProject } from "../workers-wrangler-import.ts";
-import { createWorkerPlan } from "../workers-plan.ts";
+import {
+  prepareWorkerPlan,
+  type WorkerDeploymentPlan,
+} from "../workers-plan.ts";
 import {
   formatWorkerPlan,
   useHumanWorkerPlanOutput,
@@ -47,6 +50,7 @@ import {
   useHumanWorkerInspectionOutput,
 } from "../workers-inspect-output.ts";
 import { loadWorkerProject } from "../workers-project.ts";
+import { WorkerProjectBuildError } from "../workers-project-build.ts";
 
 export const WORKERS_HELP = `xapi-to workers - Deploy and manage xAPI-hosted Cloudflare Workers
 
@@ -115,6 +119,8 @@ RESOURCES, BILLING, AND LIFECYCLE
 CHOOSING A WORKFLOW
   Normal application: init -> plan -> push -> promote
   Read-only review: inspect; use plan when comparing local desired state
+  workers plan runs the local build and validates the exact Artifact, then
+  compares it with live state. It never writes to the xAPI control plane.
   workers build creates an Artifact in a managed Sandbox; it does not deploy.
   workers deploy activates an existing Artifact; it does not build or converge project state.
 
@@ -343,7 +349,7 @@ function options() {
 }
 
 function printWorkerPlan(
-  plan: Awaited<ReturnType<typeof createWorkerPlan>>,
+  plan: WorkerDeploymentPlan,
   flagFormat?: string,
 ) {
   if (
@@ -666,12 +672,22 @@ export async function workersCommand(
       if (flags.config === "true" || flags.config === "") {
         err("--config requires a path");
       }
-      const plan = await createWorkerPlan({
-        environment: environment(flags.env) as "preview" | "production",
-        configPath: flags.config,
-        clientOptions: options(),
-      });
-      printWorkerPlan(plan, flags.format);
+      try {
+        const prepared = await prepareWorkerPlan({
+          environment: environment(flags.env) as "preview" | "production",
+          configPath: flags.config,
+          clientOptions: options(),
+        });
+        printWorkerPlan(prepared.plan, flags.format);
+      } catch (error) {
+        if (error instanceof WorkerProjectBuildError) {
+          err(error.message, {
+            remoteChangesApplied: false,
+            ...error.recovery,
+          });
+        }
+        err(error instanceof Error ? error.message : "Worker plan failed");
+      }
       return;
     }
     case "retention": {

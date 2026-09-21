@@ -24,6 +24,24 @@ const plan: WorkerDeploymentPlan = {
   },
   environment: "preview",
   remote: { linked: false },
+  costImpact: {
+    status: "UNKNOWN",
+    desiredDailyBudgetUsd: 0.25,
+    meteredChanges: [
+      {
+        kind: "worker",
+        key: "my-agent",
+        effect: "USAGE_DEPENDENT",
+      },
+      {
+        kind: "resource",
+        key: "AGENT_STATE",
+        type: "durable_object",
+        effect: "USAGE_DEPENDENT",
+      },
+    ],
+    notes: ["The daily budget is a spending cap, not a predicted charge."],
+  },
   canApply: false,
   summary: {
     CREATE: 4,
@@ -92,7 +110,9 @@ describe("Worker plan terminal output", () => {
     expect(rendered).toContain("Durable Object · class AgentState · managed by xAPI");
     expect(rendered).toContain("MODEL_KEY");
     expect(rendered).toContain("npm run build → dist/worker.mjs");
-    expect(rendered).toContain("push rebuilds it before upload");
+    expect(rendered).toContain("push applies the reviewed result");
+    expect(rendered).toContain("$0.25/day target");
+    expect(rendered).toContain("2 usage-dependent items");
     expect(rendered).toContain("xapi workers push --env preview");
     expect(rendered).not.toContain('"schemaVersion"');
     expect(rendered).not.toContain(
@@ -118,6 +138,8 @@ describe("Worker plan terminal output", () => {
     };
     const rendered = formatWorkerPlan(converged);
     expect(rendered).toContain("No deployment changes are required");
+    expect(rendered).toContain("Existing state (reused)");
+    expect(rendered).toContain("= Worker");
     expect(rendered).not.toContain("Apply this plan");
   });
 

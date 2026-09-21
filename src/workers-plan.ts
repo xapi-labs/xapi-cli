@@ -1,5 +1,8 @@
 import { existsSync, lstatSync, statSync } from "node:fs";
-import type { WorkersClientOptions } from "./workers-client.ts";
+import type {
+  WorkerBillingQueryKind,
+  WorkersClientOptions,
+} from "./workers-client.ts";
 import * as workersClient from "./workers-client.ts";
 import { loadWorkerArtifactInput, validateNativeDeploymentMetadata, WorkerArtifactError } from "./workers-artifact.ts";
 import { deploymentPrefix, currentMatchingDeployment } from "./workers-deployment-state.ts";
@@ -12,6 +15,11 @@ import {
   resolveWorkerProjectPath,
 } from "./workers-project.ts";
 import { remoteWorkerResourceState } from "./workers-resource-state.ts";
+import {
+  prepareWorkerProjectBundle,
+  type WorkerProjectBuildRunner,
+} from "./workers-project-build.ts";
+import type { LoadedWorkerArtifact } from "./workers-artifact.ts";
 
 export type WorkerPlanOperation =
   | "CREATE"
@@ -49,6 +57,24 @@ export interface WorkerDeploymentPlan {
   };
   environment: "preview" | "production";
   remote: { linked: boolean; workerId?: string };
+  costImpact: {
+    status: "AVAILABLE" | "PARTIAL" | "UNKNOWN";
+    desiredDailyBudgetUsd: number;
+    currentDailyBudgetUsd?: number;
+    dailyBudgetDeltaUsd?: number;
+    priceBook?: {
+      version?: string;
+      effectiveFrom?: string;
+      rateCount: number;
+    };
+    meteredChanges: Array<{
+      kind: "worker" | "resource";
+      key: string;
+      type?: string;
+      effect: "USAGE_DEPENDENT";
+    }>;
+    notes: string[];
+  };
   canApply: boolean;
   summary: Record<WorkerPlanOperation, number>;
   actions: WorkerPlanAction[];
@@ -67,6 +93,12 @@ export interface PlanClient {
     id: string,
     environment: string,
   ): Promise<unknown>;
+  workerBillingQuery?(
+    options: WorkersClientOptions,
+    id: string,
+    environment: string,
+    kind: WorkerBillingQueryKind,
+  ): Promise<unknown>;
 }
 
 export interface CreateWorkerPlanOptions {
@@ -75,6 +107,15 @@ export interface CreateWorkerPlanOptions {
   environment: "preview" | "production";
   clientOptions: WorkersClientOptions;
   client?: PlanClient;
+}
+
+export interface PrepareWorkerPlanOptions extends CreateWorkerPlanOptions {
+  runBuild?: WorkerProjectBuildRunner;
+}
+
+export interface PreparedWorkerPlan {
+  plan: WorkerDeploymentPlan;
+  bundle: LoadedWorkerArtifact;
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -571,6 +612,73 @@ function planSummary(
   return result;
 }
 
+function planCostImpact(
+  actions: WorkerPlanAction[],
+  desiredDailyBudgetUsd: number,
+  currentDailyBudgetUsd: number | undefined,
+  priceResponse: unknown,
+): WorkerDeploymentPlan["costImpact"] {
+  const envelope = record(priceResponse);
+  const data = record(envelope?.data);
+  const rates = Array.isArray(data?.rates) ? data.rates : undefined;
+  const priceVersion = string(data?.version);
+  const effectiveFrom = string(data?.effectiveFrom);
+  const meteredChanges: WorkerDeploymentPlan["costImpact"]["meteredChanges"] =
+    actions
+      .filter(
+        (action) =>
+          ["CREATE", "UPDATE"].includes(action.operation) &&
+          (action.kind === "worker" || action.kind === "resource"),
+      )
+      .map((action) => ({
+        kind: action.kind as "worker" | "resource",
+        key: action.key,
+        ...(action.kind === "resource" && string(action.desired?.type)
+          ? { type: string(action.desired?.type) }
+          : {}),
+        effect: "USAGE_DEPENDENT" as const,
+      }));
+  const notes = [
+    "The daily budget is a spending cap, not a predicted charge.",
+    "Worker and managed-resource charges depend on measured usage; plan does not invent traffic or storage assumptions.",
+  ];
+  if (!rates) {
+    notes.push(
+      "The active price book could not be read for this environment; inspect billing before production promotion.",
+    );
+  }
+  return {
+    status: rates
+      ? currentDailyBudgetUsd === undefined
+        ? "PARTIAL"
+        : "AVAILABLE"
+      : currentDailyBudgetUsd === undefined
+        ? "UNKNOWN"
+        : "PARTIAL",
+    desiredDailyBudgetUsd,
+    ...(currentDailyBudgetUsd !== undefined
+      ? {
+          currentDailyBudgetUsd,
+          dailyBudgetDeltaUsd:
+            Math.round(
+              (desiredDailyBudgetUsd - currentDailyBudgetUsd) * 1_000_000,
+            ) / 1_000_000,
+        }
+      : {}),
+    ...(rates
+      ? {
+          priceBook: {
+            ...(priceVersion ? { version: priceVersion } : {}),
+            ...(effectiveFrom ? { effectiveFrom } : {}),
+            rateCount: rates.length,
+          },
+        }
+      : {}),
+    meteredChanges,
+    notes,
+  };
+}
+
 export async function createWorkerPlan(
   options: CreateWorkerPlanOptions,
 ): Promise<WorkerDeploymentPlan> {
@@ -743,6 +851,21 @@ export async function createWorkerPlan(
     options.environment,
   );
 
+  let priceResponse: unknown;
+  if (remote && api.workerBillingQuery) {
+    try {
+      priceResponse = await api.workerBillingQuery(
+        options.clientOptions,
+        project.config.workerId!,
+        options.environment,
+        "prices",
+      );
+    } catch {
+      // Price visibility is advisory. A transient billing read must not turn a
+      // valid deployment diff into a false success or a false blocker.
+    }
+  }
+
   actions.sort(
     (a, b) =>
       KIND_ORDER[a.kind] - KIND_ORDER[b.kind] ||
@@ -768,6 +891,12 @@ export async function createWorkerPlan(
       linked: !!remote,
       ...(remote ? { workerId: string(remote.id) } : {}),
     },
+    costImpact: planCostImpact(
+      actions,
+      desired.dailyBudgetUsd,
+      currentBudget,
+      priceResponse,
+    ),
     canApply:
       summary.BLOCKED === 0 &&
       !actions.some(
@@ -777,4 +906,24 @@ export async function createWorkerPlan(
     summary,
     actions,
   };
+}
+
+/**
+ * Build and validate the exact local bundle before calculating the remote diff.
+ * This may update local build output, but it never writes to the xAPI control
+ * plane. Both `workers plan` and `workers push` use this path so the reviewed
+ * Artifact is the one that push will upload.
+ */
+export async function prepareWorkerPlan(
+  options: PrepareWorkerPlanOptions,
+): Promise<PreparedWorkerPlan> {
+  const project = loadWorkerProject(options.cwd, options.configPath);
+  validatePlanInputs(project);
+  const bundle = await prepareWorkerProjectBundle(
+    project,
+    options.environment,
+    options.runBuild,
+  );
+  const plan = await createWorkerPlan(options);
+  return { plan, bundle };
 }

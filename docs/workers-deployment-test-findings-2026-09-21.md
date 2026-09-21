@@ -43,6 +43,27 @@ CLI branch must remain complementary to that backend work.
 6. Runtime inspection required several separate commands. `workers inspect`
    now provides one read-only report while preserving failed sources as
    `UNKNOWN` and excluding Secret values.
+7. Preview push could create the Worker, budget, or managed resources before a
+   failing application build. `plan` and `push` now share one local preparation
+   path: build, validate the complete native Artifact, calculate the live diff
+   and cost-impact evidence, then allow remote writes. Push returns a read-only
+   inspection after the ACTIVE deployment and public health check.
+8. A real Jev `workers plan --format json` exposed build progress on stdout,
+   corrupting the machine-readable plan even though the build succeeded. Build
+   stdout/stderr now remain visible on stderr; stdout is reserved for the CLI
+   result contract.
+
+## Command boundary after the deployment tests
+
+- `workers inspect` answers what is running now. It needs no local build and
+  never evaluates application routes.
+- `workers plan` answers what the next deployment will change. It creates local
+  build output, validates its exact hash and assets, reads live state and the
+  available price-book metadata, and performs no remote write.
+- `workers push` repeats that deterministic preparation, displays the final
+  plan, waits for confirmation, applies preview changes, and returns inspection
+  evidence.
+- `workers promote` releases the accepted immutable Artifact to production.
 
 ## Deferred backend work
 

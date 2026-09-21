@@ -37,9 +37,11 @@ Managed KV, D1, R2, Durable Object, Queue, and Workflow declarations belong in
 Use `xapi workers inspect --env preview` for one read-only operational view of
 the linked Worker. It reports the active environment, routing, Artifact,
 Deployment, resource and Secret metadata, domains, and billing freshness.
-Unavailable sources remain `UNKNOWN`. Use `plan` for desired-state comparison;
-`inspect` never builds, deploys, probes application routes, or reads Secret
-values.
+Unavailable sources remain `UNKNOWN`. Use `plan` for desired-state comparison.
+Plan runs and validates the configured local build, then compares that exact
+Artifact and desired resources with the live snapshot. It performs no remote
+writes. `inspect` never builds, deploys, probes application routes, or reads
+Secret values.
 
 Choose the `init` form from the project you actually have:
 
@@ -158,7 +160,7 @@ Choose the command by intent:
 | Adopt live-only resources | `resources pull` | Live read, then safe local merge |
 | Stop declaring a resource | `resources remove` | Local desired state only |
 | Delete resource data | `resources destroy --yes` | Local desired state and one live environment |
-| Check convergence | `workers plan` | None |
+| Preview exact deployment changes | `workers plan` | Local build output only |
 
 Use this normal flow to add a resource:
 
@@ -174,6 +176,12 @@ xapi workers resources update --env preview --type d1 --binding DB \
 xapi workers plan --env preview
 xapi workers push --env preview
 ```
+
+`plan` reports the current and desired daily budget, active price-book
+visibility, and any new metered Worker/resource declarations. Exact charges
+remain usage-dependent; the CLI does not invent request, CPU, storage, or
+operation volume. Use `inspect` and billing views for accrued usage and billing
+freshness.
 
 `--env both` creates matching declarations, not shared storage. `resources add`
 is idempotent and rejects conflicting binding reuse. `resources update`
