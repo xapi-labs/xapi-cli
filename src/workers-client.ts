@@ -1,4 +1,4 @@
-import { request } from "./client.ts";
+import { HttpError, request } from "./client.ts";
 import type {
   WorkerArtifactBundle,
   WorkerArtifactUploadRequest,
@@ -127,7 +127,12 @@ export function listWorkerArtifacts(options: WorkersClientOptions, id: string) {
   );
 }
 
-export function uploadWorkerArtifact(
+// Older backends persist the complete base64-wrapped request as one object.
+// Keep fallback below the observed legacy retrieval ceiling; current backends
+// use multipart blobs and do not have this compatibility limit.
+const LEGACY_BUNDLE_REQUEST_LIMIT_BYTES = 5 * 1024 * 1024;
+
+export async function uploadWorkerArtifact(
   options: WorkersClientOptions,
   id: string,
   input: WorkerArtifactUploadRequest,
@@ -173,17 +178,41 @@ export function uploadWorkerArtifact(
     files.forEach((file, index) =>
       form.append("files", file, `file-${index}`),
     );
-    return request<unknown>(
-      url(options, `/${encodeURIComponent(id)}/artifacts/bundle`),
-      {
-        method: "POST",
-        // fetch supplies the multipart boundary. Setting Content-Type here
-        // would make the body unparsable.
-        headers: headers(options),
-        body: form,
-      },
-      300_000,
-    );
+    try {
+      return await request<unknown>(
+        url(options, `/${encodeURIComponent(id)}/artifacts/bundle`),
+        {
+          method: "POST",
+          // fetch supplies the multipart boundary. Setting Content-Type here
+          // would make the body unparsable.
+          headers: headers(options),
+          body: form,
+        },
+        300_000,
+      );
+    } catch (error) {
+      // A rolling backend may not expose multipart ingress yet. Preserve
+      // compatibility with the previous JSON bundle endpoint only while its
+      // encoded request fits the legacy storage/retrieval path.
+      if (!(error instanceof HttpError) || error.status !== 404) throw error;
+      const legacyBody = JSON.stringify(input);
+      const requestBytes = Buffer.byteLength(legacyBody, "utf8");
+      if (requestBytes > LEGACY_BUNDLE_REQUEST_LIMIT_BYTES) {
+        throw new Error(
+          `The xAPI backend does not expose multipart Artifact upload and this encoded bundle (${requestBytes} bytes) exceeds the legacy 5 MiB compatibility channel; upgrade the xAPI backend before deploying this project`,
+          {cause: error},
+        );
+      }
+      return request<unknown>(
+        url(options, `/${encodeURIComponent(id)}/artifacts`),
+        {
+          method: "POST",
+          headers: headers(options, true),
+          body: legacyBody,
+        },
+        180_000,
+      );
+    }
   }
   return request<unknown>(
     url(options, `/${encodeURIComponent(id)}/artifacts`),

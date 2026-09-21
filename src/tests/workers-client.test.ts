@@ -216,6 +216,73 @@ describe("workers client", () => {
     });
   });
 
+  it("falls back to the legacy JSON bundle endpoint during a rolling backend deployment", async () => {
+    fetchSpy = spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({message: "Cannot POST /artifacts/bundle"}), {
+          status: 404,
+          headers: {"content-type": "application/json"},
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({id: "artifact-legacy"}), {
+          status: 200,
+          headers: {"content-type": "application/json"},
+        }),
+      ) as any;
+    const input = {
+      bundle: {
+        version: 1 as const,
+        mainModule: "worker.js",
+        modules: [{
+          path: "worker.js",
+          content: "export default {};",
+          encoding: "utf8" as const,
+          contentType: "application/javascript+module" as const,
+        }],
+      },
+      idempotencyKey: "rolling-deploy-v1",
+    };
+
+    await uploadWorkerArtifact(options, "worker/id", input);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls[0][0]).toBe(
+      "https://test.xapi.to/api/v1/workers/worker%2Fid/artifacts/bundle",
+    );
+    expect(fetchSpy.mock.calls[1][0]).toBe(
+      "https://test.xapi.to/api/v1/workers/worker%2Fid/artifacts",
+    );
+    expect(JSON.parse((fetchSpy.mock.calls[1][1] as RequestInit).body as string)).toEqual(input);
+  });
+
+  it("rejects bundles that the legacy backend cannot retrieve", async () => {
+    fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({message: "Cannot POST /artifacts/bundle"}), {
+        status: 404,
+        headers: {"content-type": "application/json"},
+      }),
+    ) as any;
+    const input = {
+      bundle: {
+        version: 1 as const,
+        mainModule: "worker.js",
+        modules: [{
+          path: "worker.js",
+          content: Buffer.alloc(4 * 1024 * 1024).toString("base64"),
+          encoding: "base64" as const,
+          contentType: "application/javascript+module" as const,
+        }],
+      },
+      idempotencyKey: "legacy-too-large-v1",
+    };
+
+    await expect(
+      uploadWorkerArtifact(options, "worker/id", input),
+    ).rejects.toThrow("exceeds the legacy 5 MiB compatibility channel");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("uses the server-side build endpoint with an extended timeout", async () => {
     fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ id: "build-1", status: "SUCCEEDED" }), {
