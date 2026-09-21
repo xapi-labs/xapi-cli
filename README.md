@@ -382,7 +382,10 @@ xapi workers push --env preview
 The initializer adds `xapi:build`, `xapi:worker:build`, and
 `xapi:worker:dev`, plus a small `xapi-worker/index.ts`, `wrangler.jsonc`, and
 `xapi.worker.json`. `xapi:worker:dev` is only a package script around Wrangler;
-there is no separate xAPI local runtime. Use `--framework react|vite|vue|next`
+there is no separate xAPI local runtime. For workspace packages, `init` walks
+to the repository root and honors its declared `packageManager` or lockfile;
+the printed install and build commands are therefore safe for Yarn and pnpm
+monorepos as well as npm and Bun projects. Use `--framework react|vite|vue|next`
 only when automatic package detection is ambiguous. `init` is a one-time
 adapter setup, not a synchronization command; after it creates
 `xapi.worker.json`, use resource commands and `plan` to manage state.
@@ -410,8 +413,9 @@ through xAPI as Cloudflare native static assets:
 `workers plan` shows whether the selected environment has a dedicated hostname.
 When `webAppReady` is false, production promotion asks you to review the base
 path, root-relative routes, and OAuth callbacks without blocking applications
-that deliberately support path-prefix hosting. The current JSON Artifact
-transport accepts 12 MiB of decoded Worker modules and static assets per
+that deliberately support path-prefix hosting. Complete projects use binary
+multipart Artifact transport: up to 10 MiB across 200 Worker modules, 10,000
+static assets, 25 MiB per asset, and 100 MiB total decoded content per
 deployment.
 
 Templates are versioned packages shipped with the CLI, not remote code fetched

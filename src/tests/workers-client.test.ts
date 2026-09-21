@@ -146,7 +146,7 @@ describe("workers client", () => {
     expect(JSON.parse(init.body).idempotencyKey).toBe("showcase-upload-v1");
   });
 
-  it("uploads a multi-module bundle in one immutable artifact request", async () => {
+  it("uploads a multi-module bundle through binary multipart transport", async () => {
     fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ id: "artifact-2" }), {
         status: 200,
@@ -175,11 +175,36 @@ describe("workers client", () => {
       bundle,
       idempotencyKey: "showcase-bundle-v1",
     });
-    const [, init] = fetchSpy.mock.calls[0] as any[];
-    expect(JSON.parse(init.body)).toEqual({
-      bundle,
+    const [target, init] = fetchSpy.mock.calls[0] as any[];
+    expect(target).toBe(
+      "https://test.xapi.to/api/v1/workers/worker%2Fid/artifacts/bundle",
+    );
+    expect(init.headers["Content-Type"]).toBeUndefined();
+    expect(init.body).toBeInstanceOf(FormData);
+    const form = init.body as FormData;
+    expect(JSON.parse(String(form.get("manifest")))).toEqual({
+      version: 2,
       idempotencyKey: "showcase-bundle-v1",
+      mainModule: "worker.js",
+      modules: [
+        {
+          fileIndex: 0,
+          path: "worker.js",
+          contentType: "application/javascript+module",
+        },
+        {
+          fileIndex: 1,
+          path: "chunk.js",
+          contentType: "application/javascript+module",
+        },
+      ],
     });
+    const files = form.getAll("files") as Blob[];
+    expect(files).toHaveLength(2);
+    expect(await files[0].text()).toBe(
+      'import "./chunk.js"; export default {};',
+    );
+    expect(await files[1].text()).toBe("export {};");
   });
 
   it("uses the server-side build endpoint with an extended timeout", async () => {

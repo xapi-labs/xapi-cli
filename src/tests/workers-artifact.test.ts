@@ -128,6 +128,30 @@ describe("Worker Artifact loader", () => {
     });
   });
 
+  test("accepts complete-project assets larger than the legacy JSON limit", () => {
+    const root = directory();
+    const worker = join(root, "worker.mjs");
+    const assets = join(root, "public");
+    mkdirSync(assets);
+    writeFileSync(worker, "export default {};");
+    writeFileSync(join(assets, "large.bin"), Buffer.alloc(13 * 1024 * 1024, 7));
+
+    const artifact = loadWorkerArtifact(worker, undefined, {
+      directory: assets,
+      binding: "ASSETS",
+    });
+
+    expect(artifact.kind).toBe("bundle");
+    if (!("bundle" in artifact.upload)) throw new Error("expected bundle");
+    expect(artifact.upload.bundle.assets?.files[0]).toEqual(
+      expect.objectContaining({
+        path: "/large.bin",
+        encoding: "base64",
+        contentType: "application/octet-stream",
+      }),
+    );
+  });
+
   test("rejects missing relative modules and static website assets", () => {
     const root = directory();
     writeFileSync(

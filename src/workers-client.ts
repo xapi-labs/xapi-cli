@@ -1,5 +1,8 @@
 import { request } from "./client.ts";
-import type { WorkerArtifactUploadRequest } from "./workers-artifact.ts";
+import type {
+  WorkerArtifactBundle,
+  WorkerArtifactUploadRequest,
+} from "./workers-artifact.ts";
 import { scheme } from "./config.ts";
 
 export interface WorkersClientOptions {
@@ -129,6 +132,59 @@ export function uploadWorkerArtifact(
   id: string,
   input: WorkerArtifactUploadRequest,
 ) {
+  if ("bundle" in input) {
+    const form = new FormData();
+    const files: Blob[] = [];
+    const addFile = (
+      entry:
+        | WorkerArtifactBundle["modules"][number]
+        | NonNullable<WorkerArtifactBundle["assets"]>["files"][number],
+    ) => {
+      const bytes = entry.encoding === "base64"
+        ? Buffer.from(entry.content, "base64")
+        : Buffer.from(entry.content, "utf8");
+      const fileIndex = files.length;
+      files.push(new Blob([bytes], { type: entry.contentType }));
+      return { fileIndex, path: entry.path, contentType: entry.contentType };
+    };
+    const manifest = {
+      version: 2,
+      idempotencyKey: input.idempotencyKey,
+      mainModule: input.bundle.mainModule,
+      modules: input.bundle.modules.map(addFile),
+      ...(input.bundle.observability
+        ? { observability: input.bundle.observability }
+        : {}),
+      ...(input.bundle.assets
+        ? {
+            assets: {
+              files: input.bundle.assets.files.map(addFile),
+              ...(input.bundle.assets.binding
+                ? { binding: input.bundle.assets.binding }
+                : {}),
+              ...(input.bundle.assets.config
+                ? { config: input.bundle.assets.config }
+                : {}),
+            },
+          }
+        : {}),
+    };
+    form.append("manifest", JSON.stringify(manifest));
+    files.forEach((file, index) =>
+      form.append("files", file, `file-${index}`),
+    );
+    return request<unknown>(
+      url(options, `/${encodeURIComponent(id)}/artifacts/bundle`),
+      {
+        method: "POST",
+        // fetch supplies the multipart boundary. Setting Content-Type here
+        // would make the body unparsable.
+        headers: headers(options),
+        body: form,
+      },
+      300_000,
+    );
+  }
   return request<unknown>(
     url(options, `/${encodeURIComponent(id)}/artifacts`),
     {

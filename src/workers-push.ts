@@ -576,6 +576,17 @@ async function ensureArtifact(
       "Artifact",
     );
   } catch (error) {
+    if (error instanceof HttpError && error.status === 413 && "bundle" in bundle.upload) {
+      throw new WorkerPushError(
+        "The xAPI control plane rejected the complete-project upload before Artifact creation",
+        {
+          errorCode: "worker_artifact_ingress_too_small",
+          endpoint: `/api/v1/workers/${workerId}/artifacts/bundle`,
+          expectedIngressLimitMiB: 128,
+          next: "Deploy the control-plane multipart Artifact endpoint and its scoped 128 MiB ingress route, then rerun workers push",
+        },
+      );
+    }
     if (!shouldReconcileWrite(error)) throw error;
     const reconciled = await find();
     if (reconciled) return reconciled;

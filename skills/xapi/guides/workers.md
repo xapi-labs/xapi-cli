@@ -70,7 +70,9 @@ xapi workers push --env preview
 The added files are `xapi.worker.json`, `wrangler.jsonc`, and
 `xapi-worker/index.ts`. The added package scripts are `xapi:build`,
 `xapi:worker:build`, and `xapi:worker:dev`. Review the generated diff before
-installing dependencies. Re-running `init` is not a synchronization command;
+installing dependencies. A package inside a monorepo inherits the repository's
+declared package manager or lockfile; use the install and build commands printed
+by `init` rather than substituting npm. Re-running `init` is not a synchronization command;
 once `xapi.worker.json` exists, manage it with the project and resource commands.
 
 Use `--framework react|vite|vue|next` only for ambiguous package metadata.
@@ -254,11 +256,12 @@ and must be configured through xAPI schedules. The granular `workers upload`
 command is artifact-only; use the project `push` workflow for coordinated
 compatibility, resource, secret and asset handling.
 
-Current xAPI transport limits remain 200 modules / 10 MiB decoded modules and
-12 MiB decoded modules plus assets. These are xAPI limits, not a statement of
-CF's full native capacity. If exceeded, report the unsupported deployment;
-never split a project into unrelated deployments or edit framework output to
-work around the limit.
+Complete projects use binary multipart Artifact transport. Current xAPI limits
+are 200 modules / 10 MiB decoded modules, 10,000 static assets, 25 MiB per
+asset, and 100 MiB total decoded modules plus assets. These are xAPI limits,
+not a statement of CF's full native capacity. If exceeded, report the
+unsupported deployment; never split a project into unrelated deployments or
+edit framework output to work around the limit.
 
 A `PATH_FALLBACK` URL is not a root-hosted Web application URL. Do not rewrite
 application routes or configure GitHub callbacks against an invented host.
@@ -395,10 +398,9 @@ Artifact and the platform completes Cloudflare's native static-assets upload:
 
 Wrangler imports preserve supported `assets` settings. Cloudflare permits up to
 25 MiB per asset and 100,000 assets per version. Asset content stays separate
-from Worker modules and is never silently dropped. The current xAPI JSON
-Artifact transport accepts at most 12 MiB of decoded modules and assets in one
-deployment; split larger sites before upload until the multipart Artifact
-transport is available.
+from Worker modules and is never silently dropped. xAPI's binary multipart
+Artifact transport currently accepts at most 10,000 assets and 100 MiB of
+decoded modules and assets in one deployment.
 
 Save the returned Artifact `id`, then deploy that exact Artifact to preview:
 

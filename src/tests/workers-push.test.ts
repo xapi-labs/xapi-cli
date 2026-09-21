@@ -636,6 +636,50 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(platform.calls.deploy).toBe(0);
   });
 
+  test("diagnoses a stale control-plane ingress when bundle upload returns 413", async () => {
+    const root = fixture({ linked: true });
+    const configPath = join(root, "xapi.worker.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.build = { command: "fake-build", output: "dist", main: "worker.mjs" };
+    writeFileSync(configPath, JSON.stringify(config, null, 2));
+    const platform = fakePlatform({ exists: true });
+    platform.client.uploadWorkerArtifact = async () => {
+      throw new HttpError(413, "Request Entity Too Large");
+    };
+
+    let caught: WorkerPushError | undefined;
+    try {
+      await pushWorkerProject({
+        cwd: root,
+        environment: "preview",
+        clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+        client: platform.client,
+        confirm: async () => true,
+        runBuild: async () => {
+          mkdirSync(join(root, "dist"), { recursive: true });
+          writeFileSync(
+            join(root, "dist/worker.mjs"),
+            'import "./chunk.mjs"; export default {};',
+          );
+          writeFileSync(join(root, "dist/chunk.mjs"), "export {};");
+        },
+      });
+    } catch (error) {
+      caught = error as WorkerPushError;
+    }
+
+    expect(caught?.message).toContain("complete-project upload");
+    expect(caught?.recovery).toEqual(
+      expect.objectContaining({
+        workerId,
+        resourcesPreserved: true,
+        errorCode: "worker_artifact_ingress_too_small",
+        expectedIngressLimitMiB: 128,
+      }),
+    );
+    expect(platform.calls.deploy).toBe(0);
+  });
+
   test("uploads a code-split directory as one immutable Artifact", async () => {
     const root = fixture({ linked: true });
     const configPath = join(root, "xapi.worker.json");
