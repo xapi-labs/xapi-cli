@@ -29,6 +29,6 @@ Follow a full round: execute real business operations → collect failures → c
 
 `ACTIVE` deployment, a provisioned resource, an accepted asynchronous job, and a passing HTTP health check prove different things. Verify the intended business result and persisted state. Preserve sanitized evidence: host, environment, IDs, times, request/job IDs, statuses, snapshot and ledger IDs, exact decimal amounts, and unresolved gaps. Exclude tokens, cookies, passwords, and customer file contents.
 
-For Cloudflare Containers, `ACTIVE` means the Worker upload, matching Durable Object namespace resolution, Container Application reconciliation, and required rollout all completed. A Docker image build or registry push is a separate prerequisite and is never implied by an xAPI Artifact upload.
+For Cloudflare Containers, `ACTIVE` means the Worker upload, matching Durable Object namespace resolution, and the required Container Application create/update plus rollout request were accepted and recorded. Cloudflare may still be converging the native rollout; verify the application resource and business route separately. A Docker image build or registry push is a separate prerequisite and is never implied by an xAPI Artifact upload.
 
 For incomplete observations report **unknown**, not zero or success. Keep deployment completion, resource behavior, xAPI consumption, storage-day finalization, provider invoice reconciliation, and physical cleanup as separate verdicts. Report only verified outcomes and the next concrete unresolved check.
