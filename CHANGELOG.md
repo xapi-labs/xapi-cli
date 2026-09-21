@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.23](https://github.com/xapi-labs/xapi-cli/compare/v0.1.22...v0.1.23) (2026-09-21)
+
+
+### Features
+
+* **skill:** bundle CLI-native provider workflows ([#29](https://github.com/xapi-labs/xapi-cli/issues/29)) ([fe1551a](https://github.com/xapi-labs/xapi-cli/commit/fe1551a3b302cef584154b61f3c45da10267a353))
+* **workers:** add managed project deployment workflows ([e002970](https://github.com/xapi-labs/xapi-cli/commit/e0029701152c9ad73277bef9e0750284e03c884d))
+* **workers:** add read-only environment inspection ([f5e7245](https://github.com/xapi-labs/xapi-cli/commit/f5e7245e7bc8b01f62a1a9c2669ea1dbf9c48c9d))
+* **workers:** add safe secret management workflows ([#32](https://github.com/xapi-labs/xapi-cli/issues/32)) ([0f0ec1b](https://github.com/xapi-labs/xapi-cli/commit/0f0ec1b498a012f35e6b5133fde2ec4c346c9ad6))
+* **workers:** make deployment plans exact ([45aeac2](https://github.com/xapi-labs/xapi-cli/commit/45aeac24d2081b1496bc882fa27a313ab9f21250))
+* **workers:** preserve native deployments and exact plans ([3b83be2](https://github.com/xapi-labs/xapi-cli/commit/3b83be2ac19061b53dbb1869a8a0061dbb5d9acf))
+
+
+### Bug Fixes
+
+* **workers:** clarify project deployment commands ([555dcb4](https://github.com/xapi-labs/xapi-cli/commit/555dcb4ff88d1633bf23d6709a56abb30f187104))
+* **workers:** preserve native deployment intent during import ([74148a4](https://github.com/xapi-labs/xapi-cli/commit/74148a48351772a54457fca143d0eaa87f73db7b))
+
 ## [0.1.22](https://github.com/xapi-labs/xapi-cli/compare/v0.1.21...v0.1.22) (2026-09-17)
 
 
