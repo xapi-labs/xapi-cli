@@ -2,6 +2,33 @@
 
 ## Project workflow
 
+Use one command layer for one task. For normal application deployment, stay in
+the project workflow:
+
+| Intent | Command | Writes live state |
+| --- | --- | --- |
+| Inspect one running environment | `workers inspect [worker-id] --env ENV` | No |
+| Build locally and compare exact desired state with xAPI | `workers plan --env ENV` | No remote writes |
+| Rebuild, present the final plan, reconcile and deploy preview | `workers push --env preview` | Yes, after confirmation |
+| Release the accepted preview Artifact | `workers promote --to production` | Yes |
+| Restore an earlier active version | `workers rollback --env ENV ...` | Yes |
+
+`workers inspect` accepts an explicit Worker ID or resolves it from the current
+`xapi.worker.json`. It combines Worker, environment, active Artifact and
+Deployment, routing, resource, Secret metadata, domain, and billing freshness
+reads into one report. Optional read failures stay `UNKNOWN`, never zero or
+success. It never reads Secret values and performs no health request that might
+trigger application behavior. Use `workers plan` separately when comparing
+local desired state with xAPI. Plan runs the configured local build first, validates
+the native bundle and static assets, and then displays the exact Artifact hash,
+resource/Secret/routing changes, budget-cap delta, price-book availability, and
+usage-dependent cost effects. A budget is a cap rather than a predicted charge;
+unknown traffic and storage must remain unknown.
+`workers build`, `upload`, and `deploy` are lower-level Artifact primitives for
+custom CI and recovery. A managed `build` only produces an Artifact; `deploy`
+only activates an existing Artifact. Neither replaces project convergence by
+`push`.
+
 ```sh
 export XAPI_API_HOST=api.test.xapi.to
 xapi workers templates
@@ -66,11 +93,15 @@ Rollback restores code and compatibility settings, not data, schema, Secret valu
 
 Use the project's installed/pinned CLI, lockfile installation, and a scoped secret `XAPI_KEY`. Keep `XAPI_API_HOST` explicit and separate test/production credentials. CLI deployment does not require SSH into an API server or a Cloudflare account token.
 
-Run plan, build/push, active-status and business checks in order. `--non-interactive` suppresses prompts; it does not accept retention policy or bypass preflight:
+Run plan, push, inspect, active-status and business checks in order. Both plan
+and push prepare the local Artifact; push performs that work before any Worker,
+budget, resource, Artifact, or Deployment write. `--non-interactive` suppresses
+prompts; it does not accept retention policy or bypass preflight:
 
 ```sh
 xapi workers plan --env preview --format json
 xapi workers push --env preview --non-interactive
+xapi workers inspect --env preview --format json
 ```
 
 Promote in the already authorized release job after preview acceptance. Follow repository AGENTS.md and branch/PR rules; do not infer release authorization from a successful preview push. On uncertain results inspect deployments/logs and retry unchanged inputs so stable idempotency keys can recover the same operation. Do not change IDs or clear deletion flags to force deployment through.

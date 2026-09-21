@@ -53,6 +53,9 @@ export interface ImportWranglerProjectOptions {
   wranglerPath: string;
   acceptPartial?: boolean;
   force?: boolean;
+  buildCommand?: string;
+  buildOutput?: string;
+  buildMain?: string;
   previewDailyBudgetUsd?: number;
   productionDailyBudgetUsd?: number;
 }
@@ -98,7 +101,8 @@ const MANAGED_TOP_LEVEL = new Set([
   "queues",
   "workflows",
 ]);
-const REENTER_TOP_LEVEL = new Set(["vars", "secrets", "secrets_store_secrets"]);
+const REENTER_TOP_LEVEL = new Set(["secrets", "secrets_store_secrets"]);
+const PUBLIC_VARIABLE_TOP_LEVEL = new Set(["vars"]);
 const IGNORED_TOP_LEVEL = new Set([
   "$schema",
   "account_id",
@@ -130,6 +134,9 @@ const IGNORED_TOP_LEVEL = new Set([
   // have already been applied to the emitted Worker bundle. They are not
   // control-plane settings and do not need an xAPI desired-state mapping.
   "topLevelName",
+  "configPath",
+  "userConfigPath",
+  "definedEnvironments",
   "jsx_factory",
   "jsx_fragment",
   "python_modules",
@@ -490,6 +497,24 @@ function resourceList(
     });
 }
 
+function publicVariables(
+  config: UnknownRecord,
+  prefix: string,
+  environment: "preview" | "production",
+  entries: WranglerCompatibilityEntry[],
+): void {
+  const vars = record(config.vars);
+  for (const name of Object.keys(vars || {}).sort()) {
+    compatibilityEntry(
+      entries,
+      "UNSUPPORTED",
+      `${prefix}vars.${name}`,
+      "Plain-text variables are not copied or converted into Secrets. Remove this var from Wrangler and declare a Secret explicitly only when the value is sensitive",
+      { environment, bindingName: name },
+    );
+  }
+}
+
 function secretNames(
   config: UnknownRecord,
   prefix: string,
@@ -497,8 +522,6 @@ function secretNames(
   entries: WranglerCompatibilityEntry[],
 ): string[] {
   const candidates = new Set<string>();
-  const vars = record(config.vars);
-  for (const name of Object.keys(vars || {})) candidates.add(name);
   if (Array.isArray(config.secrets)) {
     for (const value of config.secrets) {
       if (typeof value === "string") candidates.add(value);
@@ -558,7 +581,10 @@ function inspectTopLevel(
       );
     } else if (MANAGED_TOP_LEVEL.has(key)) {
       // Individual binding entries carry the actionable report.
-    } else if (REENTER_TOP_LEVEL.has(key)) {
+    } else if (
+      REENTER_TOP_LEVEL.has(key) ||
+      PUBLIC_VARIABLE_TOP_LEVEL.has(key)
+    ) {
       // Secret/variable names are reported per environment without values.
     } else if (IGNORED_TOP_LEVEL.has(key)) {
       compatibilityEntry(
@@ -601,7 +627,11 @@ function inspectTopLevel(
           "Retained through the referenced Wrangler environment configuration",
           { environment: name },
         );
-      } else if (MANAGED_TOP_LEVEL.has(key) || REENTER_TOP_LEVEL.has(key)) {
+      } else if (
+        MANAGED_TOP_LEVEL.has(key) ||
+        REENTER_TOP_LEVEL.has(key) ||
+        PUBLIC_VARIABLE_TOP_LEVEL.has(key)
+      ) {
         // Actionable binding and secret entries are reported separately.
       } else if (IGNORED_TOP_LEVEL.has(key) || key === "name") {
         compatibilityEntry(
@@ -676,6 +706,112 @@ function summary(
   return result;
 }
 
+function packageManager(rootDir: string): string {
+  if (existsSync(resolve(rootDir, "pnpm-lock.yaml"))) return "pnpm";
+  if (
+    existsSync(resolve(rootDir, "bun.lock")) ||
+    existsSync(resolve(rootDir, "bun.lockb"))
+  )
+    return "bun";
+  if (existsSync(resolve(rootDir, "yarn.lock"))) return "yarn";
+  return "npm";
+}
+
+function packageScripts(rootDir: string): Record<string, string> {
+  const path = resolve(rootDir, "package.json");
+  if (!existsSync(path)) return {};
+  try {
+    const packageJson = record(JSON.parse(readFileSync(path, "utf8")));
+    const scripts = record(packageJson?.scripts);
+    return Object.fromEntries(
+      Object.entries(scripts || {}).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function workerBuildScript(
+  scripts: Record<string, string>,
+): string | undefined {
+  if (scripts["xapi:build"]) return "xapi:build";
+  if (
+    scripts.build &&
+    /(?:^|\s)(?:npm|pnpm|yarn|bun)\s+run\s+build:worker(?:\s|$)/.test(
+      scripts.build,
+    )
+  ) {
+    return "build";
+  }
+  if (
+    scripts["build:worker"] &&
+    /(?:--outfile|\bvinext\b|\bwrangler\b)/.test(scripts["build:worker"])
+  ) {
+    return "build:worker";
+  }
+  return scripts.build ? "build" : undefined;
+}
+
+function outfileFromScript(script: string | undefined): string | undefined {
+  if (!script) return undefined;
+  const match = script.match(
+    /(?:^|\s)--outfile(?:=|\s+)(?:"([^"]+)"|'([^']+)'|([^\s]+))/,
+  );
+  return match?.[1] || match?.[2] || match?.[3];
+}
+
+function portableProjectPath(
+  rootDir: string,
+  baseDir: string,
+  value: string | undefined,
+): string | undefined {
+  if (!value || value.includes("\0")) return undefined;
+  const path = relative(rootDir, resolve(baseDir, value)).split(sep).join("/");
+  if (!path || path === ".." || path.startsWith("../")) return undefined;
+  return path;
+}
+
+function inferredBuild(
+  options: ImportWranglerProjectOptions,
+  rootDir: string,
+  sourceDir: string,
+  wrangler: UnknownRecord,
+): { command: string; output: string; main?: string; inferred: boolean } {
+  const scripts = packageScripts(rootDir);
+  const manager = packageManager(rootDir);
+  const workerScript = workerBuildScript(scripts);
+  const inferredCommand = workerScript
+    ? `${manager} run ${workerScript}`
+    : undefined;
+  const scriptOutput = portableProjectPath(
+    rootDir,
+    rootDir,
+    outfileFromScript(workerScript ? scripts[workerScript] : undefined),
+  );
+  const wranglerMain =
+    typeof wrangler.main === "string" ? wrangler.main.trim() : undefined;
+  const mainOutput =
+    wranglerMain &&
+    /\.(?:m?js)$/.test(wranglerMain) &&
+    (sourceDir === rootDir || wranglerMain.includes("/"))
+      ? portableProjectPath(rootDir, sourceDir, wranglerMain)
+      : undefined;
+  const output = options.buildOutput || scriptOutput || mainOutput;
+  return {
+    command: options.buildCommand || inferredCommand || "npm run build",
+    output: output || "dist/worker.mjs",
+    ...(options.buildMain ? { main: options.buildMain } : {}),
+    inferred: Boolean(
+      options.buildCommand ||
+        options.buildOutput ||
+        options.buildMain ||
+        (inferredCommand && output),
+    ),
+  };
+}
+
 export function importWranglerProject(
   options: ImportWranglerProjectOptions,
 ): ImportWranglerProjectResult {
@@ -720,6 +856,18 @@ export function importWranglerProject(
     "production",
     entries,
   );
+  publicVariables(
+    desired.preview.config,
+    desired.preview.prefix,
+    "preview",
+    entries,
+  );
+  publicVariables(
+    desired.production.config,
+    desired.production.prefix,
+    "production",
+    entries,
+  );
   const previewSecrets = secretNames(
     desired.preview.config,
     desired.preview.prefix,
@@ -732,11 +880,14 @@ export function importWranglerProject(
     "production",
     entries,
   );
+  const build = inferredBuild(options, rootDir, sourceDir, wrangler);
   compatibilityEntry(
     entries,
-    "REENTER",
-    "build.output",
-    "Verify the generated bundle path; Wrangler source main is not necessarily the build output",
+    build.inferred ? "SUPPORTED" : "REENTER",
+    "build",
+    build.inferred
+      ? `Build inferred as ${build.command} → ${build.output}${build.main ? ` (main: ${build.main})` : ""}`
+      : "Verify build.command and build.output; Wrangler source main is not necessarily the deployable build output",
   );
 
   const sortedEntries = stableEntries(entries);
@@ -787,7 +938,11 @@ export function importWranglerProject(
       template: "worker" as const,
     },
     wrangler: wranglerPath,
-    build: { command: "npm run build", output: "dist/worker.mjs" },
+    build: {
+      command: build.command,
+      output: build.output,
+      ...(build.main ? { main: build.main } : {}),
+    },
     ...(assets ? { assets } : {}),
     environments: {
       preview: {
@@ -825,6 +980,7 @@ export function importWranglerProject(
     nextSteps: [
       `Review ${WORKER_PROJECT_CONFIG_FILE}`,
       "Set every REENTER secret with xapi workers secrets set",
+      "Resolve every reported Wrangler var as a public binding or an explicit Secret; xAPI never converts it automatically",
       "xapi workers plan --env preview",
     ],
   };

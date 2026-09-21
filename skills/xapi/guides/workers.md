@@ -34,6 +34,15 @@ source of truth for the entrypoint, compatibility settings, and static assets.
 Managed KV, D1, R2, Durable Object, Queue, and Workflow declarations belong in
 `xapi.worker.json`. The file contains no credential and may be committed.
 
+Use `xapi workers inspect --env preview` for one read-only operational view of
+the linked Worker. It reports the active environment, routing, Artifact,
+Deployment, resource and Secret metadata, domains, and billing freshness.
+Unavailable sources remain `UNKNOWN`. Use `plan` for desired-state comparison.
+Plan runs and validates the configured local build, then compares that exact
+Artifact and desired resources with the live snapshot. It performs no remote
+writes. `inspect` never builds, deploys, probes application routes, or reads
+Secret values.
+
 Choose the `init` form from the project you actually have:
 
 | Starting point | Command | What `init` does |
@@ -118,6 +127,13 @@ xapi workers push --env preview
 write a partial project unless the user explicitly accepts the report with
 `--accept-partial`.
 
+Wrangler `vars` are public plain-text bindings. The importer never copies their
+values and never silently converts them into encrypted Secrets. A non-empty
+`vars` block is reported as `UNSUPPORTED` until xAPI desired state has an
+explicit plain-text binding workflow. Move only genuinely sensitive values to
+`secrets`, set them with `workers secrets set`, and keep public values out of
+the generated project until the binding is supported.
+
 The project workflow does not require Git. Git repository, branch, and commit
 are optional provenance, not authentication and not a deployment prerequisite.
 It runs the configured build, creates the remote Worker when `workerId` is
@@ -144,7 +160,7 @@ Choose the command by intent:
 | Adopt live-only resources | `resources pull` | Live read, then safe local merge |
 | Stop declaring a resource | `resources remove` | Local desired state only |
 | Delete resource data | `resources destroy --yes` | Local desired state and one live environment |
-| Check convergence | `workers plan` | None |
+| Preview exact deployment changes | `workers plan` | Local build output only |
 
 Use this normal flow to add a resource:
 
@@ -160,6 +176,12 @@ xapi workers resources update --env preview --type d1 --binding DB \
 xapi workers plan --env preview
 xapi workers push --env preview
 ```
+
+`plan` reports the current and desired daily budget, active price-book
+visibility, and any new metered Worker/resource declarations. Exact charges
+remain usage-dependent; the CLI does not invent request, CPU, storage, or
+operation volume. Use `inspect` and billing views for accrued usage and billing
+freshness.
 
 `--env both` creates matching declarations, not shared storage. `resources add`
 is idempotent and rejects conflicting binding reuse. `resources update`
@@ -230,6 +252,17 @@ vinext), use that configuration to produce the native upload bundle:
 ```bash
 npm run build
 npx wrangler deploy --dry-run --config dist/server/wrangler.json --outfile dist/app.worker.bundle
+```
+
+When `package.json` contains a framework `build:worker` script with Wrangler's
+`--outfile`, `init --from-wrangler` infers both the command and `.bundle` path.
+Review the generated `xapi.worker.json`. If the framework uses a custom script,
+provide the values during import instead of editing an ambiguous default:
+
+```bash
+xapi workers init --from-wrangler dist/server/wrangler.json \
+  --build-command "pnpm run package:worker" \
+  --build-output dist/app.worker.bundle
 ```
 
 Point the project build output to `dist/app.worker.bundle`; omit `build.main`.

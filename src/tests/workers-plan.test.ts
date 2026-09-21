@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { HttpError } from "../client.ts";
-import { createWorkerPlan } from "../workers-plan.ts";
+import { createWorkerPlan, prepareWorkerPlan } from "../workers-plan.ts";
 import { WORKER_PROJECT_SCHEMA_URL } from "../workers-project.ts";
 import { deploymentPrefix } from "../workers-deployment-state.ts";
 
@@ -76,6 +76,44 @@ function unexpected(name: string): () => Promise<never> {
 }
 
 describe("workers plan", () => {
+  test("builds and validates the exact Artifact before presenting the final plan", async () => {
+    const root = project();
+    const events: string[] = [];
+    const prepared = await prepareWorkerPlan({
+      cwd: root,
+      environment: "preview",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: {
+        listWorkers: async () => {
+          events.push("read-live-state");
+          return [];
+        },
+        getWorker: unexpected("getWorker"),
+        listWorkerResources: unexpected("listWorkerResources"),
+        listWorkerSecrets: unexpected("listWorkerSecrets"),
+      },
+      runBuild: async () => {
+        events.push("build");
+        mkdirSync(join(root, "dist"), { recursive: true });
+        writeFileSync(
+          join(root, "dist/worker.mjs"),
+          "export default {fetch(){return new Response('ok')}};",
+        );
+      },
+    });
+    expect(events).toEqual(["build", "read-live-state"]);
+    expect(prepared.plan.actions).toContainEqual(
+      expect.objectContaining({
+        operation: "CREATE",
+        kind: "artifact",
+        desired: expect.objectContaining({
+          sha256: prepared.bundle.contentSha256,
+          sizeBytes: prepared.bundle.sizeBytes,
+        }),
+      }),
+    );
+  });
+
   test("plan compares the current remote binding snapshot, not only code", async () => {
     const bundle = "export default {fetch(){return new Response('ok')}}";
     const root = project({ linked: true, bundle });
@@ -306,6 +344,13 @@ describe("workers plan", () => {
         { bindingName: "MODEL_KEY", version: 2 },
         { bindingName: "OLD_SECRET", version: 1 },
       ],
+      workerBillingQuery: async () => ({
+        data: {
+          version: "workers-2026-09",
+          effectiveFrom: "2026-09-01T00:00:00.000Z",
+          rates: [{ metric: "WORKER_REQUEST", retailUnitPriceUsd: "0.01" }],
+        },
+      }),
     };
     const plan = await createWorkerPlan({
       cwd: root,
@@ -353,6 +398,18 @@ describe("workers plan", () => {
       // Legacy deployments have no configuration fingerprint: one safe redeploy.
       expect.objectContaining({ operation: "CREATE", kind: "deployment" }),
     );
+    expect(plan.costImpact).toEqual(
+      expect.objectContaining({
+        status: "AVAILABLE",
+        currentDailyBudgetUsd: 0.5,
+        desiredDailyBudgetUsd: 0.25,
+        dailyBudgetDeltaUsd: -0.25,
+        priceBook: expect.objectContaining({
+          version: "workers-2026-09",
+          rateCount: 1,
+        }),
+      }),
+    );
   });
 
   test("uses only GET requests at the real HTTP client boundary", async () => {
@@ -388,7 +445,7 @@ describe("workers plan", () => {
       clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
     });
     expect(plan.canApply).toBe(true);
-    expect(methods).toEqual(["GET", "GET", "GET"]);
+    expect(methods).toEqual(["GET", "GET", "GET", "GET"]);
   });
 
   test("propagates a safe hidden-instance 404 and performs no fallback lookup", async () => {

@@ -189,6 +189,12 @@ function fakePlatform(
       return state.resources.at(-1);
     },
     listWorkerSecrets: async () => state.secrets,
+    listWorkerDomains: async () => [],
+    workerBillingQuery: async () => ({
+      snapshotId: "snapshot-1",
+      dataQuality: "COMPLETE",
+      data: { lifecycleState: "RUNNING", dailyBudgetUsd: 0.25 },
+    }),
     listWorkerArtifacts: async () => state.artifacts,
     uploadWorkerArtifact: async (_api, _id, input) => {
       calls.uploadArtifact += 1;
@@ -345,6 +351,9 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(readFileSync(join(root, "observed-key.txt"), "utf8")).toBe("");
     expect(first.resources.created).toEqual(["STATE"]);
     expect(first.deployment.status).toBe("ACTIVE");
+    expect(first.inspection.mode).toBe("READ_ONLY");
+    expect(first.inspection.environment.status).toBe("ACTIVE");
+    expect(first.commands.inspect).toContain(`inspect ${workerId}`);
     expect(first.health.url).toBe(
       "https://push-agent.example.test/w/agent/preview/health",
     );
@@ -380,7 +389,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(planViews).toHaveLength(1);
   });
 
-  test("interactive bootstrap saves prerequisites but stops before build when a Secret is missing", async () => {
+  test("interactive bootstrap validates the build before saving prerequisites, then stops for a missing Secret", async () => {
     const root = fixture({ secrets: ["MODEL_KEY"] });
     const platform = fakePlatform();
     let buildCalls = 0;
@@ -394,6 +403,11 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
         confirm: async () => true,
         runBuild: async () => {
           buildCalls += 1;
+          mkdirSync(join(root, "dist"), { recursive: true });
+          writeFileSync(
+            join(root, "dist/worker.mjs"),
+            "export default {fetch(){return new Response('ok')}};",
+          );
         },
       });
     } catch (error) {
@@ -405,7 +419,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(JSON.stringify(caught?.recovery)).toContain(
       `secrets set ${workerId} MODEL_KEY`,
     );
-    expect(buildCalls).toBe(0);
+    expect(buildCalls).toBe(1);
     expect(platform.calls.uploadArtifact).toBe(0);
     expect(platform.calls.deploy).toBe(0);
     expect(loadWorkerProject(root).config.workerId).toBe(workerId);
@@ -431,6 +445,13 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
           confirmations += 1;
           return true;
         },
+        runBuild: async () => {
+          mkdirSync(join(root, "dist"), { recursive: true });
+          writeFileSync(
+            join(root, "dist/worker.mjs"),
+            "export default {fetch(){return new Response('ok')}};",
+          );
+        },
       }),
     ).rejects.toThrow("requires reconciliation");
     expect(confirmations).toBe(0);
@@ -453,6 +474,13 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
         clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
         client: platform.client,
         nonInteractive: true,
+        runBuild: async () => {
+          mkdirSync(join(root, "dist"), { recursive: true });
+          writeFileSync(
+            join(root, "dist/worker.mjs"),
+            "export default {fetch(){return new Response('ok')}};",
+          );
+        },
       }),
     ).rejects.toThrow("requires reconciliation");
     expect(platform.calls.createWorker).toBe(0);
@@ -469,6 +497,13 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
         clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
         client: platform.client,
         confirm: async () => false,
+        runBuild: async () => {
+          mkdirSync(join(root, "dist"), { recursive: true });
+          writeFileSync(
+            join(root, "dist/worker.mjs"),
+            "export default {fetch(){return new Response('ok')}};",
+          );
+        },
       }),
     ).rejects.toThrow("cancelled");
     expect(platform.calls.createWorker).toBe(0);
@@ -495,6 +530,13 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
         clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
         client: platform.client,
         confirm: async () => true,
+        runBuild: async () => {
+          mkdirSync(join(root, "dist"), { recursive: true });
+          writeFileSync(
+            join(root, "dist/worker.mjs"),
+            "export default {fetch(){return new Response('ok')}};",
+          );
+        },
       });
     } catch (error) {
       caught = error as WorkerPushError;
@@ -601,6 +643,9 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
       "missing-package-manager-that-does-not-exist run build",
     );
     expect(caught?.recovery.next).toContain("Install the package manager");
+    expect(caught?.recovery.remoteChangesApplied).toBe(false);
+    expect(platform.calls.createWorker).toBe(0);
+    expect(platform.calls.createResource).toBe(0);
     expect(platform.calls.uploadArtifact).toBe(0);
     expect(platform.calls.deploy).toBe(0);
   });
@@ -630,8 +675,10 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(caught).toBeInstanceOf(WorkerPushError);
     expect(caught?.message).toContain("imports that are not in the Artifact");
     expect(caught?.recovery).toEqual(
-      expect.objectContaining({ workerId, resourcesPreserved: true }),
+      expect.objectContaining({ remoteChangesApplied: false }),
     );
+    expect(platform.calls.createWorker).toBe(0);
+    expect(platform.calls.createResource).toBe(0);
     expect(platform.calls.uploadArtifact).toBe(0);
     expect(platform.calls.deploy).toBe(0);
   });

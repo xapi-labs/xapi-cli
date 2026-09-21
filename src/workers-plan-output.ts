@@ -217,6 +217,9 @@ export function formatWorkerPlan(plan: WorkerDeploymentPlan): string {
   const blocked = plan.actions.filter(
     (action) => action.operation === "BLOCKED",
   );
+  const unchanged = plan.actions.filter(
+    (action) => action.operation === "NO_CHANGE",
+  );
   const rootBlocked = blocked.filter(
     (action) => action.kind !== "deployment",
   ).length;
@@ -228,6 +231,14 @@ export function formatWorkerPlan(plan: WorkerDeploymentPlan): string {
   const remote = plan.remote.linked
     ? `Linked · ${plan.remote.workerId || plan.project.workerId || "existing Worker"}`
     : "Not linked · a new Worker will be created";
+  const budget = plan.costImpact;
+  const budgetChange =
+    budget.currentDailyBudgetUsd === undefined
+      ? `$${budget.desiredDailyBudgetUsd.toFixed(2)}/day target`
+      : `$${budget.currentDailyBudgetUsd.toFixed(2)} → $${budget.desiredDailyBudgetUsd.toFixed(2)}/day (${budget.dailyBudgetDeltaUsd! >= 0 ? "+" : "-"}$${Math.abs(budget.dailyBudgetDeltaUsd!).toFixed(2)})`;
+  const priceBook = budget.priceBook
+    ? `${budget.priceBook.version || "active version"} · ${budget.priceBook.rateCount} rates`
+    : "Unavailable — verify before production promotion";
 
   const lines = [
     "xAPI Worker Plan",
@@ -241,7 +252,7 @@ export function formatWorkerPlan(plan: WorkerDeploymentPlan): string {
       "Build",
       `${plan.project.build.command} → ${plan.project.build.output}${plan.project.build.main ? ` (main: ${plan.project.build.main})` : ""}`,
     ),
-    "  Plan compares the current bundle; push rebuilds it before upload.",
+    "  Plan built and validated this exact bundle; push applies the reviewed result.",
     "",
     "Summary",
     metadataRow("Create", String(plan.summary.CREATE)),
@@ -249,6 +260,17 @@ export function formatWorkerPlan(plan: WorkerDeploymentPlan): string {
     metadataRow("Unchanged", String(plan.summary.NO_CHANGE)),
     metadataRow("Manual", String(plan.summary.MANUAL)),
     metadataRow("Blocked", String(plan.summary.BLOCKED)),
+    "",
+    "Cost impact",
+    metadataRow("Daily budget", budgetChange),
+    metadataRow("Price book", priceBook),
+    metadataRow(
+      "Metered changes",
+      budget.meteredChanges.length
+        ? `${budget.meteredChanges.length} usage-dependent item${budget.meteredChanges.length === 1 ? "" : "s"}`
+        : "No new metered resource declarations",
+    ),
+    ...budget.notes.map((note) => `  · ${note}`),
     "",
     "Planned changes",
     ...(planned.length ? planned.map(actionRow) : ["  No changes required."]),
@@ -259,6 +281,9 @@ export function formatWorkerPlan(plan: WorkerDeploymentPlan): string {
   }
   if (blocked.length) {
     lines.push("", "Blocked", ...blocked.map(actionRow));
+  }
+  if (unchanged.length) {
+    lines.push("", "Existing state (reused)", ...unchanged.map(actionRow));
   }
   lines.push("", "Next steps", ...nextSteps(plan), RULE);
   return lines.join("\n");

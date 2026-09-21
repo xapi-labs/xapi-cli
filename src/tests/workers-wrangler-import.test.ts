@@ -76,7 +76,8 @@ describe("Wrangler project import", () => {
     );
     expect(blocked.report.entries).toContainEqual(
       expect.objectContaining({
-        category: "REENTER",
+        category: "UNSUPPORTED",
+        path: "vars.MODEL_KEY",
         bindingName: "MODEL_KEY",
       }),
     );
@@ -97,7 +98,7 @@ describe("Wrangler project import", () => {
         (resource) => resource.bindingName,
       ),
     ).toEqual(["AGENT", "DB", "EVENTS", "FILES", "FLOW", "STATE"]);
-    expect(project.config.environments.preview.secrets).toEqual(["MODEL_KEY"]);
+    expect(project.config.environments.preview.secrets).toEqual([]);
     expect(project.config.assets).toEqual({
       directory: "dist/client",
       binding: "ASSETS",
@@ -133,9 +134,21 @@ binding = "DB"
 database_id = "old-d1-id"
 `;
     writeFileSync(path, original);
+    const blocked = importWranglerProject({
+      cwd: root,
+      wranglerPath: "wrangler.toml",
+    });
+    expect(blocked.wrote).toBe(false);
+    expect(blocked.report.entries).toContainEqual(
+      expect.objectContaining({
+        category: "UNSUPPORTED",
+        path: "env.preview.vars.MODEL_KEY",
+      }),
+    );
     const result = importWranglerProject({
       cwd: root,
       wranglerPath: "wrangler.toml",
+      acceptPartial: true,
     });
     expect(result.wrote).toBe(true);
     expect(result.report.format).toBe("toml");
@@ -144,7 +157,7 @@ database_id = "old-d1-id"
     expect(project.config.environments.preview.resources).toEqual([
       { type: "kv_namespace", bindingName: "STATE" },
     ]);
-    expect(project.config.environments.preview.secrets).toEqual(["MODEL_KEY"]);
+    expect(project.config.environments.preview.secrets).toEqual([]);
     expect(
       project.config.environments.production.resources.map(
         (resource) => resource.bindingName,
@@ -200,7 +213,14 @@ database_id = "old-d1-id"
     const root = workspace();
     writeFileSync(
       join(root, "package.json"),
-      JSON.stringify({ name: "framework-app", scripts: { build: "vinext build" } }),
+      JSON.stringify({
+        name: "framework-app",
+        scripts: {
+          build: "next build",
+          "build:worker":
+            "vinext build && wrangler deploy --dry-run --config dist/server/wrangler.json --outfile dist/app.worker.bundle",
+        },
+      }),
     );
     const serverDir = join(root, "dist", "server");
     const clientDir = join(root, "dist", "client");
@@ -210,7 +230,10 @@ database_id = "old-d1-id"
     writeFileSync(
       path,
       JSON.stringify({
+        configPath: join(root, "wrangler.jsonc"),
+        userConfigPath: join(root, "wrangler.jsonc"),
         topLevelName: "framework-app",
+        definedEnvironments: [],
         name: "framework-app",
         main: "index.js",
         compatibility_date: "2026-09-10",
@@ -239,6 +262,90 @@ database_id = "old-d1-id"
     const project = loadWorkerProject(root);
     expect(project.config.wrangler).toBe("dist/server/wrangler.json");
     expect(project.config.assets).toEqual({ directory: "dist/client" });
+    expect(project.config.build).toEqual({
+      command: "npm run build:worker",
+      output: "dist/app.worker.bundle",
+    });
+    expect(result.report.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ category: "IGNORED", path: "configPath" }),
+        expect.objectContaining({ category: "IGNORED", path: "userConfigPath" }),
+        expect.objectContaining({ category: "SUPPORTED", path: "build" }),
+      ]),
+    );
     expect(existsSync(join(serverDir, "xapi.worker.json"))).toBe(false);
+  });
+
+  test("keeps declared secrets distinct from public Wrangler vars", () => {
+    const root = workspace();
+    const path = join(root, "wrangler.jsonc");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        name: "binding-types",
+        main: "dist/worker.mjs",
+        vars: { PUBLIC_MODE: "public-visible-value" },
+        secrets: ["PRIVATE_TOKEN"],
+      }),
+    );
+
+    const blocked = importWranglerProject({ cwd: root, wranglerPath: path });
+    expect(blocked.wrote).toBe(false);
+    expect(JSON.stringify(blocked.report)).not.toContain("public-visible-value");
+
+    importWranglerProject({
+      cwd: root,
+      wranglerPath: path,
+      acceptPartial: true,
+    });
+    const project = loadWorkerProject(root);
+    expect(project.config.environments.preview.secrets).toEqual([
+      "PRIVATE_TOKEN",
+    ]);
+    expect(project.config.environments.preview.secrets).not.toContain(
+      "PUBLIC_MODE",
+    );
+  });
+
+  test("accepts explicit build overrides for generated framework artifacts", () => {
+    const root = workspace();
+    const path = join(root, "wrangler.jsonc");
+    writeFileSync(path, JSON.stringify({ name: "custom-build", main: "src/index.ts" }));
+    const result = importWranglerProject({
+      cwd: root,
+      wranglerPath: path,
+      buildCommand: "pnpm run package:worker",
+      buildOutput: ".worker/output",
+      buildMain: "index.js",
+    });
+    expect(result.config?.build).toEqual({
+      command: "pnpm run package:worker",
+      output: ".worker/output",
+      main: "index.js",
+    });
+  });
+
+  test("keeps a full frontend build when it invokes the Worker sub-build", () => {
+    const root = workspace();
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({
+        scripts: {
+          build: "vite build && npm run build:worker",
+          "build:worker":
+            "esbuild worker/index.ts --bundle --outfile=dist-worker/worker.js",
+        },
+      }),
+    );
+    const path = join(root, "wrangler.jsonc");
+    writeFileSync(
+      path,
+      JSON.stringify({ name: "full-spa", main: "dist-worker/worker.js" }),
+    );
+    const result = importWranglerProject({ cwd: root, wranglerPath: path });
+    expect(result.config?.build).toEqual({
+      command: "npm run build",
+      output: "dist-worker/worker.js",
+    });
   });
 });
