@@ -41,6 +41,12 @@ import {
   workerBillingOutputMode,
 } from "../workers-billing-output.ts";
 import { bindXdomainWorker } from "../workers-domain-bind.ts";
+import { inspectWorker } from "../workers-inspect.ts";
+import {
+  formatWorkerInspection,
+  useHumanWorkerInspectionOutput,
+} from "../workers-inspect-output.ts";
+import { loadWorkerProject } from "../workers-project.ts";
 
 export const WORKERS_HELP = `xapi-to workers - Deploy and manage xAPI-hosted Cloudflare Workers
 
@@ -58,6 +64,7 @@ NORMAL PROJECT WORKFLOW (recommended)
 INSPECTION AND OPERATIONS
   list
   get <worker-id>
+  inspect [worker-id] --env preview|production
   audit <worker-id>
   invocations <worker-id> --env preview|production
   logs <worker-id> --env preview|production [--tail] [--since 10m]
@@ -107,10 +114,14 @@ RESOURCES, BILLING, AND LIFECYCLE
 
 CHOOSING A WORKFLOW
   Normal application: init -> plan -> push -> promote
-  Read-only review: get + plan + resources list + logs
+  Read-only review: inspect; use plan when comparing local desired state
   workers build creates an Artifact in a managed Sandbox; it does not deploy.
   workers deploy activates an existing Artifact; it does not build or converge project state.
-  There is no workers inspect command; use the read-only commands above.
+
+INSPECT FLAGS
+  --env preview|production              Environment to inspect (required)
+  --config PATH                         Locate workerId from xapi.worker.json
+  --format json                         Emit the complete machine-readable report
 
 CREATE FLAGS
   --template worker|agent       Official starter type (default: worker)
@@ -852,6 +863,57 @@ export async function workersCommand(
         ),
       );
       return;
+    case "inspect": {
+      assertFlags(flags, ["env", "config"]);
+      if (rest.length > 1) {
+        err("usage: xapi-to workers inspect [worker-id] --env ENV");
+      }
+      if (flags.config === "true" || flags.config === "") {
+        err("--config requires a path");
+      }
+      const selectedEnvironment = environment(flags.env) as
+        | "preview"
+        | "production";
+      let workerId: string | undefined = rest[0];
+      if (!workerId) {
+        try {
+          const project = loadWorkerProject(process.cwd(), flags.config);
+          workerId = project.config.workerId;
+        } catch (error) {
+          err(
+            error instanceof Error
+              ? error.message
+              : "Unable to load Worker project",
+          );
+        }
+        if (!workerId) {
+          err(
+            "Worker project is not linked yet; pass a Worker ID or run workers push first",
+          );
+        }
+      }
+      try {
+        const report = await inspectWorker({
+          workerId,
+          environment: selectedEnvironment,
+          clientOptions: options(),
+        });
+        if (
+          useHumanWorkerInspectionOutput({
+            flagFormat: flags.format,
+            envFormat: process.env.XAPI_OUTPUT,
+            stdoutIsTTY: process.stdout.isTTY,
+          })
+        ) {
+          console.log(formatWorkerInspection(report));
+        } else {
+          output(report, flags.format as OutputFormat | undefined);
+        }
+      } catch (error) {
+        err(error instanceof Error ? error.message : "Worker inspection failed");
+      }
+      return;
+    }
     case "create": {
       assertFlags(flags, [
         "name",

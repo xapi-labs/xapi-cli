@@ -33,8 +33,9 @@ describe("Workers focused help", () => {
     expect(WORKERS_HELP).toContain("NORMAL PROJECT WORKFLOW (recommended)");
     expect(WORKERS_HELP).toContain("ADVANCED ARTIFACT PRIMITIVES");
     expect(WORKERS_HELP).toContain("init -> plan -> push -> promote");
+    expect(WORKERS_HELP).toContain("inspect [worker-id]");
     expect(WORKERS_HELP).toContain("build creates an Artifact");
     expect(WORKERS_HELP).toContain("deploy activates an existing Artifact");
-    expect(WORKERS_HELP).toContain("There is no workers inspect command");
+    expect(WORKERS_HELP).toContain("Read-only review: inspect");
   });
 });

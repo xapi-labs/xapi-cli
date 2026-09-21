@@ -7,13 +7,19 @@ the project workflow:
 
 | Intent | Command | Writes live state |
 | --- | --- | --- |
+| Inspect one running environment | `workers inspect [worker-id] --env ENV` | No |
 | Compare local desired state with xAPI | `workers plan --env ENV` | No |
 | Build, reconcile and deploy preview | `workers push --env preview` | Yes |
 | Release the accepted preview Artifact | `workers promote --to production` | Yes |
 | Restore an earlier active version | `workers rollback --env ENV ...` | Yes |
 
-There is no `workers inspect` command. Use `workers get`, `workers plan`,
-`workers resources list`, and `workers logs` for read-only inspection.
+`workers inspect` accepts an explicit Worker ID or resolves it from the current
+`xapi.worker.json`. It combines Worker, environment, active Artifact and
+Deployment, routing, resource, Secret metadata, domain, and billing freshness
+reads into one report. Optional read failures stay `UNKNOWN`, never zero or
+success. It never reads Secret values and performs no health request that might
+trigger application behavior. Use `workers plan` separately when comparing
+local desired state with xAPI.
 `workers build`, `upload`, and `deploy` are lower-level Artifact primitives for
 custom CI and recovery. A managed `build` only produces an Artifact; `deploy`
 only activates an existing Artifact. Neither replaces project convergence by

@@ -34,6 +34,13 @@ source of truth for the entrypoint, compatibility settings, and static assets.
 Managed KV, D1, R2, Durable Object, Queue, and Workflow declarations belong in
 `xapi.worker.json`. The file contains no credential and may be committed.
 
+Use `xapi workers inspect --env preview` for one read-only operational view of
+the linked Worker. It reports the active environment, routing, Artifact,
+Deployment, resource and Secret metadata, domains, and billing freshness.
+Unavailable sources remain `UNKNOWN`. Use `plan` for desired-state comparison;
+`inspect` never builds, deploys, probes application routes, or reads Secret
+values.
+
 Choose the `init` form from the project you actually have:
 
 | Starting point | Command | What `init` does |

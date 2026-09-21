@@ -40,6 +40,9 @@ CLI branch must remain complementary to that backend work.
 5. Project commands and low-level Artifact primitives appeared in one flat help
    list. Help now makes `plan → push → promote` the normal path and labels
    `build`, `upload`, and `deploy` as custom-CI or recovery operations.
+6. Runtime inspection required several separate commands. `workers inspect`
+   now provides one read-only report while preserving failed sources as
+   `UNKNOWN` and excluding Secret values.
 
 ## Deferred backend work
 

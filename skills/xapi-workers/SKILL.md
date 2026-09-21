@@ -12,7 +12,7 @@ Use the `xapi` CLI (`xapi-to` is the same executable). Verify `xapi workers --he
 - Identify the control-plane host, Worker ID, and **preview or production** from the project and `workers get`. Test control plane and preview environment are separate choices.
 - Authentication precedence: `XAPI_KEY`, `XAPI_API_KEY`, then `~/.xapi/config.json`. Keys need `workers:read` and, for changes, `workers:write`, plus access to the target Worker. A scoped-out Worker can return 404.
 - Production API host is `api.xapi.to`; testing uses `XAPI_API_HOST=api.test.xapi.to` (host only). Load secrets from the user's existing secure environment. Never print keys, include them in code/artifacts, or send the xAPI key to a public Worker URL or Cloudflare. Runtime application authentication is separate.
-- Start with `workers get <worker-id>`, `workers capabilities`, and `workers resources list <worker-id> --env <environment>`. Read-only inspection needs no extra approval. Use existing user authorization for changes; don't expand cleanup from a test environment to production.
+- Start with `workers inspect [worker-id] --env <environment>` and `workers capabilities`. Use `workers plan --env <environment>` when a local project is available and desired-state drift matters. Read-only inspection needs no extra approval. Use existing user authorization for changes; don't expand cleanup from a test environment to production.
 
 ## Load the relevant workflow
 
