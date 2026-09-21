@@ -37,6 +37,9 @@ CLI branch must remain complementary to that backend work.
    `build:worker` command and `--outfile` bundle.
 4. The repository may contain Workers commands before the currently published
    npm package. Skills need to detect and report that release mismatch.
+5. Project commands and low-level Artifact primitives appeared in one flat help
+   list. Help now makes `plan → push → promote` the normal path and labels
+   `build`, `upload`, and `deploy` as custom-CI or recovery operations.
 
 ## Deferred backend work
 

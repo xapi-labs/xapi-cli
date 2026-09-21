@@ -47,27 +47,33 @@ export const WORKERS_HELP = `xapi-to workers - Deploy and manage xAPI-hosted Clo
 USAGE
   xapi-to workers <command> [args] [flags]
 
-COMMANDS
+NORMAL PROJECT WORKFLOW (recommended)
   templates
   init [directory] --template TEMPLATE
   plan --env preview|production
   push --env preview
   promote --to production [--artifact ARTIFACT_ID]
   rollback --env preview|production (--to previous | --deployment DEPLOYMENT_ID)
+
+INSPECTION AND OPERATIONS
   list
   get <worker-id>
+  audit <worker-id>
+  invocations <worker-id> --env preview|production
+  logs <worker-id> --env preview|production [--tail] [--since 10m]
+  usage <worker-id> [--env preview|production]
+  metering <worker-id> --env preview|production [--json]
+
+ADVANCED ARTIFACT PRIMITIVES (custom CI and recovery only)
   create --name NAME --slug SLUG --preview-budget USD --production-budget USD
   upload <worker-id> --file dist/index.mjs|dist/ [--main worker.js]
   artifacts <worker-id>
   build <worker-id> --project . --entrypoint src/index.ts --command "npm run build"
   builds <worker-id>
   deploy <worker-id> --artifact ARTIFACT_ID --env preview|production
+
+RESOURCES, BILLING, AND LIFECYCLE
   budget <worker-id> <environment> --daily-usd USD
-  audit <worker-id>
-  invocations <worker-id> --env preview|production
-  logs <worker-id> --env preview|production [--tail] [--since 10m]
-  usage <worker-id> [--env preview|production]
-  metering <worker-id> --env preview|production [--json]
   billing-status
   billing ledger <worker-id> --env ENV [--all] [--snapshot-time ISO] [--json]
   retention show|quote|accept|pause|resume|keep-paused|delete <worker-id> --env ENV
@@ -98,6 +104,13 @@ COMMANDS
   artifact-provider-status
   build-provider-status
   delete <worker-id> --yes
+
+CHOOSING A WORKFLOW
+  Normal application: init -> plan -> push -> promote
+  Read-only review: get + plan + resources list + logs
+  workers build creates an Artifact in a managed Sandbox; it does not deploy.
+  workers deploy activates an existing Artifact; it does not build or converge project state.
+  There is no workers inspect command; use the read-only commands above.
 
 CREATE FLAGS
   --template worker|agent       Official starter type (default: worker)

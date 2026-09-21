@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  WORKERS_HELP,
   WORKERS_INIT_HELP,
   WORKERS_RESOURCES_HELP,
 } from "../commands/workers.ts";
@@ -26,5 +27,14 @@ describe("Workers focused help", () => {
     expect(WORKERS_RESOURCES_HELP).toContain("requires --yes");
     expect(WORKERS_RESOURCES_HELP).toContain("without updating the");
     expect(WORKERS_RESOURCES_HELP).toContain("cannot be updated in place");
+  });
+
+  test("top-level help separates the normal project flow from primitives", () => {
+    expect(WORKERS_HELP).toContain("NORMAL PROJECT WORKFLOW (recommended)");
+    expect(WORKERS_HELP).toContain("ADVANCED ARTIFACT PRIMITIVES");
+    expect(WORKERS_HELP).toContain("init -> plan -> push -> promote");
+    expect(WORKERS_HELP).toContain("build creates an Artifact");
+    expect(WORKERS_HELP).toContain("deploy activates an existing Artifact");
+    expect(WORKERS_HELP).toContain("There is no workers inspect command");
   });
 });
