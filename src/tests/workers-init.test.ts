@@ -250,6 +250,45 @@ describe("workers init", () => {
     });
   });
 
+  test("uses the repository package manager when adopting a workspace package", () => {
+    const cwd = workspace();
+    mkdirSync(join(cwd, ".git"));
+    mkdirSync(join(cwd, "apps"));
+    const target = join(cwd, "apps/web");
+    mkdirSync(target);
+    writeFileSync(
+      join(cwd, "package.json"),
+      JSON.stringify({
+        private: true,
+        packageManager: "yarn@1.22.22",
+        workspaces: ["apps/*"],
+      }),
+    );
+    writeFileSync(join(cwd, "yarn.lock"), "");
+    writeFileSync(
+      join(target, "package.json"),
+      JSON.stringify({
+        name: "workspace-web",
+        scripts: { build: "vite build" },
+        dependencies: { react: "latest" },
+        devDependencies: { vite: "latest" },
+      }),
+    );
+
+    const result = initWorkerProject({ cwd, target: "apps/web" });
+    const pkg = JSON.parse(readFileSync(join(target, "package.json"), "utf8"));
+    expect(pkg.scripts["xapi:build"]).toBe(
+      "corepack yarn run build && corepack yarn run xapi:worker:build",
+    );
+    expect(loadWorkerProject(target).config.build.command).toBe(
+      "corepack yarn run xapi:build",
+    );
+    expect(result.nextSteps.slice(0, 2)).toEqual([
+      "corepack yarn install",
+      "corepack yarn run xapi:build",
+    ]);
+  });
+
   test("uses the repository package manager for a nested workspace package", () => {
     const cwd = workspace();
     writeFileSync(join(cwd, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");

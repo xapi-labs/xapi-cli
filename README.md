@@ -505,7 +505,10 @@ xapi workers push --env preview
 The initializer adds `xapi:build`, `xapi:worker:build`, and
 `xapi:worker:dev`, plus a small `xapi-worker/index.ts`, `wrangler.jsonc`, and
 `xapi.worker.json`. `xapi:worker:dev` is only a package script around Wrangler;
-there is no separate xAPI local runtime. Use `--framework react|vite|vue|next`
+there is no separate xAPI local runtime. For workspace packages, `init` walks
+to the repository root and honors its declared `packageManager` or lockfile;
+the printed install and build commands are therefore safe for Yarn and pnpm
+monorepos as well as npm and Bun projects. Use `--framework react|vite|vue|next`
 only when automatic package detection is ambiguous. `init` is a one-time
 adapter setup, not a synchronization command; after it creates
 `xapi.worker.json`, use resource commands and `plan` to manage state.

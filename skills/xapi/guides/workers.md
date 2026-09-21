@@ -79,7 +79,9 @@ xapi workers push --env preview
 The added files are `xapi.worker.json`, `wrangler.jsonc`, and
 `xapi-worker/index.ts`. The added package scripts are `xapi:build`,
 `xapi:worker:build`, and `xapi:worker:dev`. Review the generated diff before
-installing dependencies. Re-running `init` is not a synchronization command;
+installing dependencies. A package inside a monorepo inherits the repository's
+declared package manager or lockfile; use the install and build commands printed
+by `init` rather than substituting npm. Re-running `init` is not a synchronization command;
 once `xapi.worker.json` exists, manage it with the project and resource commands.
 
 Use `--framework react|vite|vue|next` only for ambiguous package metadata.

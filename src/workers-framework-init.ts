@@ -5,7 +5,7 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   WORKER_PROJECT_SCHEMA_URL,
   type WorkerProjectConfig,
@@ -15,6 +15,7 @@ import {
 
 type PackageJson = Record<string, unknown> & {
   name?: string;
+  packageManager?: string;
   scripts?: Record<string, string>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
@@ -147,24 +148,53 @@ function detectFramework(
   );
 }
 
+function managerCommands(
+  name: "npm" | "pnpm" | "yarn" | "bun",
+  corepack: boolean,
+): { command: string; install: string } {
+  const command = corepack && (name === "pnpm" || name === "yarn")
+    ? `corepack ${name}`
+    : name;
+  return { command, install: `${command} install` };
+}
+
 function packageManager(rootDir: string): { command: string; install: string } {
-  let current = rootDir;
+  let cursor = rootDir;
   while (true) {
-    if (existsSync(join(current, "pnpm-lock.yaml")))
-      return { command: "pnpm", install: "pnpm install" };
-    if (existsSync(join(current, "yarn.lock")))
-      return { command: "yarn", install: "yarn install" };
+    const packagePath = join(cursor, "package.json");
+    if (existsSync(packagePath) && lstatSync(packagePath).isFile()) {
+      const declared = readPackage(packagePath).packageManager;
+      const name = typeof declared === "string"
+        ? declared.match(/^(npm|pnpm|yarn|bun)@/)?.[1]
+        : undefined;
+      if (name) {
+        return managerCommands(
+          name as "npm" | "pnpm" | "yarn" | "bun",
+          name === "pnpm" || name === "yarn",
+        );
+      }
+    }
+    if (existsSync(join(cursor, "pnpm-lock.yaml")))
+      return managerCommands("pnpm", false);
+    if (existsSync(join(cursor, "yarn.lock")))
+      return managerCommands("yarn", false);
     if (
-      existsSync(join(current, "bun.lock")) ||
-      existsSync(join(current, "bun.lockb"))
+      existsSync(join(cursor, "bun.lock")) ||
+      existsSync(join(cursor, "bun.lockb"))
     )
-      return { command: "bun", install: "bun install" };
-    if (existsSync(join(current, ".git"))) break;
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
+      return managerCommands("bun", false);
+    if (existsSync(join(cursor, "package-lock.json")))
+      return managerCommands("npm", false);
+
+    // Existing applications are often initialized from a workspace package.
+    // Include the repository root itself, then stop so an unrelated lockfile
+    // higher in the filesystem cannot change the generated commands.
+    if (existsSync(join(cursor, ".git"))) break;
+    const parent = dirname(cursor);
+    if (parent === cursor || basename(cursor) === "node_modules") break;
+    cursor = parent;
   }
-  return { command: "npm", install: "npm install" };
+  return managerCommands("npm", false);
 }
 
 function outputDirectory(framework: ExistingFramework): string {
