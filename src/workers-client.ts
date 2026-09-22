@@ -157,6 +157,9 @@ export async function uploadWorkerArtifact(
       idempotencyKey: input.idempotencyKey,
       mainModule: input.bundle.mainModule,
       modules: input.bundle.modules.map(addFile),
+      ...(input.bundle.containers?.length
+        ? { containers: input.bundle.containers }
+        : {}),
       ...(input.bundle.observability
         ? { observability: input.bundle.observability }
         : {}),

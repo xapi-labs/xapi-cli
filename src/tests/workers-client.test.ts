@@ -196,6 +196,58 @@ describe("workers client", () => {
     expect(await files[1].text()).toBe("export {};");
   });
 
+  it("preserves Container deployment intent through multipart upload", async () => {
+    fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id: "artifact-2" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ) as any;
+    const containers = [{ name: "trader", className: "TraderContainer", image: "docker.io/example/trader:v1", instanceType: "lite" as const, maxInstances: 2, rolloutActiveGracePeriod: 0 }];
+    const bundle = {
+      containers,
+      version: 1 as const,
+      mainModule: "worker.js",
+      modules: [
+        {
+          path: "worker.js",
+          content: 'import "./chunk.js"; export default {};',
+          encoding: "utf8" as const,
+          contentType: "application/javascript+module" as const,
+        },
+        {
+          path: "chunk.js",
+          content: "export {};",
+          encoding: "utf8" as const,
+          contentType: "application/javascript+module" as const,
+        },
+      ],
+    };
+    await uploadWorkerArtifact(options, "worker/id", {
+      bundle,
+      idempotencyKey: "showcase-bundle-v1",
+    });
+    const [target, init] = fetchSpy.mock.calls[0] as any[];
+    expect(target).toBe("https://test.xapi.to/api/v1/workers/worker%2Fid/artifacts/bundle");
+    expect(init.body).toBeInstanceOf(FormData);
+    expect(init.headers["Content-Type"]).toBeUndefined();
+    const form = init.body as FormData;
+    expect(JSON.parse(String(form.get("manifest")))).toEqual({
+      version: 2,
+      containers,
+      idempotencyKey: "showcase-bundle-v1",
+      mainModule: "worker.js",
+      modules: [
+        { path: "worker.js", contentType: "application/javascript+module", fileIndex: 0 },
+        { path: "chunk.js", contentType: "application/javascript+module", fileIndex: 1 },
+      ],
+    });
+    const files = form.getAll("files") as File[];
+    expect(files).toHaveLength(2);
+    expect(await files[0].text()).toBe('import "./chunk.js"; export default {};');
+    expect(await files[1].text()).toBe("export {};");
+  });
+
   it("updates native environment placement without changing unspecified settings", async () => {
     fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ placementMode: "smart" }), {
