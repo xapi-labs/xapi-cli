@@ -19,9 +19,10 @@ const sorted = (rows: Row[]) => rows.sort((a, b) => String(a.bindingName).locale
 export function deploymentPrefix(workerId: string, environment: string, artifactId: string,
   compatibility: { compatibilityDate?: string; compatibilityFlags?: string[] },
   environmentState: Row, resources: Row[], secrets: Row[]): string {
-  return `v2-${hash({ workerId, environment: environment.toLowerCase(), artifactId,
+  return `v3-${hash({ workerId, environment: environment.toLowerCase(), artifactId,
     compatibilityDate: compatibility.compatibilityDate,
     compatibilityFlags: [...(compatibility.compatibilityFlags || [])].sort(),
+    placementMode: environmentState.placementMode || "off",
     bindings: environmentState.bindings || [],
     resources: sorted(resources.map(r => {
       const config = (r.config || {}) as Row;

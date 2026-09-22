@@ -4,7 +4,7 @@ import { deploymentPrefix } from "../workers-deployment-state.ts";
 import { RequestTimeoutError } from "../client.ts";
 
 function platform() {
-  const environment = { id: "env", name: "PREVIEW", activeDeploymentId: null as string | null, bindings: [] };
+  const environment = { id: "env", name: "PREVIEW", activeDeploymentId: null as string | null, bindings: [], placementMode: "off" };
   const resources: Record<string, unknown>[] = [];
   const secrets: Record<string, unknown>[] = [];
   const deployments: Record<string, unknown>[] = [];
@@ -76,4 +76,26 @@ test("fingerprint ignores polling noise and resource order, but includes environ
   const b = { id: "2", bindingName: "B", type: "KV_NAMESPACE", status: "ACTIVE" };
   expect(fingerprint([a, b])).toBe(fingerprint([b, { ...a, updatedAt: "later", config: { file_size: 20 } }]));
   expect(fingerprint([a])).not.toBe(fingerprint([a], [{ type: "plain_text", name: "MODE", text: "new" }]));
+});
+
+
+test("placement changes deploy the same artifact once, including returning to off", async () => {
+  const p = platform();
+  const first = await p.run();
+  p.environment.placementMode = "smart";
+  const smart = await p.run();
+  expect(smart.deployment.id).not.toBe(first.deployment.id);
+  expect((await p.run()).deployment.id).toBe(smart.deployment.id);
+  p.environment.placementMode = "off";
+  const off = await p.run();
+  expect(off.deployment.id).not.toBe(smart.deployment.id);
+  expect(off.deployment.id).not.toBe(first.deployment.id);
+  expect((await p.run()).deployment.id).toBe(off.deployment.id);
+  expect(p.deployments).toHaveLength(3);
+});
+
+test("missing placement uses the native off default", () => {
+  const prefix = (state: Record<string, unknown>) => deploymentPrefix("worker", "preview", "artifact", {}, state, [], []);
+  expect(prefix({})).toBe(prefix({ placementMode: "off" }));
+  expect(prefix({})).not.toBe(prefix({ placementMode: "smart" }));
 });
