@@ -148,7 +148,7 @@ Use the project's installed/pinned CLI, lockfile installation, and a scoped secr
 Run plan, push, inspect, active-status and business checks in order. Both plan
 and push prepare the local Artifact; push performs that work before any Worker,
 budget, resource, Artifact, or Deployment write. `--non-interactive` suppresses
-prompts; it does not accept retention policy or bypass preflight:
+prompts; it does not bypass quote, balance or preflight checks. A separate retention-policy acceptance call is not required:
 
 ```sh
 xapi workers plan --env preview --format json

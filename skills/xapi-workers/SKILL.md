@@ -15,6 +15,12 @@ Use the `xapi` CLI (`xapi-to` is the same executable). Verify `xapi workers --he
 - Start with `workers inspect [worker-id] --env <environment>` and `workers capabilities`. Use `workers plan --env <environment>` when a local project is available and desired-state drift matters. `inspect` reads current runtime state only. `plan` runs the configured local build with credential-shaped environment variables removed, validates the exact Artifact, and compares it with live state without writing to the xAPI control plane. It also shows the budget cap, active price-book visibility, and usage-dependent resource changes; never present those estimates as an accrued invoice. Use existing user authorization for changes; don't expand cleanup from a test environment to production.
 - Treat Worker execution and data placement separately. Worker code remains global. Use environment `defaultResourceLocation` only as the default for newly created D1/R2 resources and `placementMode: smart` only for Cloudflare Smart Placement. Never claim either setting migrates existing data.
 
+## Before creating a Worker or resource
+
+Briefly tell the user: when retention is enabled, provisioning/deployment freezes the quoted retention reserve; an empty project record does not freeze funds. Storage can keep costing money while paused. After insufficient balance starts retention, reaching the reserve cleanup threshold can trigger automatic deletion. Unused reserve is returned after confirmed cleanup and the required settlement window; recharging does not automatically resume service. Retention estimates are not guaranteed fixed retention periods.
+
+This is an informational reminder, not a separate approval gate. Use the user's existing creation/deployment authorization; do not require a `retention accept` call. xAPI records the default policy with the first retention hold. Read the current resource quote and pass its exact price version when required; see [lifecycle.md](references/lifecycle.md) for details. If an older server still returns `retention_policy_acceptance_required`, report the server-version mismatch instead of silently accepting policy or bypassing xAPI.
+
 
 ## Load the relevant workflow
 

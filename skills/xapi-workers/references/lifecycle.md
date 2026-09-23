@@ -8,13 +8,9 @@ xapi workers retention quote <worker-id> --env preview --type WORKER --format js
 xapi workers billing lifecycle <worker-id> --env preview --json
 ```
 
-A quote is not policy acceptance. If already authorized, accept the returned exact version:
+Before creation, give the informational retention reminder in SKILL.md; do not add a separate policy-confirmation step. With retention enabled, xAPI records the default policy atomically with the first retention hold. `retention accept` remains a compatibility command, not a prerequisite for new deployments.
 
-```sh
-xapi workers retention accept <worker-id> --env preview --price-version <returned-version> --yes
-```
-
-Explain material automatic-deletion terms when they require a new user decision; do not request approval again when that policy and scope are already authorized. Provision with the same accepted version where required. Different resource types can have separate quotes; inspect the API response instead of copying an old price version.
+Policy enrollment and price selection are different: provision with the current quoted `--retention-price-version` where required, using the user's existing deployment authorization. Different resource types can have separate quotes; inspect the API response instead of copying an old price version. Automatic enrollment does not bypass balance checks, reset paused/deleting state, or rewrite a previously funded policy.
 
 ```sh
 xapi workers retention pause <worker-id> --env preview

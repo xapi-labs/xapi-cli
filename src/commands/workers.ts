@@ -163,7 +163,7 @@ PUSH FLAGS
   --env preview                         Required; production uses workers promote
   --config PATH                         Explicit xapi.worker.json path
   --non-interactive                     CI mode; never bypasses BLOCKED checks
-  --retention-price-version VERSION     Explicit accepted freeze quote; does not auto-accept policy
+  --retention-price-version VERSION     Current freeze quote; no separate policy acceptance required
 
 PROMOTE FLAGS
   --to production                       Required explicit production target
