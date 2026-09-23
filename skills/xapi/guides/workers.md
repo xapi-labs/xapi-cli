@@ -282,6 +282,14 @@ D1/R2/KV binding names must match declared xAPI resources; native account IDs
 and resource IDs are not reused. Secrets are set separately through xAPI.
 The artifact also preserves `observability.enabled`.
 
+Native bundles may include local Durable Object bindings, matched by both
+binding name and class to declared `durable_object` resources. Container classes
+must match `xapi.worker.json` Container definitions; their configuration is kept
+in the uploaded artifact and its hash. Wrangler-generated Container application
+names are not reused as provider identities. External DO script/namespace
+references still require a supported ownership-aware mapping; do not remove the
+reference silently to make validation pass.
+
 This adapter currently supports the explicitly mapped metadata above, not every
 Wrangler setting. Unmapped metadata fails before artifact upload rather than
 being silently discarded. Cron triggers are separate from the upload bundle

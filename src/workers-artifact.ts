@@ -588,6 +588,12 @@ export async function loadWorkerArtifactInput(
   if (metadata.bindings !== undefined && (!Array.isArray(metadata.bindings) || metadata.bindings.some((binding: UnknownRecord) => {
     if (!binding || typeof binding.name !== "string") return true;
     if (["d1", "r2_bucket", "kv_namespace", "inherit"].includes(String(binding.type))) return false;
+    if (binding.type === "durable_object_namespace") {
+      // Only a class in this script can map to the declared managed DO. An
+      // external script/namespace needs its own ownership-aware API contract.
+      return typeof binding.class_name !== "string" || !binding.class_name ||
+        Object.keys(binding).some(key => !["name", "type", "class_name"].includes(key));
+    }
     return binding.type !== "assets" || !staticAssets?.binding || binding.name !== staticAssets.binding;
   }))) throw new WorkerArtifactError("Native binding metadata needs explicit platform mapping; keep credentials in xAPI Secrets");
   if (metadata.compatibility_flags !== undefined && (!Array.isArray(metadata.compatibility_flags) || metadata.compatibility_flags.some(flag => typeof flag !== "string"))) throw new WorkerArtifactError("Invalid native compatibility flags");
@@ -621,7 +627,16 @@ export async function loadWorkerArtifactInput(
   modules.sort((a,b) => a.path.localeCompare(b.path));
   const assets = staticAssets ? collectAssetFiles(staticAssets) : undefined;
   const nativeContainers = metadata.containers;
-  if (nativeContainers !== undefined && (!Array.isArray(nativeContainers) || nativeContainers.some((item) => !item || typeof item !== 'object' || Array.isArray(item) || typeof (item as UnknownRecord).class_name !== 'string' || Object.keys(item as UnknownRecord).some((key) => key !== 'class_name')))) {
+  if (nativeContainers !== undefined && (!Array.isArray(nativeContainers) || nativeContainers.some((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return true;
+    const value = item as UnknownRecord;
+    // Wrangler emits a generated application name even for unnamed config.
+    // xAPI keeps its own scoped application identity; only the class links
+    // this native upload to the explicit Container deployment definition.
+    return typeof value.class_name !== 'string' ||
+      (value.name !== undefined && (typeof value.name !== 'string' || !value.name || value.name.length > 512)) ||
+      Object.keys(value).some(key => !['class_name', 'name'].includes(key));
+  }))) {
     throw new WorkerArtifactError('Native Container metadata needs explicit platform mapping');
   }
   const configuredClasses = [...(containers || [])].map((item) => item.className).sort();
@@ -697,7 +712,7 @@ function storedBundleBytes(bundle: WorkerArtifactBundle): Buffer {
 export function validateNativeDeploymentMetadata(
   artifact: LoadedWorkerArtifact,
   settings: { compatibilityDate?: string; compatibilityFlags?: string[] },
-  resources: Array<{type: string; bindingName: string}>,
+  resources: Array<{type: string; bindingName: string; className?: string}>,
 ): void {
   const metadata = artifact.nativeMetadata;
   if (!metadata) return;
@@ -710,6 +725,12 @@ export function validateNativeDeploymentMetadata(
     if (binding.type === "assets" && artifact.upload && "bundle" in artifact.upload &&
       artifact.upload.bundle.assets?.binding === binding.name) continue;
     const matching = resources.filter(resource => resource.bindingName === binding.name);
+    if (binding.type === "durable_object_namespace") {
+      if (matching.length !== 1 || matching[0].type !== "durable_object" || matching[0].className !== binding.class_name) {
+        throw new WorkerArtifactError(`Native Durable Object binding ${binding.name} must match its declared xAPI class`);
+      }
+      continue;
+    }
     const declared = binding.type === "inherit"
       ? matching.length === 1 && Object.values(managed).includes(matching[0].type)
       : matching.some(resource => resource.type === managed[String(binding.type)]);

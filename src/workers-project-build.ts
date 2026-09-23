@@ -121,6 +121,7 @@ export async function loadWorkerProjectBundle(
             ),
           }
         : undefined,
+      project.config.containers,
     );
     validateNativeDeploymentMetadata(
       bundle,

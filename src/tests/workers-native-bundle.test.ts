@@ -113,3 +113,16 @@ test('requires native Container classes to match the explicit xAPI deployment in
  expect(artifact.sizeBytes).toBe(expectedStored.length);
  await expect(loadWorkerArtifactInput(bundle([native,entry]), undefined, undefined, [])).rejects.toThrow('Container classes differ');
 });
+
+test('maps local native Durable Object bindings by binding and class, not a foreign namespace', async () => {
+ const binding = {name:'API_CONTAINER', type:'durable_object_namespace', class_name:'ApiContainer'};
+ const native = {...metadata, content:JSON.stringify({...JSON.parse(metadata.content), bindings:[binding]})};
+ const artifact = await loadWorkerArtifactInput(bundle([native,entry]));
+ const settings = {compatibilityDate:'2026-09-10',compatibilityFlags:['nodejs_compat']};
+ validateNativeDeploymentMetadata(artifact,settings,[{type:'durable_object',bindingName:'API_CONTAINER',className:'ApiContainer'}]);
+ expect(() => validateNativeDeploymentMetadata(artifact,settings,[{type:'durable_object',bindingName:'API_CONTAINER',className:'WrongClass'}])).toThrow('API_CONTAINER');
+ expect(() => validateNativeDeploymentMetadata(artifact,settings,[])).toThrow('API_CONTAINER');
+ for (const foreign of [{script_name:'another-worker'}, {namespace_id:'another-namespace'}, {environment:'production'}]) {
+  await expect(loadWorkerArtifactInput(bundle([{...native,content:JSON.stringify({...JSON.parse(native.content), bindings:[{...binding,...foreign}]})},entry]))).rejects.toThrow('mapping');
+ }
+});
