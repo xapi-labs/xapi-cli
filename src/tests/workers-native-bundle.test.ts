@@ -235,3 +235,111 @@ test("accepts a native 64 MiB module set, including multipart overhead, and reje
     ),
   ).rejects.toThrow("capacity");
 }, 30000);
+
+test("preserves native cache/version config and maps required secrets and queue identities", async () => {
+  const { withNativeWorkerOptions } = await import("../workers-artifact.ts");
+  const options = {
+    cacheOptions: { enabled: true, cross_version_cache: false },
+    versionMetadata: { binding: "CF_VERSION_METADATA" },
+  };
+  const a = await loadWorkerArtifactInput(
+    bundle([
+      {
+        ...metadata,
+        content: JSON.stringify({
+          ...JSON.parse(metadata.content),
+          cache_options: options.cacheOptions,
+          bindings: [
+            { type: "version_metadata", name: "CF_VERSION_METADATA" },
+            { type: "inherit", name: "AUTH_SECRET" },
+            { type: "queue", name: "JOBS", queue_name: "foreign-queue" },
+          ],
+        }),
+      },
+      entry,
+    ]),
+  );
+  if (!("bundle" in a.upload)) throw Error("bundle");
+  expect(a.upload.bundle).toMatchObject(options);
+  expect(JSON.stringify(a.upload)).not.toContain("foreign-queue");
+  const settings = {
+    compatibilityDate: "2026-09-10",
+    compatibilityFlags: ["nodejs_compat"],
+  };
+  validateNativeDeploymentMetadata(
+    a,
+    settings,
+    [{ type: "queue", bindingName: "JOBS" }],
+    ["AUTH_SECRET"],
+  );
+  expect(() =>
+    validateNativeDeploymentMetadata(a, settings, [
+      { type: "queue", bindingName: "JOBS" },
+    ]),
+  ).toThrow("AUTH_SECRET");
+  expect(() =>
+    validateNativeDeploymentMetadata(
+      a,
+      settings,
+      [
+        { type: "queue", bindingName: "JOBS" },
+        { type: "d1_database", bindingName: "CF_VERSION_METADATA" },
+      ],
+      ["AUTH_SECRET"],
+    ),
+  ).toThrow("Duplicate");
+  expect(withNativeWorkerOptions(a, options)).toBe(a);
+  expect(() =>
+    withNativeWorkerOptions(a, {
+      ...options,
+      cacheOptions: { enabled: false },
+    }),
+  ).toThrow("rebuild");
+  expect(() => withNativeWorkerOptions(a, {})).toThrow("rebuild");
+  const plain = await loadWorkerArtifactInput(bundle([metadata, entry]));
+  expect(a.contentSha256).not.toBe(plain.contentSha256);
+});
+
+test("rejects malformed cache settings and unsupported metadata binding fields", async () => {
+  for (const cache_options of [
+    null,
+    { enabled: "true" },
+    { enabled: true, unknown: 1 },
+    { enabled: true, cross_version_cache: 1 },
+  ]) {
+    await expect(
+      loadWorkerArtifactInput(
+        bundle([
+          {
+            ...metadata,
+            content: JSON.stringify({
+              ...JSON.parse(metadata.content),
+              cache_options,
+            }),
+          },
+          entry,
+        ]),
+      ),
+    ).rejects.toThrow("cache");
+  }
+  await expect(
+    loadWorkerArtifactInput(
+      bundle([
+        {
+          ...metadata,
+          content: JSON.stringify({
+            ...JSON.parse(metadata.content),
+            bindings: [
+              {
+                type: "version_metadata",
+                name: "VERSION",
+                namespace: "foreign",
+              },
+            ],
+          }),
+        },
+        entry,
+      ]),
+    ),
+  ).rejects.toThrow("mapping");
+});

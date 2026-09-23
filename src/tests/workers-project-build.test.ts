@@ -155,3 +155,32 @@ test("rejects stale native vars and collisions with declared Secrets before publ
     "Duplicate",
   );
 });
+
+test("attaches native configuration to an ordinary module build and detects binding collisions", async () => {
+  const config = project(false);
+  writeFileSync(
+    join(config.rootDir, "wrangler.jsonc"),
+    JSON.stringify({
+      compatibility_date: "2026-09-10",
+      cache: { enabled: false },
+      version_metadata: { binding: "VERSION" },
+    }),
+  );
+  const artifact = await loadWorkerProjectBundle(config, "preview");
+  expect(artifact.upload).toMatchObject({
+    bundle: {
+      cacheOptions: { enabled: false },
+      versionMetadata: { binding: "VERSION" },
+    },
+  });
+  writeFileSync(
+    join(config.rootDir, "wrangler.jsonc"),
+    JSON.stringify({
+      compatibility_date: "2026-09-10",
+      version_metadata: { binding: "API_CONTAINER" },
+    }),
+  );
+  await expect(loadWorkerProjectBundle(config, "preview")).rejects.toThrow(
+    "Duplicate",
+  );
+});

@@ -156,6 +156,12 @@ export async function uploadWorkerArtifact(
       version: 2,
       idempotencyKey: input.idempotencyKey,
       mainModule: input.bundle.mainModule,
+      ...(input.bundle.cacheOptions
+        ? { cacheOptions: input.bundle.cacheOptions }
+        : {}),
+      ...(input.bundle.versionMetadata
+        ? { versionMetadata: input.bundle.versionMetadata }
+        : {}),
       modules: input.bundle.modules.map(addFile),
       ...(input.bundle.containers?.length
         ? { containers: input.bundle.containers }

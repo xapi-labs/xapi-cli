@@ -443,3 +443,81 @@ new_sqlite_classes = ["Room"]
     });
   });
 });
+
+test("imports native metadata/cache and modern required secrets without values", () => {
+  const root = workspace();
+  writeFileSync(
+    join(root, "wrangler.jsonc"),
+    JSON.stringify({
+      name: "native-options",
+      main: "src/index.ts",
+      cache: { enabled: true },
+      version_metadata: { binding: "CF_VERSION_METADATA" },
+      secrets: { required: ["AUTH_SECRET"] },
+    }),
+  );
+  const result = importWranglerProject({
+    cwd: root,
+    wranglerPath: "wrangler.jsonc",
+  });
+  expect(result.wrote).toBe(true);
+  expect(result.report.entries).toContainEqual(
+    expect.objectContaining({ category: "SUPPORTED", path: "cache" }),
+  );
+  expect(result.report.entries).toContainEqual(
+    expect.objectContaining({
+      category: "SUPPORTED",
+      path: "version_metadata",
+    }),
+  );
+  expect(result.config?.environments.preview.secrets).toEqual(["AUTH_SECRET"]);
+});
+
+test("reports native event and SQL migration gaps rather than silently claiming deployment compatibility", () => {
+  const root = workspace();
+  writeFileSync(
+    join(root, "wrangler.jsonc"),
+    JSON.stringify({
+      name: "event-worker",
+      main: "src/index.ts",
+      triggers: { crons: ["0 * * * *"] },
+      d1_databases: [{ binding: "DB", migrations_dir: "migrations" }],
+      queues: {
+        producers: [{ binding: "JOBS", queue: "jobs" }],
+        consumers: [{ queue: "jobs", max_batch_size: 1, max_retries: 5 }],
+      },
+    }),
+  );
+  const result = importWranglerProject({
+    cwd: root,
+    wranglerPath: "wrangler.jsonc",
+  });
+  expect(result.wrote).toBe(false);
+  const phases = result.report.deploymentPlan.filter(
+    (step) => step.environment === "preview",
+  );
+  expect(phases.map((step) => step.kind)).toEqual([
+    "D1_MIGRATIONS",
+    "WORKER",
+    "QUEUE_CONSUMER",
+    "CRON",
+  ]);
+  expect(phases[0]).toMatchObject({
+    bindingName: "DB",
+    configuration: { directory: "migrations", table: "d1_migrations" },
+  });
+  expect(phases[2]).toMatchObject({
+    bindingName: "JOBS",
+    status: "REQUIRES_MAPPING",
+    configuration: { max_batch_size: 1, max_retries: 5 },
+  });
+  for (const path of [
+    "triggers.crons",
+    "d1_databases[0].migrations",
+    "queues.consumers",
+  ]) {
+    expect(result.report.entries).toContainEqual(
+      expect.objectContaining({ category: "UNSUPPORTED", path }),
+    );
+  }
+});

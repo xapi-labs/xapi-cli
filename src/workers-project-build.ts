@@ -3,6 +3,7 @@ import type { LoadedWorkerArtifact } from "./workers-artifact.ts";
 import {
   loadWorkerArtifactInput,
   validateNativeDeploymentMetadata,
+  withNativeWorkerOptions,
   WorkerArtifactError,
   withWorkerVars,
 } from "./workers-artifact.ts";
@@ -126,8 +127,9 @@ export async function loadWorkerProjectBundle(
         : undefined,
       project.config.containers,
     );
+    const settings = readWranglerDeploymentSettings(project, environment);
     const bundle = withWorkerVars(
-      built,
+      withNativeWorkerOptions(built, settings),
       readWranglerPublicVars(project, environment),
     );
     const vars =
@@ -141,14 +143,28 @@ export async function loadWorkerProjectBundle(
         ? [project.config.assets.binding]
         : []),
     ]);
+    const versionBinding =
+      "bundle" in bundle.upload
+        ? bundle.upload.bundle.versionMetadata?.binding
+        : undefined;
+    if (
+      versionBinding &&
+      (occupied.has(versionBinding) ||
+        Object.hasOwn(vars || {}, versionBinding))
+    ) {
+      throw new WorkerArtifactError(
+        `Duplicate Worker binding: ${versionBinding}`,
+      );
+    }
     for (const name of Object.keys(vars || {})) {
       if (occupied.has(name))
         throw new WorkerArtifactError(`Duplicate Worker binding: ${name}`);
     }
     validateNativeDeploymentMetadata(
       bundle,
-      readWranglerDeploymentSettings(project, environment),
+      settings,
       project.config.environments[environment].resources,
+      project.config.environments[environment].secrets,
     );
     return bundle;
   } catch (error) {

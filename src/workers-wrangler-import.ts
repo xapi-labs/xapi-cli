@@ -1,4 +1,9 @@
 import {
+  normalizeNativeWorkerOptions,
+  type WorkerCacheOptions,
+  type WorkerVersionMetadata,
+} from "./workers-artifact.ts";
+import {
   existsSync,
   lstatSync,
   readFileSync,
@@ -47,6 +52,14 @@ export interface WranglerImportReport {
   compatible: boolean;
   entries: WranglerCompatibilityEntry[];
   summary: Record<WranglerCompatibilityCategory, number>;
+  deploymentPlan: Array<{
+    phase: "BEFORE_CODE" | "CODE" | "AFTER_CODE";
+    kind: "D1_MIGRATIONS" | "WORKER" | "QUEUE_CONSUMER" | "CRON";
+    environment: "preview" | "production";
+    status: "SUPPORTED" | "REQUIRES_MAPPING";
+    bindingName?: string;
+    configuration: Record<string, unknown>;
+  }>;
 }
 
 export interface ImportWranglerProjectOptions {
@@ -75,6 +88,8 @@ export interface ImportWranglerProjectResult {
 export interface WranglerDeploymentSettings {
   compatibilityDate?: string;
   compatibilityFlags: string[];
+  cacheOptions?: WorkerCacheOptions;
+  versionMetadata?: WorkerVersionMetadata;
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -95,6 +110,8 @@ const SUPPORTED_TOP_LEVEL = new Set([
   "compatibility_date",
   "compatibility_flags",
   "assets",
+  "cache",
+  "version_metadata",
 ]);
 const MANAGED_TOP_LEVEL = new Set([
   "kv_namespaces",
@@ -125,7 +142,6 @@ const IGNORED_TOP_LEVEL = new Set([
   "tsconfig",
   "rules",
   "build",
-  "triggers",
   "usage_model",
   "keep_vars",
   "send_metrics",
@@ -134,7 +150,6 @@ const IGNORED_TOP_LEVEL = new Set([
   "legacy_assets",
   "site",
   "limits",
-  "version_metadata",
   "tail_consumers",
   // Wrangler-generated framework configs can include build-time defaults that
   // have already been applied to the emitted Worker bundle. They are not
@@ -479,7 +494,7 @@ function resourceList(
       item.binding,
       `${prefix}d1_databases[${index}]`,
       item,
-      new Set(["binding"]),
+      new Set(["binding", "migrations_dir", "migrations_table"]),
     ),
   );
   array(config.r2_buckets).forEach((item, index) =>
@@ -533,7 +548,7 @@ function resourceList(
       entries,
       "UNSUPPORTED",
       `${prefix}queues.consumers`,
-      "Queue consumer configuration is not imported; xAPI managed queues use the hosted Worker target",
+      "Native queue(batch) delivery is not implemented: current xAPI consumers forward HTTP. Batch/ack/retry/dead-letter settings must be mapped before deployment",
       { environment },
     );
   }
@@ -682,8 +697,11 @@ function secretNames(
   entries: WranglerCompatibilityEntry[],
 ): string[] {
   const candidates = new Set<string>();
-  if (Array.isArray(config.secrets)) {
-    for (const value of config.secrets) {
+  const declaredSecrets = Array.isArray(config.secrets)
+    ? config.secrets
+    : record(config.secrets)?.required;
+  if (Array.isArray(declaredSecrets)) {
+    for (const value of declaredSecrets) {
       if (typeof value === "string") candidates.add(value);
     }
   }
@@ -987,6 +1005,7 @@ export function importWranglerProject(
   const rootDir = discoverProjectRoot(cwd, sourcePath);
   const configPath = resolve(rootDir, WORKER_PROJECT_CONFIG_FILE);
   const entries: WranglerCompatibilityEntry[] = [];
+  const deploymentPlan: WranglerImportReport["deploymentPlan"] = [];
   inspectTopLevel(wrangler, entries);
   if (typeof wrangler.main !== "string" || !wrangler.main.trim()) {
     compatibilityEntry(
@@ -1001,6 +1020,117 @@ export function importWranglerProject(
     preview: selectedConfig(wrangler, "preview"),
     production: selectedConfig(wrangler, "production"),
   };
+  for (const environment of ["preview", "production"] as const) {
+    const { config, prefix } = desired[environment];
+    let nativeOptionsValid = true;
+    try {
+      normalizeNativeWorkerOptions({
+        cacheOptions: config.cache,
+        versionMetadata: config.version_metadata,
+      });
+    } catch (error) {
+      nativeOptionsValid = false;
+      compatibilityEntry(
+        entries,
+        "UNSUPPORTED",
+        `${prefix}cache/version_metadata`,
+        error instanceof Error ? error.message : "Invalid native options",
+        { environment },
+      );
+    }
+    deploymentPlan.push({
+      phase: "CODE",
+      kind: "WORKER",
+      environment,
+      status: nativeOptionsValid ? "SUPPORTED" : "REQUIRES_MAPPING",
+      configuration: {
+        ...(config.cache !== undefined ? { cache: config.cache } : {}),
+        ...(config.version_metadata !== undefined
+          ? { version_metadata: config.version_metadata }
+          : {}),
+      },
+    });
+    const queueConfig = record(config.queues);
+    for (const consumer of array(queueConfig?.consumers)) {
+      const producer = array(queueConfig?.producers).find(
+        (item) => item.queue === consumer.queue,
+      );
+      deploymentPlan.push({
+        phase: "AFTER_CODE",
+        kind: "QUEUE_CONSUMER",
+        environment,
+        status: "REQUIRES_MAPPING",
+        ...(typeof producer?.binding === "string"
+          ? { bindingName: producer.binding }
+          : {}),
+        configuration: Object.fromEntries(
+          Object.entries(consumer).filter(([key]) =>
+            [
+              "queue",
+              "max_batch_size",
+              "max_batch_timeout",
+              "max_retries",
+              "max_concurrency",
+              "retry_delay",
+              "dead_letter_queue",
+            ].includes(key),
+          ),
+        ),
+      });
+    }
+    const crons = record(config.triggers)?.crons;
+    if (Array.isArray(crons) && crons.length) {
+      deploymentPlan.push({
+        phase: "AFTER_CODE",
+        kind: "CRON",
+        environment,
+        status: "REQUIRES_MAPPING",
+        configuration: { crons, timezone: "UTC" },
+      });
+      compatibilityEntry(
+        entries,
+        "UNSUPPORTED",
+        `${prefix}triggers.crons`,
+        `Native scheduled() delivery requires a verified WfP trigger mapping; HTTP schedules are not equivalent. Requested UTC schedules: ${crons.join(", ")}`,
+        { environment },
+      );
+    }
+    array(config.d1_databases).forEach((database, index) => {
+      if (
+        database.migrations_dir !== undefined ||
+        database.migrations_table !== undefined ||
+        existsSync(resolve(sourceDir, "migrations"))
+      ) {
+        deploymentPlan.push({
+          phase: "BEFORE_CODE",
+          kind: "D1_MIGRATIONS",
+          environment,
+          status: "REQUIRES_MAPPING",
+          ...(typeof database.binding === "string"
+            ? { bindingName: database.binding }
+            : {}),
+          configuration: {
+            directory: database.migrations_dir ?? "migrations",
+            table: database.migrations_table ?? "d1_migrations",
+            relativeTo:
+              relative(rootDir, sourceDir).split(sep).join("/") || ".",
+          },
+        });
+        compatibilityEntry(
+          entries,
+          "UNSUPPORTED",
+          `${prefix}d1_databases[${index}].migrations`,
+          `D1 SQL migrations require a separate target-database execution plan before code deployment; directory=${String(database.migrations_dir ?? "migrations")}, table=${String(database.migrations_table ?? "d1_migrations")}. Code rollback does not roll back SQL.`,
+          {
+            environment,
+            ...(typeof database.binding === "string"
+              ? { bindingName: database.binding }
+              : {}),
+          },
+        );
+      }
+    });
+  }
   const assets = staticAssets(
     desired.preview.config,
     desired.production.config,
@@ -1083,6 +1213,12 @@ export function importWranglerProject(
     ),
     entries: sortedEntries,
     summary: summary(sortedEntries),
+    deploymentPlan: deploymentPlan.sort(
+      (a, b) =>
+        a.environment.localeCompare(b.environment) ||
+        ["BEFORE_CODE", "CODE", "AFTER_CODE"].indexOf(a.phase) -
+          ["BEFORE_CODE", "CODE", "AFTER_CODE"].indexOf(b.phase),
+    ),
   };
   if (!report.compatible && !options.acceptPartial) {
     return {
@@ -1210,6 +1346,10 @@ export function readWranglerDeploymentSettings(
   return {
     ...(date ? { compatibilityDate: date } : {}),
     compatibilityFlags: [...new Set((rawFlags || []) as string[])].sort(),
+    ...normalizeNativeWorkerOptions({
+      cacheOptions: selected.cache,
+      versionMetadata: selected.version_metadata,
+    }),
   };
 }
 

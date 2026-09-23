@@ -161,3 +161,26 @@ Promote in the already authorized release job after preview acceptance. Follow r
 Inspect the exact `worker_control_*` code and operation status. A conflict can mean an overlapping change to the same script/resource, an unknown native result, a changed resource identity, or incompatible server configuration. It is not automatically an environment-enrollment problem. Users do not choose LEGACY/CONTROL. Preserve IDs and receipts; inspect `workers audit` and current deployment/resource state. On an explicitly requested retry, reuse unchanged inputs: the server may continue steps that have not been sent or repair known-success local state. Do not loop on UNKNOWN, clear operation records, switch modes, or bypass xAPI with Wrangler. Scope/configuration mismatches require platform investigation; ordinary in-progress operations require status inspection.
 
 For explicit artifact operations: `workers upload <worker-id> --file dist/worker.mjs --idempotency-key <stable-key>`, then `workers deploy <worker-id> --artifact <artifact-id> --env preview --idempotency-key <stable-release-key>`. Reuse a key only for identical inputs. `workers build` is an optional managed Sandbox build, not a requirement for deploying locally built code.
+
+
+### Native configuration and application deployment prerequisites
+
+`cache.enabled`, `cache.cross_version_cache` and `version_metadata.binding` are
+preserved through the Artifact and native upload. These require a backend version
+containing the native-options changes; an older deployment is not evidence of
+support. A stale `.bundle` whose cache/version settings disagree with the selected
+Wrangler environment must be rebuilt. Cache settings apply to the user Worker,
+not to the xAPI dispatcher. Required Secret names in `secrets.required` are
+imported; set their values through the Secrets API, never inside the Artifact.
+
+The import report now includes a `deploymentPlan` for each environment:
+`BEFORE_CODE` (D1 migrations), `CODE` (Worker configuration), `AFTER_CODE` (Queue
+consumers and Cron). `REQUIRES_MAPPING` is unfinished execution support, not a
+successful deployment. D1 directories are relative to the referenced Wrangler
+file, not necessarily the project root. Code rollback does not undo applied SQL.
+
+Current managed Queue delivery is HTTP; it is not equivalent to `queue(batch)`.
+Current HTTP schedules are not equivalent to `scheduled()`. Do not remove these
+fields from an app or use `--accept-partial` to claim full compatibility. Before
+publishing an app that uses them, implement/verify the declared event semantics
+and database initialization, then test them in the selected xAPI test environment.
