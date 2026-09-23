@@ -576,9 +576,9 @@ function publicVariables(
   for (const name of Object.keys(vars || {}).sort()) {
     compatibilityEntry(
       entries,
-      "UNSUPPORTED",
+      "SUPPORTED",
       `${prefix}vars.${name}`,
-      "Plain-text variables are not copied or converted into Secrets. Remove this var from Wrangler and declare a Secret explicitly only when the value is sensitive",
+      "Public variables remain in Wrangler and are included in its native deployment bundle; sensitive values must use Secrets",
       { environment, bindingName: name },
     );
   }
@@ -723,6 +723,8 @@ function selectedConfig(
   if (!environmentConfig) return { config: root, prefix: "" };
   const merged: UnknownRecord = { ...root, ...environmentConfig };
   delete merged.env;
+  // Wrangler vars are non-inheritable for named environments.
+  if (!("vars" in environmentConfig)) delete merged.vars;
   return { config: merged, prefix: `env.${environment}.` };
 }
 
@@ -1167,7 +1169,7 @@ export function importWranglerProject(
     nextSteps: [
       `Review ${WORKER_PROJECT_CONFIG_FILE}`,
       "Set every REENTER secret with xapi workers secrets set",
-      "Resolve every reported Wrangler var as a public binding or an explicit Secret; xAPI never converts it automatically",
+      "Review public Wrangler vars; sensitive values belong in explicitly declared Secrets",
       "xapi workers plan --env preview",
     ],
   };
@@ -1209,4 +1211,14 @@ export function readWranglerDeploymentSettings(
     ...(date ? { compatibilityDate: date } : {}),
     compatibilityFlags: [...new Set((rawFlags || []) as string[])].sort(),
   };
+}
+
+/** Read only public Wrangler vars, never .env/.dev.vars or process credentials. */
+export function readWranglerPublicVars(
+  project: LoadedWorkerProject,
+  environment: "preview" | "production",
+): unknown {
+  const path = resolveWorkerProjectPath(project, project.config.wrangler, "wrangler");
+  const { config } = parseWrangler(path);
+  return selectedConfig(config, environment).config.vars;
 }

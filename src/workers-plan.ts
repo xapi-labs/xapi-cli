@@ -4,7 +4,7 @@ import type {
   WorkersClientOptions,
 } from "./workers-client.ts";
 import * as workersClient from "./workers-client.ts";
-import { loadWorkerArtifactInput, validateNativeDeploymentMetadata, WorkerArtifactError } from "./workers-artifact.ts";
+import { WorkerArtifactError } from "./workers-artifact.ts";
 import { deploymentPrefix, currentMatchingDeployment } from "./workers-deployment-state.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
 import {
@@ -17,6 +17,8 @@ import {
 import { remoteWorkerResourceState } from "./workers-resource-state.ts";
 import {
   prepareWorkerProjectBundle,
+  loadWorkerProjectBundle,
+  WorkerProjectBuildError,
   type WorkerProjectBuildRunner,
 } from "./workers-project-build.ts";
 import type { LoadedWorkerArtifact } from "./workers-artifact.ts";
@@ -443,28 +445,13 @@ async function localArtifact(project: LoadedWorkerProject, environment: "preview
   );
   if (!existsSync(path)) return {};
   try {
-    const artifact = await loadWorkerArtifactInput(
-      path,
-      project.config.build.main,
-      project.config.assets
-        ? {
-            ...project.config.assets,
-            directory: resolveWorkerProjectPath(
-              project,
-              project.config.assets.directory,
-              "assets.directory",
-            ),
-          }
-        : undefined,
-      project.config.containers,
-    );
-    validateNativeDeploymentMetadata(artifact, readWranglerDeploymentSettings(project, environment), project.config.environments[environment].resources);
+    const artifact = await loadWorkerProjectBundle(project, environment);
     return {
       sha256: artifact.contentSha256,
       sizeBytes: artifact.sizeBytes,
     };
   } catch (error) {
-    if (error instanceof WorkerArtifactError) {
+    if (error instanceof WorkerArtifactError || error instanceof WorkerProjectBuildError) {
       return { blocked: error.message };
     }
     throw error;

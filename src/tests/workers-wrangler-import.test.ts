@@ -119,7 +119,7 @@ describe("Wrangler project import", () => {
     );
     expect(blocked.report.entries).toContainEqual(
       expect.objectContaining({
-        category: "UNSUPPORTED",
+        category: "SUPPORTED",
         path: "vars.MODEL_KEY",
         bindingName: "MODEL_KEY",
       }),
@@ -177,22 +177,10 @@ binding = "DB"
 database_id = "old-d1-id"
 `;
     writeFileSync(path, original);
-    const blocked = importWranglerProject({
-      cwd: root,
-      wranglerPath: "wrangler.toml",
-    });
-    expect(blocked.wrote).toBe(false);
-    expect(blocked.report.entries).toContainEqual(
-      expect.objectContaining({
-        category: "UNSUPPORTED",
-        path: "env.preview.vars.MODEL_KEY",
-      }),
-    );
-    const result = importWranglerProject({
-      cwd: root,
-      wranglerPath: "wrangler.toml",
-      acceptPartial: true,
-    });
+    const result = importWranglerProject({ cwd: root, wranglerPath: "wrangler.toml" });
+    expect(result.report.entries).toContainEqual(expect.objectContaining({
+      category: "SUPPORTED", path: "env.preview.vars.MODEL_KEY",
+    }));
     expect(result.wrote).toBe(true);
     expect(result.report.format).toBe("toml");
     const project = loadWorkerProject(root);
@@ -401,15 +389,9 @@ new_sqlite_classes = ["Room"]
       }),
     );
 
-    const blocked = importWranglerProject({ cwd: root, wranglerPath: path });
-    expect(blocked.wrote).toBe(false);
-    expect(JSON.stringify(blocked.report)).not.toContain("public-visible-value");
-
-    importWranglerProject({
-      cwd: root,
-      wranglerPath: path,
-      acceptPartial: true,
-    });
+    const result = importWranglerProject({ cwd: root, wranglerPath: path });
+    expect(result.wrote).toBe(true);
+    expect(JSON.stringify(result.report)).not.toContain("public-visible-value");
     const project = loadWorkerProject(root);
     expect(project.config.environments.preview.secrets).toEqual([
       "PRIVATE_TOKEN",

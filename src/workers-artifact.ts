@@ -68,6 +68,7 @@ export interface WorkerArtifactBundle {
   observability?: { enabled: boolean };
   assets?: WorkerArtifactAssets;
   containers?: WorkerContainerInput[];
+  vars?: Record<string, unknown>;
 }
 
 export interface WorkerContainerInput {
@@ -587,6 +588,12 @@ export async function loadWorkerArtifactInput(
   )) throw new WorkerArtifactError("Invalid native package dependency metadata");
   if (metadata.bindings !== undefined && (!Array.isArray(metadata.bindings) || metadata.bindings.some((binding: UnknownRecord) => {
     if (!binding || typeof binding.name !== "string") return true;
+    if (binding.type === "plain_text") {
+      return typeof binding.text !== "string" || Object.keys(binding).some(key => !["name", "type", "text"].includes(key));
+    }
+    if (binding.type === "json") {
+      return !("json" in binding) || Object.keys(binding).some(key => !["name", "type", "json"].includes(key));
+    }
     if (["d1", "r2_bucket", "kv_namespace", "inherit"].includes(String(binding.type))) return false;
     if (binding.type === "durable_object_namespace") {
       // Only a class in this script can map to the declared managed DO. An
@@ -596,6 +603,12 @@ export async function loadWorkerArtifactInput(
     }
     return binding.type !== "assets" || !staticAssets?.binding || binding.name !== staticAssets.binding;
   }))) throw new WorkerArtifactError("Native binding metadata needs explicit platform mapping; keep credentials in xAPI Secrets");
+  const nativeBindings = (metadata.bindings || []) as UnknownRecord[];
+  const bindingNames = nativeBindings.map(binding => binding.name);
+  if (new Set(bindingNames).size !== bindingNames.length) throw new WorkerArtifactError("Duplicate native binding name");
+  const vars = normalizeWorkerVars(Object.fromEntries(nativeBindings
+    .filter(binding => binding.type === "plain_text" || binding.type === "json")
+    .map(binding => [String(binding.name), binding.type === "plain_text" ? binding.text : binding.json])));
   if (metadata.compatibility_flags !== undefined && (!Array.isArray(metadata.compatibility_flags) || metadata.compatibility_flags.some(flag => typeof flag !== "string"))) throw new WorkerArtifactError("Invalid native compatibility flags");
   const observation = metadata.observability as UnknownRecord | undefined;
   if (observation !== undefined && (!observation || typeof observation !== "object" || Array.isArray(observation) || typeof observation.enabled !== "boolean" || Object.keys(observation).some(key => key !== "enabled"))) throw new WorkerArtifactError("Native observability config needs explicit mapping");
@@ -644,7 +657,7 @@ export async function loadWorkerArtifactInput(
   if (JSON.stringify(nativeClasses) !== JSON.stringify(configuredClasses)) {
     throw new WorkerArtifactError('Wrangler Container classes differ from xapi.worker.json; rebuild or re-import before publishing');
   }
-  const bundle: WorkerArtifactBundle = { version: 1, mainModule: main, modules, ...(observability ? {observability} : {}), ...(assets ? {assets} : {}), ...(containers?.length ? {containers} : {}) };
+  const bundle: WorkerArtifactBundle = { version: 1, mainModule: main, modules, ...(vars ? {vars} : {}), ...(observability ? {observability} : {}), ...(assets ? {assets} : {}), ...(containers?.length ? {containers} : {}) };
   assertArtifactContentLimit(bundle);
   const stored = storedBundleBytes(bundle);
   return { kind: "bundle", contentSha256: sha256(stored), sizeBytes: stored.length, upload: {bundle}, nativeMetadata: metadata };
@@ -700,6 +713,7 @@ function storedBundleBytes(bundle: WorkerArtifactBundle): Buffer {
     JSON.stringify({
       ...(bundle.observability ? { observability: bundle.observability } : {}),
       ...(bundle.containers?.length ? { containers: bundle.containers } : {}),
+      ...(normalizeWorkerVars(bundle.vars) ? { vars: normalizeWorkerVars(bundle.vars) } : {}),
       version: 1,
       mainModule: bundle.mainModule,
       modules,
@@ -725,6 +739,10 @@ export function validateNativeDeploymentMetadata(
     if (binding.type === "assets" && artifact.upload && "bundle" in artifact.upload &&
       artifact.upload.bundle.assets?.binding === binding.name) continue;
     const matching = resources.filter(resource => resource.bindingName === binding.name);
+    if (binding.type === "plain_text" || binding.type === "json") {
+      if (matching.length) throw new WorkerArtifactError(`Duplicate Worker binding: ${binding.name}`);
+      continue;
+    }
     if (binding.type === "durable_object_namespace") {
       if (matching.length !== 1 || matching[0].type !== "durable_object" || matching[0].className !== binding.class_name) {
         throw new WorkerArtifactError(`Native Durable Object binding ${binding.name} must match its declared xAPI class`);
@@ -738,4 +756,53 @@ export function validateNativeDeploymentMetadata(
       throw new WorkerArtifactError(`Native binding ${binding.name} is missing from xAPI resource declarations`);
     }
   }
+}
+
+/** Public deployment configuration only; credentials use the Secrets API. */
+export function normalizeWorkerVars(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new WorkerArtifactError('Worker vars must be a JSON object');
+  }
+  const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
+  for (const [name] of entries) {
+    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) || name === 'XAPI_AI_BASE_URL') {
+      throw new WorkerArtifactError(`Invalid or reserved Worker variable: ${name}`);
+    }
+  }
+  try {
+    // Reject lossy serialization (undefined, functions, NaN, circular values).
+    JSON.stringify(value, (_key, item) => {
+      if (item === undefined || typeof item === 'function' || typeof item === 'symbol' ||
+          typeof item === 'bigint' || (typeof item === 'number' && !Number.isFinite(item))) {
+        throw new Error('Not JSON');
+      }
+      return item;
+    });
+  } catch {
+    throw new WorkerArtifactError('Worker vars must contain JSON values');
+  }
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+
+/** Keep native output authoritative; reject a stale build instead of changing it silently. */
+export function withWorkerVars(artifact: LoadedWorkerArtifact, value: unknown): LoadedWorkerArtifact {
+  const vars = normalizeWorkerVars(value);
+  if (artifact.nativeMetadata) {
+    const actual = 'bundle' in artifact.upload ? normalizeWorkerVars(artifact.upload.bundle.vars) : undefined;
+    if (JSON.stringify(actual) !== JSON.stringify(vars)) {
+      throw new WorkerArtifactError('Wrangler bundle vars differ from the selected environment; rebuild before publishing');
+    }
+    return artifact;
+  }
+  if (!vars) return artifact;
+  const bundle: WorkerArtifactBundle = 'bundle' in artifact.upload
+    ? { ...artifact.upload.bundle, vars }
+    : { version: 1, mainModule: 'index.mjs', vars, modules: [{
+        path: 'index.mjs', content: artifact.upload.moduleCode,
+        encoding: 'utf8', contentType: 'application/javascript+module',
+      }] };
+  const bytes = storedBundleBytes(bundle);
+  return { ...artifact, kind: 'bundle', contentSha256: sha256(bytes), sizeBytes: bytes.length, upload: { bundle } };
 }

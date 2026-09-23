@@ -126,3 +126,60 @@ test('maps local native Durable Object bindings by binding and class, not a fore
   await expect(loadWorkerArtifactInput(bundle([{...native,content:JSON.stringify({...JSON.parse(native.content), bindings:[{...binding,...foreign}]})},entry]))).rejects.toThrow('mapping');
  }
 });
+
+
+test("carries native public string and JSON vars in immutable artifact identity", async () => {
+  const vars = {
+    PUBLIC_ORIGIN: "https://app.example",
+    FEATURES: { images: true },
+    RETRIES: 3,
+    enabled: false,
+  };
+  const make = (bindings: unknown[]) =>
+    bundle([
+      {
+        ...metadata,
+        content: JSON.stringify({
+          ...JSON.parse(metadata.content),
+          bindings,
+        }),
+      },
+      entry,
+    ]);
+  const bindings = Object.entries(vars).map(([name, value]) =>
+    typeof value === "string"
+      ? { name, type: "plain_text", text: value }
+      : { name, type: "json", json: value },
+  );
+  const artifact = await loadWorkerArtifactInput(make(bindings));
+  if (!("bundle" in artifact.upload)) throw Error("bundle");
+  expect(artifact.upload.bundle.vars).toEqual(vars);
+  const reordered = await loadWorkerArtifactInput(
+    make([...bindings].reverse()),
+  );
+  expect(artifact.contentSha256).toBe(reordered.contentSha256);
+  const changed = await loadWorkerArtifactInput(
+    make([...bindings, { name: "EXTRA", type: "plain_text", text: "new" }]),
+  );
+  expect(changed.contentSha256).not.toBe(artifact.contentSha256);
+  const settings = {
+    compatibilityDate: "2026-09-10",
+    compatibilityFlags: ["nodejs_compat"],
+  };
+  validateNativeDeploymentMetadata(artifact, settings, []);
+  expect(() =>
+    validateNativeDeploymentMetadata(artifact, settings, [
+      { type: "r2_bucket", bindingName: "PUBLIC_ORIGIN" },
+    ]),
+  ).toThrow("Duplicate");
+  await expect(
+    loadWorkerArtifactInput(make([...bindings, bindings[0]])),
+  ).rejects.toThrow("Duplicate");
+  await expect(
+    loadWorkerArtifactInput(
+      make([
+        { name: "XAPI_AI_BASE_URL", type: "plain_text", text: "override" },
+      ]),
+    ),
+  ).rejects.toThrow("reserved");
+});

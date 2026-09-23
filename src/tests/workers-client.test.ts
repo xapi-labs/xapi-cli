@@ -206,6 +206,7 @@ describe("workers client", () => {
     const containers = [{ name: "trader", className: "TraderContainer", image: "docker.io/example/trader:v1", instanceType: "lite" as const, maxInstances: 2, rolloutActiveGracePeriod: 0 }];
     const bundle = {
       containers,
+      vars: { PUBLIC_ORIGIN: "https://app.example", FEATURES: { images: true } },
       version: 1 as const,
       mainModule: "worker.js",
       modules: [
@@ -235,6 +236,7 @@ describe("workers client", () => {
     expect(JSON.parse(String(form.get("manifest")))).toEqual({
       version: 2,
       containers,
+      vars: { PUBLIC_ORIGIN: "https://app.example", FEATURES: { images: true } },
       idempotencyKey: "showcase-bundle-v1",
       mainModule: "worker.js",
       modules: [

@@ -160,6 +160,7 @@ export async function uploadWorkerArtifact(
       ...(input.bundle.containers?.length
         ? { containers: input.bundle.containers }
         : {}),
+      ...(input.bundle.vars ? { vars: input.bundle.vars } : {}),
       ...(input.bundle.observability
         ? { observability: input.bundle.observability }
         : {}),

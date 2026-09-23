@@ -129,12 +129,16 @@ xapi workers push --env preview
 write a partial project unless the user explicitly accepts the report with
 `--accept-partial`.
 
-Wrangler `vars` are public plain-text bindings. The importer never copies their
-values and never silently converts them into encrypted Secrets. A non-empty
-`vars` block is reported as `UNSUPPORTED` until xAPI desired state has an
-explicit plain-text binding workflow. Move only genuinely sensitive values to
-`secrets`, set them with `workers secrets set`, and keep public values out of
-the generated project until the binding is supported.
+Wrangler `vars` are public string or JSON bindings. They remain in the referenced
+Wrangler config and travel with the immutable deployment artifact, including
+multipart uploads. A named environment uses its own `vars` (no root inheritance).
+Native `.bundle` output must match the selected environment; rebuild if it is
+stale. Module/directory builds include the selected config's public vars.
+Changing vars changes the artifact identity. Do not put credentials here: use
+`secrets` and `workers secrets set`. The importer report shows names, never values;
+it does not read `.env` or `.dev.vars`. Variable names must not collide with
+resource, asset or Secret bindings. Ordinary deployment rollback restores the
+public vars stored in the selected artifact as well as its code.
 
 The project workflow does not require Git. Git repository, branch, and commit
 are optional provenance, not authentication and not a deployment prerequisite.

@@ -101,3 +101,57 @@ test("native Container class without explicit project intent remains rejected", 
     loadWorkerProjectBundle(project(true, false), "preview"),
   ).rejects.toThrow("Container classes differ");
 });
+
+
+test("includes selected public vars in module builds without inheriting root vars into a named environment", async () => {
+  const loaded = project(false, false);
+  writeFileSync(
+    join(loaded.rootDir, "wrangler.jsonc"),
+    JSON.stringify({
+      compatibility_date: "2026-09-10",
+      vars: { ROOT_ONLY: "not-inherited" },
+      env: {
+        preview: {
+          vars: { ORIGIN: "https://preview.example", FLAGS: { uploads: true } },
+        },
+        production: {},
+      },
+    }),
+  );
+  const preview = await loadWorkerProjectBundle(loaded, "preview");
+  const production = await loadWorkerProjectBundle(loaded, "production");
+  expect("bundle" in preview.upload && preview.upload.bundle.vars).toEqual({
+    ORIGIN: "https://preview.example",
+    FLAGS: { uploads: true },
+  });
+  expect(
+    "bundle" in production.upload && production.upload.bundle.vars,
+  ).toBeFalsy();
+  expect(preview.contentSha256).not.toBe(production.contentSha256);
+});
+
+test("rejects stale native vars and collisions with declared Secrets before publishing", async () => {
+  const native = project(true);
+  writeFileSync(
+    join(native.rootDir, "wrangler.jsonc"),
+    JSON.stringify({
+      compatibility_date: "2026-09-10",
+      vars: { ORIGIN: "changed" },
+    }),
+  );
+  await expect(loadWorkerProjectBundle(native, "preview")).rejects.toThrow(
+    "vars differ",
+  );
+  const module = project(false, false);
+  module.config.environments.preview.secrets = ["PRIVATE_TOKEN"];
+  writeFileSync(
+    join(module.rootDir, "wrangler.jsonc"),
+    JSON.stringify({
+      compatibility_date: "2026-09-10",
+      vars: { PRIVATE_TOKEN: "public" },
+    }),
+  );
+  await expect(loadWorkerProjectBundle(module, "preview")).rejects.toThrow(
+    "Duplicate",
+  );
+});
