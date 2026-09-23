@@ -183,3 +183,55 @@ test("carries native public string and JSON vars in immutable artifact identity"
     ),
   ).rejects.toThrow("reserved");
 });
+
+test("accepts more than 200 native modules without changing module names", async () => {
+  const chunks = Array.from({ length: 300 }, (_, index) => ({
+    name: `chunks/${index}.js`,
+    type: "application/javascript+module",
+    content: `export const value = ${index};`,
+  }));
+  const artifact = await loadWorkerArtifactInput(
+    bundle([metadata, entry, ...chunks]),
+  );
+  if (!("bundle" in artifact.upload)) throw Error("bundle");
+  expect(artifact.upload.bundle.modules).toHaveLength(301);
+  expect(
+    artifact.upload.bundle.modules.find((m) => m.path === "chunks/299.js")
+      ?.content,
+  ).toBe("export const value = 299;");
+});
+
+test("accepts a native 64 MiB module set, including multipart overhead, and rejects one extra byte", async () => {
+  const data = Buffer.alloc(
+    64 * 1024 * 1024 - Buffer.byteLength(entry.content),
+    7,
+  );
+  const artifact = await loadWorkerArtifactInput(
+    bundle([
+      metadata,
+      entry,
+      { name: "data.bin", type: "application/octet-stream", content: data },
+    ]),
+  );
+  if (!("bundle" in artifact.upload)) throw Error("bundle");
+  expect(
+    Buffer.from(
+      artifact.upload.bundle.modules.find((m) => m.path === "data.bin")!
+        .content,
+      "base64",
+    ),
+  ).toEqual(data);
+  await expect(
+    loadWorkerArtifactInput(
+      bundle([
+        metadata,
+        entry,
+        {
+          name: "data.bin",
+          type: "application/octet-stream",
+          content: Buffer.concat([data, Buffer.from([0])]),
+        },
+      ]),
+    ),
+  ).rejects.toThrow("capacity");
+}, 30000);

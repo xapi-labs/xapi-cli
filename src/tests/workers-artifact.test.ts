@@ -169,3 +169,34 @@ describe("Worker Artifact loader", () => {
     );
   });
 });
+
+test("routes a large single module through the multipart bundle channel, with or without assets", () => {
+  const root = directory();
+  const source = "/*" + "x".repeat(2 * 1024 * 1024) + "*/ export default {};";
+  const path = join(root, "worker.mjs");
+  writeFileSync(path, source);
+  const artifact = loadWorkerArtifact(path);
+  expect(artifact.kind).toBe("bundle");
+  if (!("bundle" in artifact.upload)) throw Error("bundle");
+  expect(artifact.upload.bundle.modules[0].content).toBe(source);
+  const assets = join(root, "assets");
+  mkdirSync(assets);
+  writeFileSync(join(assets, "index.html"), "<h1>large worker</h1>");
+  const withAssets = loadWorkerArtifact(path, undefined, {
+    directory: assets,
+    binding: "ASSETS",
+  });
+  if (!("bundle" in withAssets.upload)) throw Error("bundle");
+  expect(withAssets.upload.bundle.modules[0].content).toBe(source);
+  expect(withAssets.upload.bundle.assets?.files).toHaveLength(1);
+});
+
+test("accepts more than 200 directory modules", () => {
+  const root = directory();
+  writeFileSync(join(root, "index.js"), "export default {};");
+  for (let i = 0; i < 300; i++)
+    writeFileSync(join(root, `${i}.js`), "export {};");
+  const artifact = loadWorkerArtifact(root, "index.js");
+  if (!("bundle" in artifact.upload)) throw Error("bundle");
+  expect(artifact.upload.bundle.modules).toHaveLength(301);
+});

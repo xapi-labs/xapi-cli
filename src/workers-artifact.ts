@@ -11,9 +11,10 @@ import { posix, relative, resolve, sep } from "node:path";
 import { parse } from "acorn";
 
 const MAX_LEGACY_ARTIFACT_BYTES = 1024 * 1024;
-const MAX_BUNDLE_CONTENT_BYTES = 10 * 1024 * 1024;
-const MAX_BUNDLE_MODULES = 200;
-const MAX_ASSET_FILES = 10_000;
+const MAX_BUNDLE_CONTENT_BYTES = 64 * 1024 * 1024;
+const MAX_NATIVE_METADATA_BYTES = 10 * 1024 * 1024;
+const MAX_NATIVE_MULTIPART_BYTES = 128 * 1024 * 1024;
+const MAX_ASSET_FILES = 100_000;
 const MAX_ASSET_FILE_BYTES = 25 * 1024 * 1024;
 // Complete projects use one multipart binary request and content-addressed
 // server storage. This is an xAPI project quota, not Cloudflare's account cap.
@@ -237,6 +238,7 @@ function collectAssetFiles(input: WorkerStaticAssetsInput): WorkerArtifactAssets
     throw new WorkerArtifactError("Static assets path must be a directory and not a symbolic link");
   }
   const files: WorkerArtifactAsset[] = [];
+  let assetBytes = 0;
   const walk = (directory: string): void => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const absolute = resolve(directory, entry.name);
@@ -249,6 +251,8 @@ function collectAssetFiles(input: WorkerStaticAssetsInput): WorkerArtifactAssets
         throw new WorkerArtifactError(`Static asset path is invalid: ${relativePath}`);
       }
       if (info.size > MAX_ASSET_FILE_BYTES) throw new WorkerArtifactError(`Static asset exceeds Cloudflare's 25 MiB per-file limit: ${relativePath}`);
+      assetBytes += info.size;
+      if (assetBytes > MAX_XAPI_ARTIFACT_CONTENT_BYTES) throw new WorkerArtifactError("Static assets exceed the xAPI project limit of 100 MiB");
       const bytes = readFileSync(absolute);
       files.push({ path: `/${relativePath}`, content: bytes.toString("base64"), encoding: "base64", contentType: assetContentType(relativePath) });
       if (files.length > MAX_ASSET_FILES) throw new WorkerArtifactError(`Static assets exceed xAPI's ${MAX_ASSET_FILES} file limit`);
@@ -313,10 +317,8 @@ function loadSingleModule(path: string): LoadedWorkerArtifact {
     throw new WorkerArtifactError("Worker build output is not a file or directory");
   }
   if (!info.size) throw new WorkerArtifactError("Worker build output is empty");
-  if (info.size > MAX_LEGACY_ARTIFACT_BYTES) {
-    throw new WorkerArtifactError(
-      "Single-file Worker output exceeds the 1 MiB artifact limit; use a code-split output directory when appropriate",
-    );
+  if (info.size > MAX_BUNDLE_CONTENT_BYTES) {
+    throw new WorkerArtifactError("Worker modules exceed Cloudflare’s 64 MiB uncompressed limit");
   }
   const bytes = readFileSync(path);
   const moduleCode = bytes.toString("utf8");
@@ -326,6 +328,25 @@ function loadSingleModule(path: string): LoadedWorkerArtifact {
     );
   }
   validateJavaScript(portableRelativePath(resolve(path, ".."), path), moduleCode, undefined, true);
+  if (info.size > MAX_LEGACY_ARTIFACT_BYTES) {
+    const bundle: WorkerArtifactBundle = {
+      version: 1,
+      mainModule: posix.basename(path),
+      modules: [{
+        path: posix.basename(path),
+        content: moduleCode,
+        encoding: "utf8",
+        contentType: "application/javascript+module",
+      }],
+    };
+    const stored = storedBundleBytes(bundle);
+    return {
+      kind: "bundle",
+      contentSha256: sha256(stored),
+      sizeBytes: stored.length,
+      upload: { bundle },
+    };
+  }
   return {
     kind: "module",
     contentSha256: sha256(bytes),
@@ -336,7 +357,9 @@ function loadSingleModule(path: string): LoadedWorkerArtifact {
 
 function loadSingleModuleWithAssets(path: string, staticAssets: WorkerStaticAssetsInput): LoadedWorkerArtifact {
   const legacy = loadSingleModule(path);
-  if (!("moduleCode" in legacy.upload)) throw new WorkerArtifactError("Worker module could not be loaded");
+  const moduleCode = "moduleCode" in legacy.upload
+    ? legacy.upload.moduleCode
+    : legacy.upload.bundle.modules[0].content;
   const mainModule = posix.basename(path);
   const assets = collectAssetFiles(staticAssets);
   const bundle: WorkerArtifactBundle = {
@@ -344,7 +367,7 @@ function loadSingleModuleWithAssets(path: string, staticAssets: WorkerStaticAsse
     mainModule,
     modules: [{
       path: mainModule,
-      content: legacy.upload.moduleCode,
+      content: moduleCode,
       encoding: "utf8",
       contentType: "application/javascript+module",
     }],
@@ -356,7 +379,7 @@ function loadSingleModuleWithAssets(path: string, staticAssets: WorkerStaticAsse
     mainModule,
     modules: [{
       path: mainModule,
-      contentBase64: Buffer.from(legacy.upload.moduleCode, "utf8").toString("base64"),
+      contentBase64: Buffer.from(moduleCode, "utf8").toString("base64"),
       contentType: "application/javascript+module",
     }],
     assets,
@@ -374,6 +397,7 @@ function collectBundleFiles(root: string): Array<{
     bytes: Buffer;
     contentType: WorkerModuleContentType;
   }> = [];
+  let moduleBytes = 0;
   const walk = (directory: string): void => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const absolute = resolve(directory, entry.name);
@@ -404,12 +428,9 @@ function collectBundleFiles(root: string): Array<{
           `Worker output contains an unsupported module file: ${relativePath}. Code bundles support .js, .mjs, .wasm, .txt, and .bin; publish website assets through the static-assets workflow.`,
         );
       }
+      moduleBytes += info.size;
+      if (moduleBytes > MAX_BUNDLE_CONTENT_BYTES) throw new WorkerArtifactError("Worker modules exceed Cloudflare’s 64 MiB uncompressed limit");
       files.push({ path: relativePath, bytes: readFileSync(absolute), contentType });
-      if (files.length > MAX_BUNDLE_MODULES) {
-        throw new WorkerArtifactError(
-          `Worker bundle exceeds the ${MAX_BUNDLE_MODULES} module limit`,
-        );
-      }
     }
   };
   walk(root);
@@ -532,7 +553,7 @@ export async function loadWorkerArtifactInput(
   if (!existsSync(outputPath) || !lstatSync(outputPath).isFile() || lstatSync(outputPath).isSymbolicLink()) {
     throw new WorkerArtifactError("Wrangler bundle must be a regular file");
   }
-  if (statSync(outputPath).size > 18 * 1024 * 1024) throw new WorkerArtifactError("Wrangler bundle exceeds the current Artifact transport limit");
+  if (statSync(outputPath).size > MAX_NATIVE_MULTIPART_BYTES) throw new WorkerArtifactError("Wrangler bundle exceeds the current Artifact transport limit");
   const bytes = readFileSync(outputPath);
   const firstLine = bytes.subarray(0, bytes.indexOf("\r\n")).toString("ascii");
   if (!/^--[A-Za-z0-9_-]{1,70}$/.test(firstLine)) throw new WorkerArtifactError("Invalid Wrangler multipart boundary");
@@ -540,7 +561,7 @@ export async function loadWorkerArtifactInput(
   const entries = await new Promise<Array<[string, string | NativeFile]>>((resolve, reject) => {
     const result: Array<[string, string | NativeFile]> = [];
     const parser = busboy({ headers: {"content-type": `multipart/form-data; boundary=${firstLine.slice(2)}`}, preservePath: true,
-      limits: { files: MAX_BUNDLE_MODULES, fields: 1, parts: MAX_BUNDLE_MODULES + 1, fieldSize: 1024 * 1024, fileSize: MAX_BUNDLE_CONTENT_BYTES } });
+      limits: { fields: 1, fieldSize: MAX_NATIVE_METADATA_BYTES, fileSize: MAX_BUNDLE_CONTENT_BYTES + 1 } });
     parser.on("field", (name, value, info) => {
       if (info.valueTruncated || info.nameTruncated) reject(new WorkerArtifactError("Truncated native metadata"));
       result.push([name, value]);
@@ -626,7 +647,7 @@ export async function loadWorkerArtifactInput(
     if (!types.has(contentType)) throw new WorkerArtifactError(`Native module type needs platform mapping: ${contentType}`);
     const content = Buffer.from(await value.arrayBuffer());
     moduleBytes += content.length;
-    if (moduleBytes > MAX_BUNDLE_CONTENT_BYTES || seen.size > MAX_BUNDLE_MODULES) throw new WorkerArtifactError("Native modules exceed current Artifact capacity");
+    if (moduleBytes > MAX_BUNDLE_CONTENT_BYTES) throw new WorkerArtifactError("Native modules exceed current Artifact capacity");
     const utf8 = contentType === "application/javascript+module" || contentType === "text/plain";
     if (utf8 && !Buffer.from(content.toString("utf8"), "utf8").equals(content)) throw new WorkerArtifactError(`Invalid UTF-8 module: ${name}`);
     // Native module linkage (including computed imports) is validated by CF.

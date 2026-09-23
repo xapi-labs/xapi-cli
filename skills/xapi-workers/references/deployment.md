@@ -83,6 +83,15 @@ npx wrangler deploy --dry-run \
 
 Set `build.output` to the generated `.worker.bundle`, omit `build.main`, and set `assets.directory` to the generated client directory. `--dry-run` only creates the local Cloudflare upload artifact; `xapi workers push` remains the only publisher. The CLI sends the complete modules/assets set in one authenticated multipart Artifact request. The import report must show every unmapped Wrangler field; never split a framework application into per-file API uploads to work around an import problem.
 
+The complete-project upload channel accepts up to 64 MiB of uncompressed
+Worker modules and 100 MiB of combined module/static-asset content; each static
+asset is limited to 25 MiB. There is no 200-module cutoff. A single-file build
+larger than 1 MiB automatically uses the bundle channel; do not split application
+code just to fit the old source-text endpoint. Native `.bundle` files have a
+separate 128 MiB envelope allowance for metadata/framing. Public ingress and
+Cloudflare account limits still apply, so local acceptance does not certify
+public upload capacity. Deploy the matching backend before the CLI update.
+
 Generated Wrangler configs may omit provider resource IDs and emit an
 `inherit` binding in the dry-run bundle. Declare that binding exactly once in
 the selected environment's `resources`; xAPI maps it by binding name and
