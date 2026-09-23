@@ -26,6 +26,18 @@ Use actions permitted by the current lifecycle. Manual pause, low balance and pe
 
 For crash recovery, distinguish slow live ownership from an expired lease or exited process. Do not kill shared services to reproduce a failure. Use an isolated authorized test process/environment. Record deployment ID, lease/recovery state, delete intent and reserve changes; verify no script is recreated after deletion wins.
 
+## Delete one Container Application
+
+For an authorized individual application deletion, use the resource ID returned by xAPI:
+
+```sh
+xapi workers resources delete <worker-id> <resource-id> --env preview --yes
+```
+
+This does not delete its Durable Object, R2, D1 or other independent resources. Update the project declaration as well if future pushes should omit the Container; leaving it declared can request its creation on a later deployment. Use a complete manifest deployment when removing the declaration and updating code together.
+
+Keep the operation ID and inspect its result. With the unified execution backend, an explicitly repeated delete can verify native absence and finish a lost local receipt without resending an uncertain DELETE. `worker_control_recover_through_deletion` directs recovery through this same resource endpoint. It does not mean a new resource should be created or the operation record discarded. If absence cannot be confirmed, report the pending result instead of repeatedly issuing changes. Resource disappearance alone does not prove final metering or release of all environment-level capacity; check those separately using billing/lifecycle evidence.
+
 ## End a test without deleting production
 
 1. Inventory the test Worker/environment, resources, bindings, active jobs/schedules and test objects. Pause producers and schedules; preserve user data.
