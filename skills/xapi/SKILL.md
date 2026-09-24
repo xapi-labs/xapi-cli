@@ -157,7 +157,7 @@ Always use `--input` with JSON for passing parameters.
 ### Capability routing
 
 - Twitter/X reads and writes → `guides/twitter.md`; use the specialized social guide when applicable.
-- Domain search, purchase, and DNS management → `guides/domains.md` before any purchase or write.
+- Domain search, availability checks, purchase, and DNS management → read `guides/domains.md` before using domain capabilities.
 - Normalized token, wallet, DEX, CEX, and crypto-news data → `guides/crypto.md`.
 - General/news/image/video/scholar/maps/places/shopping search → `guides/google_search.md`.
 - AI text, embeddings, image/video/audio generation, and transcription → `guides/ai.md`.
@@ -329,7 +329,7 @@ When the user's task involves these workflows, read the corresponding guide file
 - **`guides/google_search.md`** — Google Search: web, realtime, news, image, video, scholar, maps, places, shopping
 - **`guides/serper.md`** — direct Serper v7 API: 12 provider-native actions, object-or-array mini-batches, Reviews pagination and batch exception, Lens, dynamic per-credit billing, and the current Webpage service boundary
 - **`guides/crypto.md`** — Crypto (加密货币): on-chain token price/overview/holders/security/OHLCV, wallet analytics, DEX pairs, CEX spot prices by symbol, news — covers contract-address vs symbol addressing and multi-chain
-- **`guides/domains.md`**, **`guides/blockpi.md`**, **`guides/binance_web3.md`** — domain purchase and DNS writes, BlockPI EVM JSON-RPC, and the official Binance Web3 API catalog; read the matching guide before any purchase, mutation, transaction build, signing, or broadcast
+- **`guides/domains.md`**, **`guides/blockpi.md`**, **`guides/binance_web3.md`** — unverified domain search, batch availability checks, domain purchase and DNS writes; BlockPI EVM JSON-RPC; and the official Binance Web3 API catalog. Read the domain guide before using domain capabilities; read the other matching guide before any mutation, transaction build, signing, or broadcast
 - **`guides/ai.md`** — AI (人工智能): synchronous or SSE-streamed text, embeddings, asynchronous image/video generation with `task wait`, text-to-speech, and speech-to-text
 - **`guides/ai_gateway.md`** — xAPI AI Gateway: Claude Code and Anthropic/OpenAI SDK setup, model discovery, routing strategies, streaming, fallback, routing/billing headers, direct media endpoints, and known limitations
 - **`guides/ws_gateway.md`** — xAPI WebSocket Gateway: GPT Live, OpenAI Realtime, streaming ASR/TTS, simultaneous interpretation, podcast generation, service/path routing, browser authentication, native protocols, limits, billing, close codes, and reconnects

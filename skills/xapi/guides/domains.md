@@ -13,8 +13,9 @@ record change, and obtain explicit approval before either mutation.
 
 | Action | Purpose | Mutation |
 |---|---|---|
-| `domain.search` | Registrar suggestions and one-year estimated prices | No |
+| `domain.search` | Unverified registrar suggestions and one-year estimated prices | No |
 | `domain.check` | Check exact-domain availability | No |
+| `domain.checkBatch` | Check 1–20 exact domains in one real-time request | No |
 | `domain.price` | Read the current USD registration price | No |
 | `domain.register` | Register a domain | **Purchase** |
 | `domain.registration.get` | Read an asynchronous registration task | No |
@@ -29,29 +30,49 @@ record change, and obtain explicit approval before either mutation.
 Fetch the live schemas before use:
 
 ```bash
-npx xapi-to get-batch domain.search domain.check domain.price domain.register \
+npx xapi-to get-batch domain.search domain.checkBatch domain.check domain.price domain.register \
   domain.registration.get domain.list domain.get dns.list dns.upsert dns.delete \
   dns.dnssec.get dns.dnssec.set
 ```
 
 ## Search, check, and price
 
-`domain.search` accepts a keyword and up to 20 optional TLDs. Its availability
-and one-year prices are suggestions, not a purchase quote. Search first, then
-check and price the exact fully qualified domain:
+`domain.search` accepts a keyword and up to 20 optional TLDs. Its results have
+`verification_status: "unverified"`; `available: true` is a cached hint, and
+`pricing.quote_type: "search_estimate"` is an estimate. Present these as
+candidates awaiting verification, never as confirmed available or purchasable.
+If the user only wants name ideas, Search alone is enough.
+
+When the user needs available options or a purchase price, select the relevant
+fully qualified domains from Search and call `domain.checkBatch` once for 1–20
+names. Check fewer when the user only cares about a shortlist. Use its
+`verification_status: "verified"`, `available: true`, and
+`pricing.quote_type: "checked"` together before saying a domain is currently
+purchasable. Treat `unknown`, missing pricing, and unavailable results as not
+purchasable. Keep unavailable candidates and their reasons in the answer. If all
+checked names are unavailable, say that none of **those candidates** passed
+verification and offer a new keyword or TLD search; do not return an unexplained
+empty list or claim that no domain is available anywhere.
+
+For example:
 
 ```bash
 npx xapi-to call domain.search \
   --input '{"keyword":"example","tlds":["com","dev","ai"]}'
 
+npx xapi-to call domain.checkBatch \
+  --input '{"domains":["example.com","example.dev","example.ai"]}'
+
+# For one chosen domain, a single real-time check is also available.
 npx xapi-to call domain.check --input '{"domain":"example.com"}'
 npx xapi-to call domain.price --input '{"domain":"example.com","period":1}'
 ```
 
-`domain.price` is the authoritative pre-registration price at call time. The
-current USD billable price includes xAPI's fixed fee; non-USD registrar quotes
-are unsupported. Re-price immediately before registration because availability
-and upstream prices can change.
+`domain.checkBatch` returns current one-year pricing for registrable domains.
+Use `domain.price` for the exact registration period and re-price immediately
+before registration. The current USD billable price includes xAPI's fixed fee;
+non-USD registrar quotes are unsupported. Availability and upstream prices can
+change between checks.
 
 ## Register a domain
 
