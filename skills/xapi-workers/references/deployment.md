@@ -173,14 +173,46 @@ Wrangler environment must be rebuilt. Cache settings apply to the user Worker,
 not to the xAPI dispatcher. Required Secret names in `secrets.required` are
 imported; set their values through the Secrets API, never inside the Artifact.
 
-The import report now includes a `deploymentPlan` for each environment:
-`BEFORE_CODE` (D1 migrations), `CODE` (Worker configuration), `AFTER_CODE` (Queue
-consumers and Cron). `REQUIRES_MAPPING` is unfinished execution support, not a
-successful deployment. D1 directories are relative to the referenced Wrangler
-file, not necessarily the project root. Code rollback does not undo applied SQL.
+The import report includes `BEFORE_CODE` (D1 migrations), `CODE` (Worker
+configuration), and `AFTER_CODE` (Queue consumers and Cron). Current push/promote
+execute these steps only with the matching backend and Dispatcher release. Check
+the plan before confirmation; migrations are resolved relative to the referenced
+Wrangler file, constrained to the project, and frozen with their SHA256 before
+execution. Promote uses the selected Artifact plus the displayed local migration
+and event plan. It does not restore these from the old Artifact automatically.
 
-Current managed Queue delivery is HTTP; it is not equivalent to `queue(batch)`.
-Current HTTP schedules are not equivalent to `scheduled()`. Do not remove these
-fields from an app or use `--accept-partial` to claim full compatibility. Before
-publishing an app that uses them, implement/verify the declared event semantics
-and database initialization, then test them in the selected xAPI test environment.
+D1 files execute remotely through xAPI in order, recording each file and checksum
+in the target D1 database. Require APPLIED/ALREADY_APPLIED and remote:true receipts.
+An existing Wrangler record without a checksum is skipped with sha256:null: its
+original content has not been verified. Failed SQL stops later files/code release;
+completed migrations do not roll back with code. A lost response is reconciled
+against the remote ledger, never blindly replayed. Preserve partial receipts.
+
+Queue consumers invoke queue(batch, env, ctx) through the platform event adapter;
+CF owns ack/retry/delay/DLQ delivery. The adapter preserves message IDs, attempts,
+timestamps, logical names, binary bodies and waitUntil failure. It does not claim
+exactly-once or every possible V8 serialized type. Cron invokes scheduled() with
+scheduledTime, cron, noRetry and waitUntil. Only UTC numeric five-field expressions
+are currently supported, with CF weekdays 1=Sunday through 7=Saturday. Named fields,
+L/W/# and singleton steps are rejected before deployment. Do not delete unsupported
+settings or use --accept-partial to claim full compatibility.
+
+These are platform mappings over the existing metered Dispatcher path, not direct
+namespace native trigger registrations. Scheduler waiting is currently at most
+120 seconds; existing Dispatcher CPU/subrequest limits still apply. Configuration
+probes require the deployed signed adapter and real handlers; an HTML 200 is not
+readiness. Explicit crons:[] disables only CLI-owned schedules in the target
+environment; absent triggers preserves them. Independently created user schedules
+are not removed.
+
+A successful push proves deployment/configuration receipts and the configured
+HTTP health probe, not live Queue/Cron or financial acceptance. Before reporting
+CF acceptance, verify actual Queue messages/retries/DLQ, a naturally triggered Cron,
+remote D1 ledger and business side effects, pause/ownership controls, and attributed
+usage/billing on the selected xAPI test environment. Local workerd/Miniflare,
+mocked transport and run-now alone are insufficient. Never bypass xAPI with a direct
+Wrangler cloud deployment to manufacture a successful result.
+
+## Plan freshness
+
+The CLI freezes the project configuration and the target environment's active deployment ID when preparing the plan. If the JSON changes during build/confirmation, or another deployment becomes active before submission, rerun the plan and review its effects. Do not retry the old plan by changing its IDs. The API checks `expectedActiveDeploymentId` again when claiming deployment; `null` means the environment had no active deployment. This is a check at deployment submission, not a long-lived environment lock. Independent resources that are omitted from bindings are retained and may still incur storage costs.

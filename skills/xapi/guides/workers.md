@@ -145,8 +145,10 @@ are optional provenance, not authentication and not a deployment prerequisite.
 It runs the configured build, creates the remote Worker when `workerId` is
 absent, safely creates or updates declared resources, uploads one immutable
 Artifact, deploys preview, waits for the active state, and runs the configured
-health check. `push` never deletes an extra stateful resource or Secret; `plan`
-marks such drift `MANUAL` for explicit handling.
+health check. `push` binds the resources declared for that environment. Removing
+a declaration unbinds it on the next deployment; the resource, data and storage
+charges remain until an explicit destruction request. The project workflow never deletes an extra stateful resource or Secret.
+Extra Secret values remain independent and are not deleted by changing declarations.
 
 ## Resource state without drift
 
@@ -155,7 +157,8 @@ There are only two resource states:
 - `xapi.worker.json` is the desired state that belongs in Git. It contains
   binding names and portable options, never Cloudflare or xAPI resource IDs.
 - xAPI is the live state. `plan` reads it every time and compares it with the
-  selected environment in `xapi.worker.json`; there is no cached state file.
+  selected environment in `xapi.worker.json`. A metadata-only `.xapi/resource-sync-*`
+  baseline is used by `resources pull` to merge edits; it is not authoritative live state.
 
 Choose the command by intent:
 
@@ -207,15 +210,18 @@ git diff -- xapi.worker.json
 xapi workers plan --env preview
 ```
 
-`pull` is an additive, all-or-nothing merge. It imports only supported healthy
-resources, preserves pending local declarations, never writes provider IDs,
-never deletes anything, and refuses to overwrite a binding whose type,
-Durable Object class, location, or D1 replication differs. `--env both` reads
-the environments independently because their physical resources are separate.
+The first `pull` imports supported healthy resources, enriches compatible
+declarations and reports conflicting local definitions. Subsequent pulls compare
+the local JSON and live inventory with the previous observations: preserve local
+edits (including removed bindings), adopt remote-only changes and report conflicting
+edits to the same binding without overwriting either side. It never writes provider
+IDs into JSON, changes native resources or copies Secret values. Confirmed removal
+from remote inventory can remove its unchanged local declaration. `--env both`
+keeps independent baselines. A local file edit during the read aborts the merge.
 
-`resources remove` changes desired state only. The following `plan` shows the
-live resource as `MANUAL`; keep it with `resources pull`, or back it up and use
-the project-aware destructive command:
+`resources remove` changes desired state only. Review `plan` and deploy to remove
+the Worker binding while retaining the physical resource. To also delete its data,
+back it up and use the separate destructive command:
 
 ```bash
 xapi workers resources destroy --env preview --binding FILES --yes
@@ -223,8 +229,9 @@ xapi workers resources destroy --env preview --binding FILES --yes
 
 `destroy` accepts one environment, removes the declaration before requesting
 live deletion, and reports a deletion request rather than claiming immediate
-physical destruction. If the request fails, the live resource remains and
-`resources pull` restores desired state before retrying.
+physical destruction. If the request fails or its result is unknown, inspect it
+and explicitly retry `destroy` against the same binding. Do not recreate the
+resource or infer zero usage/refund from a timeout.
 
 `resources list/create/delete <worker-id> ...` are recovery and debugging
 primitives. They mutate or inspect live state without updating
@@ -601,7 +608,14 @@ An immediate run exercises the same lease, retry, audit, budget, and Worker rout
 
 ### Encrypted Secrets
 
-Prefer `--from-env` so plaintext does not appear in shell history. The control plane encrypts the value at rest and public reads expose only binding name, version, and timestamps. When a script is already active, rotation is applied immediately; otherwise it is applied during the next deployment.
+Prefer `--from-env` so plaintext does not appear in shell history. Values go to the
+native Secret endpoint; public reads expose metadata only. Set, replace and delete
+values independently in preview or production. JSON lists required names, not values
+or an allowlist. Removing a name from JSON does not delete its value. Code deployment,
+promotion and rollback preserve the destination environment's current Secrets.
+If the native script does not exist yet, the first set initializes a placeholder;
+it does not overwrite an existing script whose local deployment record is missing.
+Failure/timeout ends that attempt; inspect metadata and explicitly retry as needed.
 
 ```bash
 export MODEL_KEY='...'

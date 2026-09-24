@@ -44,7 +44,7 @@ test("same code: add, replace and explicitly remove bindings deploy; unchanged r
   expect(p.deployments).toHaveLength(4);
 });
 
-test("compatibility and secret versions change the deployment, not the Artifact", async () => {
+test("compatibility changes deploy; independent Secret changes do not redeploy code", async () => {
   const p = platform();
   await p.run();
   await p.run("2026-09-06");
@@ -53,7 +53,7 @@ test("compatibility and secret versions change the deployment, not the Artifact"
   p.secrets[0].version = 2;
   await p.run("2026-09-06");
   await p.run("2026-09-06");
-  expect(p.deployments).toHaveLength(4);
+  expect(p.deployments).toHaveLength(2);
   expect(new Set(p.deployments.map(d => d.artifactId)).size).toBe(1);
 });
 

@@ -396,7 +396,7 @@ describe("workers plan", () => {
       clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
       client,
     });
-    expect(plan.canApply).toBe(false);
+    expect(plan.canApply).toBe(true);
     expect(plan.actions).toContainEqual(
       expect.objectContaining({ operation: "UPDATE", kind: "budget" }),
     );
@@ -409,10 +409,10 @@ describe("workers plan", () => {
     );
     expect(plan.actions).toContainEqual(
       expect.objectContaining({
-        operation: "MANUAL",
+        operation: "NO_CHANGE",
         kind: "resource",
         key: "OLD_DB",
-        message: expect.stringContaining("resources pull"),
+        message: expect.stringContaining("Not referenced by this JSON"),
       }),
     );
     expect(plan.actions).toContainEqual(

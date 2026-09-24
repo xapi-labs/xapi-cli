@@ -1,3 +1,5 @@
+import { validNativeCron } from './workers-cron.ts';
+import { createHash } from 'node:crypto';
 import {
   normalizeNativeWorkerOptions,
   type WorkerCacheOptions,
@@ -120,6 +122,7 @@ const MANAGED_TOP_LEVEL = new Set([
   "durable_objects",
   "migrations",
   "queues",
+  "triggers",
   "workflows",
   "containers",
 ]);
@@ -540,18 +543,20 @@ function resourceList(
       new Set(["binding"]),
     ),
   );
-  if (
-    queues?.consumers !== undefined &&
-    !structurallyEmpty(queues.consumers)
-  ) {
-    compatibilityEntry(
-      entries,
-      "UNSUPPORTED",
-      `${prefix}queues.consumers`,
-      "Native queue(batch) delivery is not implemented: current xAPI consumers forward HTTP. Batch/ack/retry/dead-letter settings must be mapped before deployment",
-      { environment },
-    );
+  const queueNames = new Set<string>();
+  for (const consumer of array(queues?.consumers)) {
+    if (typeof consumer.queue === 'string') queueNames.add(consumer.queue);
+    if (typeof consumer.dead_letter_queue === 'string') queueNames.add(consumer.dead_letter_queue);
+    const allowed = new Set(['queue', 'max_batch_size', 'max_batch_timeout', 'max_retries', 'max_concurrency', 'retry_delay', 'dead_letter_queue']);
+    for (const key of Object.keys(consumer)) if (!allowed.has(key))
+      compatibilityEntry(entries, 'UNSUPPORTED', `${prefix}queues.consumers.${key}`, 'Unsupported Queue consumer option', { environment });
   }
+  for (const name of queueNames) {
+    if (!array(queues?.producers).some(item => item.queue === name))
+      resources.push({ type: 'queue', bindingName: queueBinding(config, name) });
+  }
+  if (queueNames.size) compatibilityEntry(entries, 'MANAGED', `${prefix}queues.consumers`,
+    'Platform event adapter invokes queue(batch), preserving explicit acknowledgements, retries and binary bodies; CF owns delivery and dead-letter routing.', { environment });
   array(config.workflows).forEach((item, index) =>
     add(
       "workflow",
@@ -1059,10 +1064,8 @@ export function importWranglerProject(
         phase: "AFTER_CODE",
         kind: "QUEUE_CONSUMER",
         environment,
-        status: "REQUIRES_MAPPING",
-        ...(typeof producer?.binding === "string"
-          ? { bindingName: producer.binding }
-          : {}),
+        status: "SUPPORTED",
+        bindingName: queueBinding(config, String(consumer.queue)),
         configuration: Object.fromEntries(
           Object.entries(consumer).filter(([key]) =>
             [
@@ -1080,18 +1083,21 @@ export function importWranglerProject(
     }
     const crons = record(config.triggers)?.crons;
     if (Array.isArray(crons) && crons.length) {
+      const supportedCrons = crons.every(cron => typeof cron === 'string' && validNativeCron(cron));
+      if (!supportedCrons)
+        compatibilityEntry(entries, 'UNSUPPORTED', `${prefix}triggers.crons`, 'Invalid or unsupported CF numeric UTC Cron; check ranges and mapping support (no silent conversion)', { environment });
       deploymentPlan.push({
         phase: "AFTER_CODE",
         kind: "CRON",
         environment,
-        status: "REQUIRES_MAPPING",
+        status: supportedCrons ? "SUPPORTED" : "REQUIRES_MAPPING",
         configuration: { crons, timezone: "UTC" },
       });
       compatibilityEntry(
         entries,
-        "UNSUPPORTED",
+        "MANAGED",
         `${prefix}triggers.crons`,
-        `Native scheduled() delivery requires a verified WfP trigger mapping; HTTP schedules are not equivalent. Requested UTC schedules: ${crons.join(", ")}`,
+        `Platform scheduler invokes scheduled() through a metered event adapter (not native WfP Cron registration). Requested UTC schedules: ${crons.join(", ")}`,
         { environment },
       );
     }
@@ -1105,7 +1111,7 @@ export function importWranglerProject(
           phase: "BEFORE_CODE",
           kind: "D1_MIGRATIONS",
           environment,
-          status: "REQUIRES_MAPPING",
+          status: "SUPPORTED",
           ...(typeof database.binding === "string"
             ? { bindingName: database.binding }
             : {}),
@@ -1118,9 +1124,9 @@ export function importWranglerProject(
         });
         compatibilityEntry(
           entries,
-          "UNSUPPORTED",
+          "MANAGED",
           `${prefix}d1_databases[${index}].migrations`,
-          `D1 SQL migrations require a separate target-database execution plan before code deployment; directory=${String(database.migrations_dir ?? "migrations")}, table=${String(database.migrations_table ?? "d1_migrations")}. Code rollback does not roll back SQL.`,
+          `D1 SQL migrations execute remotely against the owned binding before code deployment; directory=${String(database.migrations_dir ?? "migrations")}, table=${String(database.migrations_table ?? "d1_migrations")}. Code rollback does not roll back SQL.`,
           {
             environment,
             ...(typeof database.binding === "string"
@@ -1361,4 +1367,18 @@ export function readWranglerPublicVars(
   const path = resolveWorkerProjectPath(project, project.config.wrangler, "wrangler");
   const { config } = parseWrangler(path);
   return selectedConfig(config, environment).config.vars;
+}
+
+export function queueBinding(config: UnknownRecord, queue: string): string {
+  const producer = array(record(config.queues)?.producers).find(item => item.queue === queue);
+  return typeof producer?.binding === 'string' ? producer.binding :
+    'XAPI_QUEUE_' + createHash('sha256').update(queue).digest('hex').slice(0, 16).toUpperCase();
+}
+
+export function readWranglerEventConfig(project: LoadedWorkerProject, environment: 'preview' | 'production') {
+  const path = resolveWorkerProjectPath(project, project.config.wrangler, 'wrangler');
+  const { config } = parseWrangler(path);
+  const selected = selectedConfig(config, environment).config;
+  return { config: selected, directory: dirname(path), consumers: array(record(selected.queues)?.consumers),
+    crons: record(selected.triggers)?.crons, databases: array(selected.d1_databases) };
 }

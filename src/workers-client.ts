@@ -755,3 +755,16 @@ export function deleteWorkerSecret(
     60_000,
   );
 }
+
+export function applyWorkerD1Migration(options: WorkersClientOptions, id: string, environment: string,
+  resourceId: string, input: Record<string, unknown>) {
+  return request<unknown>(url(options, `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/resources/${encodeURIComponent(resourceId)}/d1/migrations`), {
+    method: 'POST', headers: headers(options, true), body: JSON.stringify(input),
+  });
+}
+export function configureWorkerQueueConsumer(options: WorkersClientOptions, id: string, environment: string,
+  resourceId: string, input: Record<string, unknown>) {
+  return request<unknown>(url(options, `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/resources/${encodeURIComponent(resourceId)}/queue-consumer`), {
+    method: 'PUT', headers: headers(options, true), body: JSON.stringify(input),
+  });
+}

@@ -179,6 +179,7 @@ function fakePlatform(
       calls.createResource += 1;
       state.resources.push({
         ...input,
+        id: `resource-${calls.createResource}`,
         type: input.type.toUpperCase(),
         status: "ACTIVE",
       });
@@ -233,6 +234,7 @@ function fakePlatform(
     deployWorker: async (_api, _id, input) => {
       calls.deploy += 1;
       const deployment = {
+        resourceIds: input.resourceIds,
         id: "deployment-1",
         idempotencyKey: input.idempotencyKey,
         artifactId: input.artifactId,
@@ -425,7 +427,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(loadWorkerProject(root).config.workerId).toBe(workerId);
   });
 
-  test("refuses to deploy through remote-only resource drift", async () => {
+  test("unreferenced resources remain stored but are excluded from deployed bindings", async () => {
     const root = fixture({ linked: true });
     const platform = fakePlatform({ exists: true });
     platform.state.resources.push({
@@ -435,8 +437,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
       status: "ACTIVE",
     });
     let confirmations = 0;
-    await expect(
-      pushWorkerProject({
+    await pushWorkerProject({
         cwd: root,
         environment: "preview",
         clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
@@ -452,16 +453,58 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
             "export default {fetch(){return new Response('ok')}};",
           );
         },
-      }),
-    ).rejects.toThrow("requires reconciliation");
-    expect(confirmations).toBe(0);
-    expect(platform.calls).toEqual({
-      createWorker: 0,
-      updateBudget: 0,
-      createResource: 0,
-      uploadArtifact: 0,
-      deploy: 0,
+        fetchPublic: (async () => Response.json({ ok: true })) as unknown as typeof fetch,
+        sleep: async () => undefined,
     });
+    expect(confirmations).toBe(1);
+    expect(platform.state.resources).toHaveLength(1);
+    expect(platform.state.resources[0].id).toBe("resource-old-db");
+    expect(platform.state.deployments[0].resourceIds).toEqual([]);
+    expect(platform.calls.deploy).toBe(1);
+  });
+
+  test.each(["build", "confirmation"])("rejects JSON edits during %s before remote mutations", async (phase) => {
+    const root = fixture({ linked: true });
+    const platform = fakePlatform({ exists: true });
+    const edit = () => {
+      const path = join(root, "xapi.worker.json");
+      const config = JSON.parse(readFileSync(path, "utf8"));
+      config.environments.preview.dailyBudgetUsd = 0.5;
+      writeFileSync(path, JSON.stringify(config));
+    };
+    await expect(pushWorkerProject({
+      cwd: root, environment: "preview",
+      clientOptions: {apiHost:"localhost:3003", apiKey:"test-key"}, client: platform.client,
+      runBuild: async () => {
+        mkdirSync(join(root,"dist"), {recursive:true});
+        writeFileSync(join(root,"dist/worker.mjs"), "export default {fetch(){return new Response('ok')}}");
+        if (phase === "build") edit();
+      },
+      confirm: async () => { if (phase === "confirmation") edit(); return true; },
+    })).rejects.toThrow("configuration changed");
+    expect(platform.calls.uploadArtifact).toBe(0);
+    expect(platform.calls.deploy).toBe(0);
+    expect(platform.calls.createWorker).toBe(0);
+  });
+
+  test("rejects a deployment published while the user reviewed the plan before resource writes", async () => {
+    const root = fixture({linked:true, resources:[{type:"kv_namespace",bindingName:"STATE"}]});
+    const platform = fakePlatform({exists:true});
+    await expect(pushWorkerProject({
+      cwd:root, environment:"preview", client:platform.client,
+      clientOptions:{apiHost:"localhost:3003",apiKey:"test-key"},
+      runBuild:async()=>{
+        mkdirSync(join(root,"dist"),{recursive:true});
+        writeFileSync(join(root,"dist/worker.mjs"),"export default {fetch(){return new Response('ok')}}");
+      },
+      confirm:async()=>{
+        platform.state.deployments.push({id:"newer-deployment",status:"ACTIVE",environment:"preview"});
+        return true;
+      },
+    })).rejects.toThrow("changed");
+    expect(platform.calls.createResource).toBe(0);
+    expect(platform.calls.uploadArtifact).toBe(0);
+    expect(platform.calls.deploy).toBe(0);
   });
 
   test("non-interactive mode fails a missing-Secret plan before any mutation", async () => {
@@ -609,7 +652,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     });
   });
 
-  test("reconciles an HTTP 500 and safely retries Artifact and Deployment writes with the same idempotency key", async () => {
+  test("immutable Artifact upload can retry; an unconfirmed publish requires an explicit retry", async () => {
     const root = fixture({ linked: true });
     const platform = fakePlatform({ exists: true });
     const upload = platform.client.uploadWorkerArtifact.bind(platform.client);
@@ -630,9 +673,9 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
       }
       return deploy(...args);
     };
-    const result = await pushWorkerProject({
+    const options = {
       cwd: root,
-      environment: "preview",
+      environment: "preview" as const,
       clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
       client: platform.client,
       confirm: async () => true,
@@ -646,7 +689,10 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
       fetchPublic: (async () =>
         Response.json({ ok: true })) as unknown as typeof fetch,
       sleep: async () => undefined,
-    });
+    };
+    await expect(pushWorkerProject(options)).rejects.toThrow("No second publish was sent");
+    expect(deployAttempts).toBe(1);
+    const result = await pushWorkerProject(options);
     expect(result.status).toBe("ACTIVE");
     expect(uploadAttempts).toBe(2);
     expect(deployAttempts).toBe(2);

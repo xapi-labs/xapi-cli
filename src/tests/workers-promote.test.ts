@@ -111,8 +111,8 @@ function fakePlatform(
   ];
   const productionDeployments: Array<Record<string, unknown>> = [];
   const productionResources: Array<Record<string, unknown>> = options.resources
-    ? [...options.resources]
-    : [{ bindingName: "STATE", type: "KV_NAMESPACE", status: "ACTIVE" }];
+    ? options.resources.map((resource, index) => ({ id: `resource-${index}`, ...resource }))
+    : [{ id: "resource-state", bindingName: "STATE", type: "KV_NAMESPACE", status: "ACTIVE" }];
   const artifacts = [
     {
       id: "artifact-latest",
@@ -163,7 +163,7 @@ function fakePlatform(
     listWorkerResources: async () => productionResources,
     createWorkerResource: async (_api, _id, _environment, input) => {
       calls.createResource += 1;
-      const created = { ...input, status: "ACTIVE" };
+      const created = { id: `resource-${calls.createResource}`, ...input, status: "ACTIVE" };
       productionResources.push(created);
       return created;
     },
@@ -376,7 +376,7 @@ describe("workers promote", () => {
     expect(ready.plan.canPromote).toBe(true);
   });
 
-  test("shows extra production state as MANUAL data risk and cancellation is mutation-free", async () => {
+  test("unreferenced production resources are retained; cancellation remains mutation-free", async () => {
     const root = fixture();
     const platform = fakePlatform({
       resources: [
@@ -390,10 +390,10 @@ describe("workers promote", () => {
       clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
       client: platform.client,
     });
-    expect(prepared.plan.canPromote).toBe(false);
+    expect(prepared.plan.canPromote).toBe(true);
     expect(prepared.plan.production.checks).toContainEqual(
       expect.objectContaining({
-        status: "MANUAL",
+        status: "NO_CHANGE",
         kind: "resource",
         key: "OLD_DB",
       }),
@@ -415,8 +415,8 @@ describe("workers promote", () => {
           return false;
         },
       }),
-    ).rejects.toThrow("resource drift requires reconciliation");
-    expect(confirmations).toBe(0);
+    ).rejects.toThrow("promotion cancelled");
+    expect(confirmations).toBe(1);
     expect(platform.calls.deploy).toBe(0);
   });
 });

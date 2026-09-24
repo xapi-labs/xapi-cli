@@ -31,7 +31,7 @@ Supply the explicitly accepted retention price version when required. Redeploy a
 | Workflow | Start and poll the instance to terminal state | Instance ID, final status and durable result |
 | Schedule | Trigger an immediate run and inspect run history | Schedule/run ID and resulting business change |
 
-Queue uses a managed consumer that routes an envelope to the same Worker environment:
+For imported native Queue consumers, the managed adapter invokes `queue(batch, env, ctx)` and returns ack/retry decisions to Cloudflare. The compatibility HTTP mode instead routes the following envelope to the same Worker environment; do not mistake that route for a native handler:
 
 ```js
 await env.JOBS.send({ path: "/tasks/report", method: "POST", body: { taskId } });

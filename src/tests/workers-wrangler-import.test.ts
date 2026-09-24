@@ -473,7 +473,7 @@ test("imports native metadata/cache and modern required secrets without values",
   expect(result.config?.environments.preview.secrets).toEqual(["AUTH_SECRET"]);
 });
 
-test("reports native event and SQL migration gaps rather than silently claiming deployment compatibility", () => {
+test("reports ordered remote migrations and explicit platform event mappings", () => {
   const root = workspace();
   writeFileSync(
     join(root, "wrangler.jsonc"),
@@ -492,7 +492,7 @@ test("reports native event and SQL migration gaps rather than silently claiming 
     cwd: root,
     wranglerPath: "wrangler.jsonc",
   });
-  expect(result.wrote).toBe(false);
+  expect(result.wrote).toBe(true);
   const phases = result.report.deploymentPlan.filter(
     (step) => step.environment === "preview",
   );
@@ -508,7 +508,7 @@ test("reports native event and SQL migration gaps rather than silently claiming 
   });
   expect(phases[2]).toMatchObject({
     bindingName: "JOBS",
-    status: "REQUIRES_MAPPING",
+    status: "SUPPORTED",
     configuration: { max_batch_size: 1, max_retries: 5 },
   });
   for (const path of [
@@ -517,7 +517,7 @@ test("reports native event and SQL migration gaps rather than silently claiming 
     "queues.consumers",
   ]) {
     expect(result.report.entries).toContainEqual(
-      expect.objectContaining({ category: "UNSUPPORTED", path }),
+      expect.objectContaining({ category: "MANAGED", path }),
     );
   }
 });

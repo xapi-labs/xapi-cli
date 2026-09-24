@@ -1,3 +1,4 @@
+import { NativeDeploymentError, applyNativeDeploymentPhase, type NativeDeploymentClient } from './workers-native-deployment.ts';
 import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -57,7 +58,7 @@ export interface DeploymentClient {
   ): Promise<unknown>;
 }
 
-export interface PushClient extends PlanClient, DeploymentClient {
+export interface PushClient extends PlanClient, DeploymentClient, NativeDeploymentClient {
   listWorkerDomains(
     options: WorkersClientOptions,
     id: string,
@@ -146,6 +147,7 @@ export interface WorkerPushResult {
   resources: { created: string[]; unchanged: string[] };
   artifact: { id: string; contentSha256: string; sizeBytes: number };
   deployment: { id: string; status: "ACTIVE"; idempotencyKey: string };
+  nativeReceipts: unknown[];
   publicUrl: string;
   routing?: { mode?: string; webAppReady: boolean; publicOrigin?: string; publicBasePath?: string };
   health: { url: string; status: number; attempts: number };
@@ -609,6 +611,8 @@ export async function ensureActiveDeployment(
   compatibility: ReturnType<typeof readWranglerDeploymentSettings>,
   sleep: (milliseconds: number) => Promise<void>,
   retentionPriceVersion?: string,
+  desiredBindings?: string[],
+  expectedActiveDeploymentId?: string | null,
 ): Promise<{ deployment: UnknownRecord; idempotencyKey: string }> {
   const currentWorker = record(
     await api.getWorker(options, workerId),
@@ -619,13 +623,24 @@ export async function ensureActiveDeployment(
     api.listWorkerResources(options, workerId, environment),
     api.listWorkerSecrets(options, workerId, environment),
   ]);
+  const resourceRows = records(resourceState, "managed resources");
+  const selected = desiredBindings ? desiredBindings.map(name => {
+    const matches = resourceRows.filter(row => row.bindingName === name);
+    if (matches.length !== 1 || !text(matches[0].id))
+      throw new WorkerPushError(`Resource binding ${name} is missing or ambiguous; rerun plan`);
+    return matches[0];
+  }) : resourceRows;
+  const resourceIds = selected.filter(row => row.type !== "CONTAINER_APPLICATION").map(row => text(row.id)!);
   const prefix = deploymentPrefix(workerId, environment, artifactId, compatibility,
-    environmentState, records(resourceState, "managed resources"), records(secretState, "Secrets"));
+    environmentState, selected, records(secretState, "Secrets"));
   const alreadyActive = currentMatchingDeployment(records(currentWorker.deployments || [], "Deployments"),
     environmentState, artifactId, prefix);
   if (alreadyActive) {
     return { deployment: alreadyActive, idempotencyKey: text(alreadyActive.idempotencyKey)! };
   }
+  if (expectedActiveDeploymentId !== undefined &&
+      expectedActiveDeploymentId !== (text(environmentState.activeDeploymentId) || null))
+    throw new WorkerPushError("Active deployment changed after plan; rerun plan before replacing it", {workerId});
   const idempotencyKey = deploymentKey(prefix, environmentState);
   let deployment = await deploymentFromWorker(
     api,
@@ -639,6 +654,8 @@ export async function ensureActiveDeployment(
         await api.deployWorker(options, workerId, {
           environment,
           artifactId,
+          ...(desiredBindings ? {resourceIds} : {}),
+          ...(expectedActiveDeploymentId !== undefined ? {expectedActiveDeploymentId} : {}),
           idempotencyKey,
           compatibilityDate: compatibility.compatibilityDate,
           compatibilityFlags: compatibility.compatibilityFlags,
@@ -655,17 +672,9 @@ export async function ensureActiveDeployment(
         idempotencyKey,
       );
       if (!deployment) {
-        deployment = record(
-          await api.deployWorker(options, workerId, {
-            environment,
-            artifactId,
-            idempotencyKey,
-            compatibilityDate: compatibility.compatibilityDate,
-            compatibilityFlags: compatibility.compatibilityFlags,
-            ...(retentionPriceVersion ? { retentionPriceVersion } : {}),
-          }),
-          "Deployment",
-        );
+        throw new WorkerPushError("Deployment result is unconfirmed; inspect it or explicitly retry the command. No second publish was sent", {
+          workerId, artifactId, idempotencyKey, resultUnconfirmed: true,
+        });
       }
     }
   }
@@ -792,7 +801,7 @@ export async function pushWorkerProject(
     throw error;
   }
   const project = loadWorkerProject(options.cwd, options.configPath);
-  const initialConfig = readFileSync(project.configPath, "utf8");
+  const initialConfig = prepared.configContent;
   const initialConfigSha256 = sha256(initialConfig);
   const compatibility = readWranglerDeploymentSettings(project, "preview");
   const initialPlan = prepared.plan;
@@ -827,6 +836,9 @@ export async function pushWorkerProject(
   }
 
   let workerState: { worker: UnknownRecord; id: string; created: boolean };
+  if (sha256(readFileSync(project.configPath, "utf8")) !== initialConfigSha256 ||
+      JSON.stringify(readWranglerDeploymentSettings(project, "preview")) !== JSON.stringify(compatibility))
+    throw new WorkerPushError("Deployment configuration changed after plan; run push again to review the new plan", { remoteChangesApplied: false });
   try {
     workerState = await ensureWorker(
       project,
@@ -843,6 +855,13 @@ export async function pushWorkerProject(
     );
   }
   const linkedProject = loadWorkerProject(project.rootDir, project.configPath);
+  if (JSON.stringify({ ...linkedProject.config, workerId: project.config.workerId }) !== JSON.stringify(project.config))
+    throw new WorkerPushError("Deployment configuration changed during Worker setup; rerun plan", { workerId: workerState.id });
+  if (initialPlan.remote.activeDeploymentId !== undefined &&
+      initialPlan.remote.activeDeploymentId !== (text(environmentOf(workerState.worker, "preview").activeDeploymentId) || null))
+    throw new WorkerPushError("Active deployment changed after plan; rerun plan before replacing it", {workerId: workerState.id});
+  const nativeReceipts: unknown[] = [];
+  let releasedDeploymentId: string | undefined;
   try {
     await ensureEnvironment(
       api,
@@ -858,6 +877,7 @@ export async function pushWorkerProject(
       linkedProject.config.environments.preview.resources,
       options.retentionPriceVersion,
     );
+    const nativePlan = prepared.nativePlan;
     const missing = await missingSecrets(
       api,
       options.clientOptions,
@@ -894,6 +914,7 @@ export async function pushWorkerProject(
         },
       );
     }
+    nativeReceipts.push(...await applyNativeDeploymentPhase(api, options.clientOptions, workerState.id, "preview", nativePlan, "BEFORE_CODE"));
     const deployed = await ensureActiveDeployment(
       api,
       options.clientOptions,
@@ -905,7 +926,11 @@ export async function pushWorkerProject(
         ((milliseconds) =>
           new Promise((resolve) => setTimeout(resolve, milliseconds))),
       options.retentionPriceVersion,
+      linkedProject.config.environments.preview.resources.map(resource => resource.bindingName),
+      initialPlan.remote.activeDeploymentId,
     );
+    releasedDeploymentId = text(deployed.deployment.id);
+    nativeReceipts.push(...await applyNativeDeploymentPhase(api, options.clientOptions, workerState.id, "preview", nativePlan, "AFTER_CODE"));
     const deploymentId = text(deployed.deployment.id);
     if (!deploymentId) {
       throw new WorkerPushError("ACTIVE deployment response is missing id");
@@ -935,6 +960,7 @@ export async function pushWorkerProject(
       schemaVersion: 1,
       status: "ACTIVE",
       initialPlan,
+      nativeReceipts,
       worker: {
         id: workerState.id,
         created: workerState.created,
@@ -971,6 +997,9 @@ export async function pushWorkerProject(
       throw new WorkerPushError(error.message, {
         workerId: workerState.id,
         resourcesPreserved: true,
+        releasedDeploymentId,
+        nativeReceipts: [...nativeReceipts, ...(error instanceof NativeDeploymentError ? error.completed : [])],
+        ...(error instanceof NativeDeploymentError ? { failedPhase: error.phase } : {}),
         ...error.recovery,
       });
     }
@@ -979,6 +1008,9 @@ export async function pushWorkerProject(
       {
         workerId: workerState.id,
         resourcesPreserved: true,
+        releasedDeploymentId,
+        nativeReceipts: [...nativeReceipts, ...(error instanceof NativeDeploymentError ? error.completed : [])],
+        ...(error instanceof NativeDeploymentError ? { failedPhase: error.phase } : {}),
         recovery: `xapi workers plan --env preview`,
       },
     );

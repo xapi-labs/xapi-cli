@@ -61,6 +61,8 @@ Detach only a customer custom domain:
 xapi workers domains detach <worker-id> <worker-domain-id> --yes
 ```
 
+An explicit retry first checks for an exact completed binding. If confirmed, it returns completion; otherwise it submits the current authorized intent. A failed observation does not permanently block retry. Failed/timed-out user attempts are not automatically reissued in the background. A timeout means the result is unconfirmed, not proof Cloudflare did nothing. Late results remain in history and cannot replace a newer local bind/detach state. A custom-domain failure does not disable the normal platform hostname.
+
 Platform-generated hostnames follow the environment lifecycle and cannot be detached independently.
 After detach, the exact hostname has a short reuse cooldown while stale edge
 route state expires. Wait until the API's `reusableAt` time before binding that

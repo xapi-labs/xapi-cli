@@ -615,9 +615,9 @@ make both environments share one physical resource.
 `push` creates missing preview resources only after its full plan passes.
 `promote` performs the same production preflight and, after confirmation,
 creates missing production declarations before activating the exact tested
-preview Artifact. A budget mismatch, missing Secret, incompatible binding, or
-undeclared production resource blocks the command before any resource or
-deployment write. If creation requires an accepted freeze quote, pass its exact
+preview Artifact. A budget mismatch, missing required Secret or incompatible binding blocks activation.
+An undeclared production resource is retained and unbound by the next deployment.
+If creation requires an accepted freeze quote, pass its exact
 version with `--retention-price-version`.
 
 `resources update` requires the resource type because it replaces the complete
@@ -636,13 +636,14 @@ git diff -- xapi.worker.json
 xapi workers plan --env preview
 ```
 
-`pull` performs an additive, all-or-nothing merge. It preserves local-only
-declarations, writes no provider IDs, deletes nothing, and rejects unhealthy,
-unsupported, duplicate, or conflicting remote bindings. `--env both` reads and
-merges preview and production independently.
+`pull` imports compatible live declarations initially, then uses a metadata-only
+`.xapi/resource-sync-*` baseline for a three-way merge. Local edits and removed
+bindings are preserved; remote-only changes are adopted; conflicting edits abort
+without overwriting JSON. It changes no native resources and copies no Secret
+values. `--env both` uses independent environment baselines.
 
 Use `resources remove --env ... --binding ...` only when the live resource must
-remain. `plan` then marks it `MANUAL`, and `resources pull` can adopt it again.
+remain. `plan` explains that the next deployment removes its binding only.
 To delete data, back it up first and run:
 
 ```bash
@@ -652,18 +653,19 @@ xapi workers resources destroy --env preview --binding FILES --yes
 `destroy` accepts one environment at a time, removes the local declaration
 before requesting deletion, and reports deletion as requested until the live
 resource disappears. If the request fails, the live resource remains visible
-and `resources pull` restores the declaration. `resources list/create/delete
+and the user can inspect and explicitly retry deletion. `resources list/create/delete
 <worker-id> ...` remain low-level recovery primitives and do not update project
 files.
 
 Deployment identity includes the code Artifact, remote resource identities,
-Secret versions, environment bindings and compatibility settings. Changing only
+environment bindings and compatibility settings. Secret values are independent
+and do not trigger a code deployment. Changing only
 resources or compatibility settings therefore deploys again; repeating an
 unchanged push reuses the current activation. Older deployments without this
 configuration fingerprint require one deployment to establish the baseline.
 
 Removing a resource from `xapi.worker.json` does **not** destroy it: `plan`
-reports `MANUAL`, and the resource remains billable. `resources destroy` is the
+shows the unbinding consequence, and the resource remains billable. `resources destroy` is the
 project-aware destructive operation. Preserve a backup before using it and wait
 until `resources list` no longer returns the binding. A successful deployment
 alone is not proof of deletion or final billing settlement.

@@ -20,6 +20,8 @@ xapi workers retention keep-paused <worker-id> --env preview
 
 Use actions permitted by the current lifecycle. Manual pause, low balance and pending deletion are distinct. A deposit doesn't prove reserve replenishment or automatic resumption. Retention-v3 can start cleanup at the reserve cleanup threshold; an estimate in hours is not necessarily a fixed expiry. Read actual deadlines and reserve budget. A 409 or PENDING_DELETION needs inspection of blockers and operation history, not a forced redeploy or edited database flag.
 
+System retention pause/delete is a durable policy intent and is retried by the system after rechecking current policy, generation and native identity. Failed/expired management attempts must not indefinitely block stopping consumption. This differs from user-requested mutations, which are not automatically replayed. Missing final samples remain metering gaps; deletion permission does not itself authorize a refund or financial release.
+
 For crash recovery, distinguish slow live ownership from an expired lease or exited process. Do not kill shared services to reproduce a failure. Use an isolated authorized test process/environment. Record deployment ID, lease/recovery state, delete intent and reserve changes; verify no script is recreated after deletion wins.
 
 ## Delete one Container Application

@@ -1,4 +1,5 @@
-import { existsSync, lstatSync, statSync } from "node:fs";
+import { nativeDeploymentPlan, publicNativeDeploymentPlan, type NativeDeploymentPlan } from './workers-native-deployment.ts';
+import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import type {
   WorkerBillingQueryKind,
   WorkersClientOptions,
@@ -51,6 +52,7 @@ export interface WorkerPlanAction {
 
 export interface WorkerDeploymentPlan {
   schemaVersion: 1;
+  nativeSteps?: { migrations: Array<{ bindingName: string; table: string; name: string; sha256: string }>; consumers: unknown[]; crons: string[] };
   project: {
     rootDir: string;
     configPath: string;
@@ -59,7 +61,7 @@ export interface WorkerDeploymentPlan {
     build: { command: string; output: string; main?: string };
   };
   environment: "preview" | "production";
-  remote: { linked: boolean; workerId?: string };
+  remote: { linked: boolean; workerId?: string; activeDeploymentId?: string | null };
   costImpact: {
     status: "AVAILABLE" | "PARTIAL" | "UNKNOWN";
     desiredDailyBudgetUsd: number;
@@ -119,6 +121,8 @@ export interface PrepareWorkerPlanOptions extends CreateWorkerPlanOptions {
 export interface PreparedWorkerPlan {
   plan: WorkerDeploymentPlan;
   bundle: LoadedWorkerArtifact;
+  nativePlan: NativeDeploymentPlan;
+  configContent: string;
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -361,10 +365,10 @@ function compareResources(
   )) {
     add(
       actions,
-      "MANUAL",
+      "NO_CHANGE",
       "resource",
       name,
-      `Remote-only resource may keep accruing charges. Adopt it with \`xapi workers resources pull --env ${environment}\`, or back it up and run \`xapi workers resources destroy --env ${environment} --binding ${name} --yes\``,
+      `Not referenced by this JSON: remove its Worker binding on deploy, retain the resource and its storage charges. Physical deletion requires resources destroy.`,
       undefined,
       {
         ...(string(existing.id) ? { resourceId: string(existing.id) } : {}),
@@ -565,7 +569,7 @@ async function artifactAndDeployment(
     !actions.some(a => a.kind === "resource" && a.operation === "CREATE")
       ? currentMatchingDeployment(deployments, environmentState, artifactId,
           deploymentPrefix(String(remote.id), environmentName, artifactId,
-            readWranglerDeploymentSettings(project, environmentName), environmentState, resources, secrets))
+            readWranglerDeploymentSettings(project, environmentName), environmentState, resources.filter(resource => project.config.environments[environmentName].resources.some(desired => desired.bindingName === resource.bindingName)), secrets))
       : undefined;
   if (active) {
     add(
@@ -885,6 +889,7 @@ export async function createWorkerPlan(
     }
   }
 
+  const native = nativeDeploymentPlan(project, options.environment);
   actions.sort(
     (a, b) =>
       KIND_ORDER[a.kind] - KIND_ORDER[b.kind] ||
@@ -894,6 +899,7 @@ export async function createWorkerPlan(
   const summary = planSummary(actions);
   return {
     schemaVersion: 1,
+    nativeSteps: publicNativeDeploymentPlan(native),
     project: {
       rootDir: project.rootDir,
       configPath: project.configPath,
@@ -908,6 +914,7 @@ export async function createWorkerPlan(
     environment: options.environment,
     remote: {
       linked: !!remote,
+      activeDeploymentId: string(remoteEnvironmentState?.activeDeploymentId) || null,
       ...(remote ? { workerId: string(remote.id) } : {}),
     },
     costImpact: planCostImpact(
@@ -937,12 +944,18 @@ export async function prepareWorkerPlan(
   options: PrepareWorkerPlanOptions,
 ): Promise<PreparedWorkerPlan> {
   const project = loadWorkerProject(options.cwd, options.configPath);
+  const configContent = readFileSync(project.configPath, "utf8");
   validatePlanInputs(project);
   const bundle = await prepareWorkerProjectBundle(
     project,
     options.environment,
     options.runBuild,
   );
+  const nativePlan = nativeDeploymentPlan(project, options.environment);
   const plan = await createWorkerPlan(options);
-  return { plan, bundle };
+  if (readFileSync(project.configPath, "utf8") !== configContent)
+    throw new WorkerProjectBuildError("Project configuration changed while planning; rerun the plan", { remoteChangesApplied: false });
+  if (JSON.stringify(plan.nativeSteps) !== JSON.stringify(publicNativeDeploymentPlan(nativePlan)))
+    throw new Error('Wrangler configuration or migrations changed while planning; rerun the plan');
+  return { plan, bundle, nativePlan, configContent };
 }
