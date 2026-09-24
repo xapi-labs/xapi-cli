@@ -1,3 +1,4 @@
+import { nativeDeploymentPlan, publicNativeDeploymentPlan, applyNativeDeploymentPhase, NativeDeploymentError, type NativeDeploymentClient, type NativeDeploymentPlan } from './workers-native-deployment.ts';
 import { createInterface } from "node:readline/promises";
 import type { WorkersClientOptions } from "./workers-client.ts";
 import * as workersClient from "./workers-client.ts";
@@ -15,7 +16,7 @@ import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
 
 type UnknownRecord = Record<string, unknown>;
 
-export interface PromotionClient extends DeploymentClient, ManagedResourceClient {
+export interface PromotionClient extends DeploymentClient, ManagedResourceClient, NativeDeploymentClient {
   listWorkerResources(
     options: WorkersClientOptions,
     id: string,
@@ -36,7 +37,7 @@ export type PromotionCheckStatus =
 
 export interface WorkerPromotionCheck {
   status: PromotionCheckStatus;
-  kind: "budget" | "resource" | "secret" | "routing";
+  kind: "budget" | "placement" | "resource" | "secret" | "routing";
   key: string;
   message: string;
   command?: string;
@@ -49,9 +50,11 @@ export interface WorkerPromotionPlan {
   previewDeployment: { id: string; artifactId: string; deployedAt?: string };
   artifact: { id: string; contentSha256: string; sizeBytes?: number };
   production: {
+    activeDeploymentId?: string | null;
     checks: WorkerPromotionCheck[];
     dataRisk: string[];
   };
+  nativeSteps: ReturnType<typeof publicNativeDeploymentPlan>;
   canPromote: boolean;
 }
 
@@ -78,6 +81,7 @@ export interface WorkerPromotionResult {
   artifact: { id: string; contentSha256: string; sizeBytes?: number };
   resources: { created: string[]; unchanged: string[] };
   deployment: { id: string; status: "ACTIVE"; idempotencyKey: string };
+  nativeReceipts: unknown[];
   publicUrl: string;
   health: { url: string; status: number; attempts: number };
   commands: { logs: string; rollback: string };
@@ -144,7 +148,7 @@ function productionChecks(
 ): { checks: WorkerPromotionCheck[]; dataRisk: string[] } {
   const checks: WorkerPromotionCheck[] = [];
   const dataRisk: string[] = [
-    "Promotion changes the Worker code Artifact only; it does not snapshot, copy, or roll back production data",
+    "Promotion deploys the selected Worker Artifact and the displayed local Wrangler migration/event plan; it does not snapshot, copy, or roll back production data",
   ];
   const currentBudget = amount(remoteEnvironment.dailyBudgetUsd);
   if (hasStaticAssets) {
@@ -182,6 +186,32 @@ function productionChecks(
       kind: "budget",
       key: "production",
       message: "Production daily budget matches desired state",
+    });
+  }
+
+  const currentDefaultLocation = text(remoteEnvironment.defaultResourceLocation);
+  const currentPlacementMode = text(remoteEnvironment.placementMode) || "off";
+  const placementMismatch =
+    (desired.defaultResourceLocation && currentDefaultLocation !== desired.defaultResourceLocation) ||
+    (desired.placementMode && currentPlacementMode !== desired.placementMode);
+  if (placementMismatch) {
+    const flags = [
+      desired.defaultResourceLocation ? `--data-location ${desired.defaultResourceLocation}` : "",
+      desired.placementMode ? `--placement ${desired.placementMode}` : "",
+    ].filter(Boolean).join(" ");
+    checks.push({
+      status: "BLOCKED",
+      kind: "placement",
+      key: "production",
+      message: "Production environment placement differs from desired state",
+      command: `xapi workers environment ${workerId} production ${flags}`,
+    });
+  } else if (desired.defaultResourceLocation || desired.placementMode) {
+    checks.push({
+      status: "NO_CHANGE",
+      kind: "placement",
+      key: "production",
+      message: "Production environment placement matches desired state",
     });
   }
 
@@ -236,11 +266,11 @@ function productionChecks(
     a.localeCompare(b),
   )) {
     checks.push({
-      status: "MANUAL",
+      status: "NO_CHANGE",
       kind: "resource",
       key: bindingName,
       message:
-        "Extra production stateful resource is preserved and not modified",
+        "Not referenced by this JSON: remove its Worker binding on deploy; preserve the resource and storage charges. Physical deletion requires resources destroy",
     });
     dataRisk.push(
       `${bindingName} (${remoteType(resource.type)}) contains independent production state; promotion does not copy preview data or delete it`,
@@ -286,8 +316,8 @@ function productionChecks(
   }
   checks.sort(
     (a, b) =>
-      ({ routing: 0, budget: 1, resource: 2, secret: 3 })[a.kind] -
-        { routing: 0, budget: 1, resource: 2, secret: 3 }[b.kind] ||
+      ({ routing: 0, budget: 1, placement: 2, resource: 3, secret: 4 })[a.kind] -
+        { routing: 0, budget: 1, placement: 2, resource: 3, secret: 4 }[b.kind] ||
       a.key.localeCompare(b.key),
   );
   return { checks, dataRisk: dataRisk.sort() };
@@ -319,6 +349,7 @@ export async function createWorkerPromotionPlan(
   plan: WorkerPromotionPlan;
   worker: UnknownRecord;
   artifact: UnknownRecord;
+  nativePlan: NativeDeploymentPlan;
 }> {
   if (options.to !== "production") {
     throw new WorkerPushError("workers promote requires --to production");
@@ -390,6 +421,8 @@ export async function createWorkerPromotionPlan(
     secrets,
     Boolean(project.config.assets),
   );
+  const nativePlan = nativeDeploymentPlan(project, "production");
+  checked.dataRisk.push("Remote D1 migrations run before code; Queue/Cron configuration runs after code. Completed database changes are not rolled back on code/configuration failure.");
   const plan: WorkerPromotionPlan = {
     schemaVersion: 1,
     workerId,
@@ -408,14 +441,15 @@ export async function createWorkerPromotionPlan(
         ? { sizeBytes: amount(artifact.sizeBytes) }
         : {}),
     },
-    production: checked,
+    production: {...checked, activeDeploymentId: text(production.activeDeploymentId) || null},
+    nativeSteps: publicNativeDeploymentPlan(nativePlan),
     canPromote: !checked.checks.some(
       (item) =>
         item.status === "BLOCKED" ||
         (item.status === "MANUAL" && item.kind === "resource"),
     ),
   };
-  return { plan, worker, artifact };
+  return { plan, worker, artifact, nativePlan };
 }
 
 export async function promoteWorkerProject(
@@ -423,6 +457,7 @@ export async function promoteWorkerProject(
 ): Promise<WorkerPromotionResult> {
   const api = options.client || (workersClient as PromotionClient);
   const project = loadWorkerProject(options.cwd, options.configPath);
+  const compatibility = readWranglerDeploymentSettings(project, "production");
   const prepared = await createWorkerPromotionPlan({ ...options, client: api });
   options.onPlan?.(prepared.plan);
   if (!prepared.plan.canPromote) {
@@ -449,12 +484,19 @@ export async function promoteWorkerProject(
       );
     }
   }
-  const compatibility = readWranglerDeploymentSettings(project, "production");
+  if (JSON.stringify(loadWorkerProject(project.rootDir, project.configPath).config) !== JSON.stringify(project.config) ||
+      JSON.stringify(readWranglerDeploymentSettings(project, "production")) !== JSON.stringify(compatibility))
+    throw new WorkerPushError("Production configuration changed after plan; rerun promote to review it before applying changes");
   const wait =
     options.sleep ||
     ((milliseconds: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const nativeReceipts: unknown[] = [];
+  let releasedDeploymentId: string | undefined;
   try {
+    const currentWorker = record(await api.getWorker(options.clientOptions, prepared.plan.workerId), "Worker");
+    if (prepared.plan.production.activeDeploymentId !== (text(environment(currentWorker, "production").activeDeploymentId) || null))
+      throw new WorkerPushError("Production deployment changed after plan; rerun promote before replacing it");
     const resources = await ensureManagedResources(
       api,
       options.clientOptions,
@@ -463,6 +505,7 @@ export async function promoteWorkerProject(
       project.config.environments.production.resources,
       options.retentionPriceVersion,
     );
+    nativeReceipts.push(...await applyNativeDeploymentPhase(api, options.clientOptions, prepared.plan.workerId, "production", prepared.nativePlan, "BEFORE_CODE"));
     const deployed = await ensureActiveDeployment(
       api,
       options.clientOptions,
@@ -471,8 +514,13 @@ export async function promoteWorkerProject(
       "production",
       compatibility,
       wait,
+      options.retentionPriceVersion,
+      project.config.environments.production.resources.map(resource => resource.bindingName),
+      prepared.plan.production.activeDeploymentId,
     );
-    const deploymentId = text(deployed.deployment.id);
+    releasedDeploymentId = text(deployed.deployment.id);
+    nativeReceipts.push(...await applyNativeDeploymentPhase(api, options.clientOptions, prepared.plan.workerId, "production", prepared.nativePlan, "AFTER_CODE"));
+    const deploymentId = releasedDeploymentId;
     if (!deploymentId) {
       throw new WorkerPushError("ACTIVE production deployment is missing id");
     }
@@ -492,6 +540,7 @@ export async function promoteWorkerProject(
       schemaVersion: 1,
       status: "ACTIVE",
       plan: prepared.plan,
+      nativeReceipts,
       workerId: prepared.plan.workerId,
       artifact: prepared.plan.artifact,
       resources,
@@ -513,6 +562,9 @@ export async function promoteWorkerProject(
         workerId: prepared.plan.workerId,
         artifactId: prepared.plan.artifact.id,
         productionResourcesPreserved: true,
+        releasedDeploymentId,
+        nativeReceipts: [...nativeReceipts, ...(error instanceof NativeDeploymentError ? error.completed : [])],
+        ...(error instanceof NativeDeploymentError ? { failedPhase: error.phase } : {}),
         ...error.recovery,
       });
     }
@@ -522,6 +574,9 @@ export async function promoteWorkerProject(
         workerId: prepared.plan.workerId,
         artifactId: prepared.plan.artifact.id,
         productionResourcesPreserved: true,
+        releasedDeploymentId,
+        nativeReceipts: [...nativeReceipts, ...(error instanceof NativeDeploymentError ? error.completed : [])],
+        ...(error instanceof NativeDeploymentError ? { failedPhase: error.phase } : {}),
       },
     );
   }

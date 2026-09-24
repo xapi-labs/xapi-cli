@@ -34,6 +34,15 @@ source of truth for the entrypoint, compatibility settings, and static assets.
 Managed KV, D1, R2, Durable Object, Queue, and Workflow declarations belong in
 `xapi.worker.json`. The file contains no credential and may be committed.
 
+Use `xapi workers inspect --env preview` for one read-only operational view of
+the linked Worker. It reports the active environment, routing, Artifact,
+Deployment, resource and Secret metadata, domains, and billing freshness.
+Unavailable sources remain `UNKNOWN`. Use `plan` for desired-state comparison.
+Plan runs and validates the configured local build, then compares that exact
+Artifact and desired resources with the live snapshot. It performs no remote
+writes. `inspect` never builds, deploys, probes application routes, or reads
+Secret values.
+
 Choose the `init` form from the project you actually have:
 
 | Starting point | Command | What `init` does |
@@ -70,7 +79,9 @@ xapi workers push --env preview
 The added files are `xapi.worker.json`, `wrangler.jsonc`, and
 `xapi-worker/index.ts`. The added package scripts are `xapi:build`,
 `xapi:worker:build`, and `xapi:worker:dev`. Review the generated diff before
-installing dependencies. Re-running `init` is not a synchronization command;
+installing dependencies. A package inside a monorepo inherits the repository's
+declared package manager or lockfile; use the install and build commands printed
+by `init` rather than substituting npm. Re-running `init` is not a synchronization command;
 once `xapi.worker.json` exists, manage it with the project and resource commands.
 
 Use `--framework react|vite|vue|next` only for ambiguous package metadata.
@@ -118,13 +129,26 @@ xapi workers push --env preview
 write a partial project unless the user explicitly accepts the report with
 `--accept-partial`.
 
+Wrangler `vars` are public string or JSON bindings. They remain in the referenced
+Wrangler config and travel with the immutable deployment artifact, including
+multipart uploads. A named environment uses its own `vars` (no root inheritance).
+Native `.bundle` output must match the selected environment; rebuild if it is
+stale. Module/directory builds include the selected config's public vars.
+Changing vars changes the artifact identity. Do not put credentials here: use
+`secrets` and `workers secrets set`. The importer report shows names, never values;
+it does not read `.env` or `.dev.vars`. Variable names must not collide with
+resource, asset or Secret bindings. Ordinary deployment rollback restores the
+public vars stored in the selected artifact as well as its code.
+
 The project workflow does not require Git. Git repository, branch, and commit
 are optional provenance, not authentication and not a deployment prerequisite.
 It runs the configured build, creates the remote Worker when `workerId` is
 absent, safely creates or updates declared resources, uploads one immutable
 Artifact, deploys preview, waits for the active state, and runs the configured
-health check. `push` never deletes an extra stateful resource or Secret; `plan`
-marks such drift `MANUAL` for explicit handling.
+health check. `push` binds the resources declared for that environment. Removing
+a declaration unbinds it on the next deployment; the resource, data and storage
+charges remain until an explicit destruction request. The project workflow never deletes an extra stateful resource or Secret.
+Extra Secret values remain independent and are not deleted by changing declarations.
 
 ## Resource state without drift
 
@@ -133,7 +157,8 @@ There are only two resource states:
 - `xapi.worker.json` is the desired state that belongs in Git. It contains
   binding names and portable options, never Cloudflare or xAPI resource IDs.
 - xAPI is the live state. `plan` reads it every time and compares it with the
-  selected environment in `xapi.worker.json`; there is no cached state file.
+  selected environment in `xapi.worker.json`. A metadata-only `.xapi/resource-sync-*`
+  baseline is used by `resources pull` to merge edits; it is not authoritative live state.
 
 Choose the command by intent:
 
@@ -144,7 +169,7 @@ Choose the command by intent:
 | Adopt live-only resources | `resources pull` | Live read, then safe local merge |
 | Stop declaring a resource | `resources remove` | Local desired state only |
 | Delete resource data | `resources destroy --yes` | Local desired state and one live environment |
-| Check convergence | `workers plan` | None |
+| Preview exact deployment changes | `workers plan` | Local build output only |
 
 Use this normal flow to add a resource:
 
@@ -160,6 +185,12 @@ xapi workers resources update --env preview --type d1 --binding DB \
 xapi workers plan --env preview
 xapi workers push --env preview
 ```
+
+`plan` reports the current and desired daily budget, active price-book
+visibility, and any new metered Worker/resource declarations. Exact charges
+remain usage-dependent; the CLI does not invent request, CPU, storage, or
+operation volume. Use `inspect` and billing views for accrued usage and billing
+freshness.
 
 `--env both` creates matching declarations, not shared storage. `resources add`
 is idempotent and rejects conflicting binding reuse. `resources update`
@@ -179,15 +210,18 @@ git diff -- xapi.worker.json
 xapi workers plan --env preview
 ```
 
-`pull` is an additive, all-or-nothing merge. It imports only supported healthy
-resources, preserves pending local declarations, never writes provider IDs,
-never deletes anything, and refuses to overwrite a binding whose type,
-Durable Object class, location, or D1 replication differs. `--env both` reads
-the environments independently because their physical resources are separate.
+The first `pull` imports supported healthy resources, enriches compatible
+declarations and reports conflicting local definitions. Subsequent pulls compare
+the local JSON and live inventory with the previous observations: preserve local
+edits (including removed bindings), adopt remote-only changes and report conflicting
+edits to the same binding without overwriting either side. It never writes provider
+IDs into JSON, changes native resources or copies Secret values. Confirmed removal
+from remote inventory can remove its unchanged local declaration. `--env both`
+keeps independent baselines. A local file edit during the read aborts the merge.
 
-`resources remove` changes desired state only. The following `plan` shows the
-live resource as `MANUAL`; keep it with `resources pull`, or back it up and use
-the project-aware destructive command:
+`resources remove` changes desired state only. Review `plan` and deploy to remove
+the Worker binding while retaining the physical resource. To also delete its data,
+back it up and use the separate destructive command:
 
 ```bash
 xapi workers resources destroy --env preview --binding FILES --yes
@@ -195,8 +229,9 @@ xapi workers resources destroy --env preview --binding FILES --yes
 
 `destroy` accepts one environment, removes the declaration before requesting
 live deletion, and reports a deletion request rather than claiming immediate
-physical destruction. If the request fails, the live resource remains and
-`resources pull` restores desired state before retrying.
+physical destruction. If the request fails or its result is unknown, inspect it
+and explicitly retry `destroy` against the same binding. Do not recreate the
+resource or infer zero usage/refund from a timeout.
 
 `resources list/create/delete <worker-id> ...` are recovery and debugging
 primitives. They mutate or inspect live state without updating
@@ -232,6 +267,17 @@ npm run build
 npx wrangler deploy --dry-run --config dist/server/wrangler.json --outfile dist/app.worker.bundle
 ```
 
+When `package.json` contains a framework `build:worker` script with Wrangler's
+`--outfile`, `init --from-wrangler` infers both the command and `.bundle` path.
+Review the generated `xapi.worker.json`. If the framework uses a custom script,
+provide the values during import instead of editing an ambiguous default:
+
+```bash
+xapi workers init --from-wrangler dist/server/wrangler.json \
+  --build-command "pnpm run package:worker" \
+  --build-output dist/app.worker.bundle
+```
+
 Point the project build output to `dist/app.worker.bundle`; omit `build.main`.
 Set `assets.directory` to the framework's client output (for example
 `dist/client`). Then use `xapi workers plan --env preview` and
@@ -247,6 +293,14 @@ D1/R2/KV binding names must match declared xAPI resources; native account IDs
 and resource IDs are not reused. Secrets are set separately through xAPI.
 The artifact also preserves `observability.enabled`.
 
+Native bundles may include local Durable Object bindings, matched by both
+binding name and class to declared `durable_object` resources. Container classes
+must match `xapi.worker.json` Container definitions; their configuration is kept
+in the uploaded artifact and its hash. Wrangler-generated Container application
+names are not reused as provider identities. External DO script/namespace
+references still require a supported ownership-aware mapping; do not remove the
+reference silently to make validation pass.
+
 This adapter currently supports the explicitly mapped metadata above, not every
 Wrangler setting. Unmapped metadata fails before artifact upload rather than
 being silently discarded. Cron triggers are separate from the upload bundle
@@ -254,11 +308,12 @@ and must be configured through xAPI schedules. The granular `workers upload`
 command is artifact-only; use the project `push` workflow for coordinated
 compatibility, resource, secret and asset handling.
 
-Current xAPI transport limits remain 200 modules / 10 MiB decoded modules and
-12 MiB decoded modules plus assets. These are xAPI limits, not a statement of
-CF's full native capacity. If exceeded, report the unsupported deployment;
-never split a project into unrelated deployments or edit framework output to
-work around the limit.
+Project publishing uses one authenticated multipart Artifact request, then xAPI
+stores an immutable content-addressed manifest. Limits are 200 modules / 10 MiB
+decoded module content, 10,000 assets / 25 MiB per asset, and 100 MiB total
+decoded project content. These are xAPI limits, not a statement of CF's full
+native capacity. If exceeded, report the unsupported deployment; never split a
+project into unrelated deployments or edit framework output to work around it.
 
 A `PATH_FALLBACK` URL is not a root-hosted Web application URL. Do not rewrite
 application routes or configure GitHub callbacks against an invented host.
@@ -393,12 +448,11 @@ Artifact and the platform completes Cloudflare's native static-assets upload:
 }
 ```
 
-Wrangler imports preserve supported `assets` settings. Cloudflare permits up to
-25 MiB per asset and 100,000 assets per version. Asset content stays separate
-from Worker modules and is never silently dropped. The current xAPI JSON
-Artifact transport accepts at most 12 MiB of decoded modules and assets in one
-deployment; split larger sites before upload until the multipart Artifact
-transport is available.
+Wrangler imports preserve supported `assets` settings. xAPI accepts up to
+10,000 assets, 25 MiB per asset, and 100 MiB of decoded project content in one
+multipart Artifact request. Asset content stays separate from Worker modules
+and is never silently dropped. The backend stores content-addressed blobs and
+reassembles the exact immutable bundle for Cloudflare's native asset upload.
 
 Save the returned Artifact `id`, then deploy that exact Artifact to preview:
 
@@ -554,7 +608,14 @@ An immediate run exercises the same lease, retry, audit, budget, and Worker rout
 
 ### Encrypted Secrets
 
-Prefer `--from-env` so plaintext does not appear in shell history. The control plane encrypts the value at rest and public reads expose only binding name, version, and timestamps. When a script is already active, rotation is applied immediately; otherwise it is applied during the next deployment.
+Prefer `--from-env` so plaintext does not appear in shell history. Values go to the
+native Secret endpoint; public reads expose metadata only. Set, replace and delete
+values independently in preview or production. JSON lists required names, not values
+or an allowlist. Removing a name from JSON does not delete its value. Code deployment,
+promotion and rollback preserve the destination environment's current Secrets.
+If the native script does not exist yet, the first set initializes a placeholder;
+it does not overwrite an existing script whose local deployment record is missing.
+Failure/timeout ends that attempt; inspect metadata and explicitly retry as needed.
 
 ```bash
 export MODEL_KEY='...'
@@ -635,5 +696,21 @@ Choose the expected primary data-access region when a project creates D1 or R2. 
 ```
 
 Supported location hints are `wnam`, `enam`, `weur`, `eeur`, `apac`, and `oc`. `readReplication` is D1-only and accepts `auto` or `disabled`. Omitting these fields preserves the existing compatible behavior.
+
+Set an environment default when every newly created D1/R2 resource should use
+the same location, and optionally enable Cloudflare Smart Placement:
+
+```json
+{
+  "dailyBudgetUsd": 0.25,
+  "defaultResourceLocation": "apac",
+  "placementMode": "smart"
+}
+```
+
+The equivalent targeted command is `xapi workers environment <worker-id>
+preview --data-location apac --placement smart`. A resource-level `location`
+overrides the environment default. Worker code remains globally deployed;
+Smart Placement is native Worker execution metadata, not a fixed Worker region.
 
 Location is creation-time placement. Changing it on an existing binding is blocked because Cloudflare cannot move an existing D1 database or R2 bucket in place. Create a new binding, migrate and verify the data, switch the application binding, and retain the old resource for rollback before deleting it.

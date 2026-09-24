@@ -5,14 +5,22 @@ description: Deploy, operate, and verify applications on xAPI-managed Cloudflare
 
 # xAPI Workers for Platforms
 
-Use the `xapi` CLI (`xapi-to` is the same executable). Verify `xapi workers --help` before using it; an older installation may lack these commands. Do not silently replace managed deployment with Wrangler direct deployment.
+Use the `xapi` CLI (`xapi-to` is the same executable). Verify `xapi workers --help` before using it; an older published installation may lack these commands even when the repository already contains them. Stop and report the version mismatch instead of silently replacing managed deployment with Wrangler direct deployment. Wrangler `deploy --dry-run --outfile` is allowed only as a local framework packaging step; the resulting Artifact must still be published with xAPI.
 
 ## Start with scope
 
 - Identify the control-plane host, Worker ID, and **preview or production** from the project and `workers get`. Test control plane and preview environment are separate choices.
 - Authentication precedence: `XAPI_KEY`, `XAPI_API_KEY`, then `~/.xapi/config.json`. Keys need `workers:read` and, for changes, `workers:write`, plus access to the target Worker. A scoped-out Worker can return 404.
 - Production API host is `api.xapi.to`; testing uses `XAPI_API_HOST=api.test.xapi.to` (host only). Load secrets from the user's existing secure environment. Never print keys, include them in code/artifacts, or send the xAPI key to a public Worker URL or Cloudflare. Runtime application authentication is separate.
-- Start with `workers get <worker-id>`, `workers capabilities`, and `workers resources list <worker-id> --env <environment>`. Read-only inspection needs no extra approval. Use existing user authorization for changes; don't expand cleanup from a test environment to production.
+- Start with `workers inspect [worker-id] --env <environment>` and `workers capabilities`. Use `workers plan --env <environment>` when a local project is available and desired-state drift matters. `inspect` reads current runtime state only. `plan` runs the configured local build with credential-shaped environment variables removed, validates the exact Artifact, and compares it with live state without writing to the xAPI control plane. It also shows the budget cap, active price-book visibility, and usage-dependent resource changes; never present those estimates as an accrued invoice. Use existing user authorization for changes; don't expand cleanup from a test environment to production.
+- Treat Worker execution and data placement separately. Worker code remains global. Use environment `defaultResourceLocation` only as the default for newly created D1/R2 resources and `placementMode: smart` only for Cloudflare Smart Placement. Never claim either setting migrates existing data.
+
+## Before creating a Worker or resource
+
+Briefly tell the user: when retention is enabled, provisioning/deployment freezes the quoted retention reserve; an empty project record does not freeze funds. Storage can keep costing money while paused. After insufficient balance starts retention, reaching the reserve cleanup threshold can trigger automatic deletion. Unused reserve is returned after confirmed cleanup and the required settlement window; recharging does not automatically resume service. Retention estimates are not guaranteed fixed retention periods.
+
+This is an informational reminder, not a separate approval gate. Use the user's existing creation/deployment authorization; do not require a `retention accept` call. xAPI records the default policy with the first retention hold. Read the current resource quote and pass its exact price version when required; see [lifecycle.md](references/lifecycle.md) for details. If an older server still returns `retention_policy_acceptance_required`, report the server-version mismatch instead of silently accepting policy or bypassing xAPI.
+
 
 ## Load the relevant workflow
 
@@ -22,6 +30,7 @@ Use the `xapi` CLI (`xapi-to` is the same executable). Verify `xapi workers --he
 - **How much did it cost?** Read [billing.md](references/billing.md) before answering, collecting, or reconciling consumption.
 - **Pause/recover/delete/refund:** read [lifecycle.md](references/lifecycle.md) before lifecycle mutations.
 - **Buy or bind an xdomain domain:** read [domains.md](references/domains.md). Use the combined CLI command; do not manually create a CNAME to the Dispatcher or expose Cloudflare zone IDs.
+- **Recover a domain-conflict quarantine (administrator only):** read [domain-conflict-recovery.md](references/domain-conflict-recovery.md). This is a backend recovery operation, not a customer deployment command.
 
 ## Evidence and completion
 

@@ -43,11 +43,13 @@ export function formatWorkerPushResult(result: WorkerPushResult): string {
       `HTTP ${result.health.status} · ${result.health.attempts} attempt${result.health.attempts === 1 ? "" : "s"}`,
     ),
     metadata("Resources", resources.join(" · ") || "No managed resources"),
+    ...(result.nativeReceipts.length ? [metadata("Native steps", `${result.nativeReceipts.length} deployment receipts; event execution still needs verification`)] : []),
     "",
     "Next steps",
     `  1. Open: ${result.publicUrl}`,
-    `  2. Logs: ${result.commands.logs}`,
-    `  3. Production: ${result.commands.promote}`,
+    `  2. Inspect: ${result.commands.inspect}`,
+    `  3. Logs: ${result.commands.logs}`,
+    `  4. Production: ${result.commands.promote}`,
     RULE,
   ];
   return lines.join("\n");

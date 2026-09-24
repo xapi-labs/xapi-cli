@@ -89,6 +89,8 @@ function fakePlatform(
     secrets?: string[];
     failDeployOnce?: boolean;
     webAppReady?: boolean;
+    defaultResourceLocation?: string;
+    placementMode?: string;
   } = {},
 ) {
   const previewDeployments: Array<Record<string, unknown>> = [
@@ -109,8 +111,8 @@ function fakePlatform(
   ];
   const productionDeployments: Array<Record<string, unknown>> = [];
   const productionResources: Array<Record<string, unknown>> = options.resources
-    ? [...options.resources]
-    : [{ bindingName: "STATE", type: "KV_NAMESPACE", status: "ACTIVE" }];
+    ? options.resources.map((resource, index) => ({ id: `resource-${index}`, ...resource }))
+    : [{ id: "resource-state", bindingName: "STATE", type: "KV_NAMESPACE", status: "ACTIVE" }];
   const artifacts = [
     {
       id: "artifact-latest",
@@ -148,6 +150,8 @@ function fakePlatform(
           dailyBudgetUsd: options.budget ?? 2,
           publicUrl: "https://agent.example.test/w/ref/production",
           webAppReady: options.webAppReady,
+          defaultResourceLocation: options.defaultResourceLocation,
+          placementMode: options.placementMode,
         },
       ],
       artifacts,
@@ -159,7 +163,7 @@ function fakePlatform(
     listWorkerResources: async () => productionResources,
     createWorkerResource: async (_api, _id, _environment, input) => {
       calls.createResource += 1;
-      const created = { ...input, status: "ACTIVE" };
+      const created = { id: `resource-${calls.createResource}`, ...input, status: "ACTIVE" };
       productionResources.push(created);
       return created;
     },
@@ -189,6 +193,27 @@ function fakePlatform(
 }
 
 describe("workers promote", () => {
+  test("blocks production promotion until declared placement matches", async () => {
+    const root = fixture();
+    const path = join(root, "xapi.worker.json");
+    const config = JSON.parse(await Bun.file(path).text());
+    config.environments.production.defaultResourceLocation = "apac";
+    config.environments.production.placementMode = "smart";
+    writeFileSync(path, JSON.stringify(config));
+    const prepared = await createWorkerPromotionPlan({
+      cwd: root,
+      to: "production",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: fakePlatform({ placementMode: "off" }).client,
+    });
+    expect(prepared.plan.canPromote).toBe(false);
+    expect(prepared.plan.production.checks).toContainEqual(expect.objectContaining({
+      status: "BLOCKED",
+      kind: "placement",
+      command: expect.stringContaining("--data-location apac --placement smart"),
+    }));
+  });
+
   test("promotes the exact latest ACTIVE preview Artifact, waits, health-checks, and repeats safely", async () => {
     const root = fixture();
     const platform = fakePlatform({ failDeployOnce: true });
@@ -351,7 +376,7 @@ describe("workers promote", () => {
     expect(ready.plan.canPromote).toBe(true);
   });
 
-  test("shows extra production state as MANUAL data risk and cancellation is mutation-free", async () => {
+  test("unreferenced production resources are retained; cancellation remains mutation-free", async () => {
     const root = fixture();
     const platform = fakePlatform({
       resources: [
@@ -365,10 +390,10 @@ describe("workers promote", () => {
       clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
       client: platform.client,
     });
-    expect(prepared.plan.canPromote).toBe(false);
+    expect(prepared.plan.canPromote).toBe(true);
     expect(prepared.plan.production.checks).toContainEqual(
       expect.objectContaining({
-        status: "MANUAL",
+        status: "NO_CHANGE",
         kind: "resource",
         key: "OLD_DB",
       }),
@@ -390,8 +415,8 @@ describe("workers promote", () => {
           return false;
         },
       }),
-    ).rejects.toThrow("resource drift requires reconciliation");
-    expect(confirmations).toBe(0);
+    ).rejects.toThrow("promotion cancelled");
+    expect(confirmations).toBe(1);
     expect(platform.calls.deploy).toBe(0);
   });
 });

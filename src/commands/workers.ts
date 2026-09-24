@@ -10,7 +10,10 @@ import {
 } from "../workers-init.ts";
 import { listWorkerTemplates } from "../workers-templates.ts";
 import { importWranglerProject } from "../workers-wrangler-import.ts";
-import { createWorkerPlan } from "../workers-plan.ts";
+import {
+  prepareWorkerPlan,
+  type WorkerDeploymentPlan,
+} from "../workers-plan.ts";
 import {
   formatWorkerPlan,
   useHumanWorkerPlanOutput,
@@ -41,33 +44,48 @@ import {
   workerBillingOutputMode,
 } from "../workers-billing-output.ts";
 import { bindXdomainWorker } from "../workers-domain-bind.ts";
+import { inspectWorker } from "../workers-inspect.ts";
+import {
+  formatWorkerInspection,
+  useHumanWorkerInspectionOutput,
+} from "../workers-inspect-output.ts";
+import { loadWorkerProject } from "../workers-project.ts";
+import { WorkerProjectBuildError } from "../workers-project-build.ts";
 
 export const WORKERS_HELP = `xapi-to workers - Deploy and manage xAPI-hosted Cloudflare Workers
 
 USAGE
   xapi-to workers <command> [args] [flags]
 
-COMMANDS
+NORMAL PROJECT WORKFLOW (recommended)
   templates
   init [directory] --template TEMPLATE
   plan --env preview|production
   push --env preview
   promote --to production [--artifact ARTIFACT_ID]
   rollback --env preview|production (--to previous | --deployment DEPLOYMENT_ID)
+
+INSPECTION AND OPERATIONS
   list
   get <worker-id>
+  inspect [worker-id] --env preview|production
+  audit <worker-id>
+  invocations <worker-id> --env preview|production
+  logs <worker-id> --env preview|production [--tail] [--since 10m]
+  usage <worker-id> [--env preview|production]
+  metering <worker-id> --env preview|production [--json]
+
+ADVANCED ARTIFACT PRIMITIVES (custom CI and recovery only)
   create --name NAME --slug SLUG --preview-budget USD --production-budget USD
   upload <worker-id> --file dist/index.mjs|dist/ [--main worker.js]
   artifacts <worker-id>
   build <worker-id> --project . --entrypoint src/index.ts --command "npm run build"
   builds <worker-id>
   deploy <worker-id> --artifact ARTIFACT_ID --env preview|production
+
+RESOURCES, BILLING, AND LIFECYCLE
   budget <worker-id> <environment> --daily-usd USD
-  audit <worker-id>
-  invocations <worker-id> --env preview|production
-  logs <worker-id> --env preview|production [--tail] [--since 10m]
-  usage <worker-id> [--env preview|production]
-  metering <worker-id> --env preview|production [--json]
+  environment <worker-id> <environment> [--daily-usd USD] [--data-location apac] [--placement smart]
   billing-status
   billing ledger <worker-id> --env ENV [--all] [--snapshot-time ISO] [--json]
   retention show|quote|accept|pause|resume|keep-paused|delete <worker-id> --env ENV
@@ -99,20 +117,40 @@ COMMANDS
   build-provider-status
   delete <worker-id> --yes
 
+CHOOSING A WORKFLOW
+  Normal application: init -> plan -> push -> promote
+  Read-only review: inspect; use plan when comparing local desired state
+  workers plan runs the local build and validates the exact Artifact, then
+  compares it with live state. It never writes to the xAPI control plane.
+  workers build creates an Artifact in a managed Sandbox; it does not deploy.
+  workers deploy activates an existing Artifact; it does not build or converge project state.
+
+INSPECT FLAGS
+  --env preview|production              Environment to inspect (required)
+  --config PATH                         Locate workerId from xapi.worker.json
+  --format json                         Emit the complete machine-readable report
+
 CREATE FLAGS
   --template worker|agent       Official starter type (default: worker)
   --description TEXT
   --preview-budget 0.10..100    Explicit preview daily budget
   --production-budget 0.10..100 Explicit production daily budget
+  --data-location REGION        Default for new D1/R2: wnam|enam|weur|eeur|apac|oc
+  --placement MODE              Worker execution placement: off|smart
 
 INIT FLAGS
   --template TEMPLATE                   worker|agent|chat|webhook|persistent-agent
   --from-wrangler PATH                  Import an existing wrangler.jsonc or wrangler.toml
   --accept-partial                      Write only after explicitly accepting unsupported fields
+  --build-command COMMAND               Override the imported project build command
+  --build-output PATH                   Override the deployable bundle/module path
+  --build-main PATH                     Entrypoint inside a build-output directory
   --name NAME                           Worker display name
   --slug SLUG                           Stable lowercase Worker slug
   --preview-budget 0.10..100            Default: 0.25
   --production-budget 0.10..100         Default: 2
+  --data-location REGION                Default for newly created D1/R2 resources
+  --placement off|smart                 Cloudflare Worker placement metadata
   --force                               Overwrite template-managed files only
   --framework auto|react|vite|vue|next  Override existing package detection
 
@@ -125,7 +163,7 @@ PUSH FLAGS
   --env preview                         Required; production uses workers promote
   --config PATH                         Explicit xapi.worker.json path
   --non-interactive                     CI mode; never bypasses BLOCKED checks
-  --retention-price-version VERSION     Explicit accepted freeze quote; does not auto-accept policy
+  --retention-price-version VERSION     Current freeze quote; no separate policy acceptance required
 
 PROMOTE FLAGS
   --to production                       Required explicit production target
@@ -261,10 +299,15 @@ FLAGS
   --framework auto|react|vite|vue|next
   --from-wrangler PATH
   --accept-partial
+  --build-command COMMAND
+  --build-output PATH
+  --build-main PATH
   --name NAME
   --slug SLUG
   --preview-budget USD
   --production-budget USD
+  --data-location wnam|enam|weur|eeur|apac|oc
+  --placement off|smart
   --force
 `;
 
@@ -319,7 +362,7 @@ function options() {
 }
 
 function printWorkerPlan(
-  plan: Awaited<ReturnType<typeof createWorkerPlan>>,
+  plan: WorkerDeploymentPlan,
   flagFormat?: string,
 ) {
   if (
@@ -363,6 +406,21 @@ function budget(value: string | undefined, flag: string): number {
     err(`${flag} must be between 0.10 and 100`);
   }
   return amount;
+}
+
+type WorkerDataLocation = "wnam" | "enam" | "weur" | "eeur" | "apac" | "oc";
+
+function dataLocation(value: string | undefined): WorkerDataLocation | undefined {
+  if (!value) return undefined;
+  if (!["wnam", "enam", "weur", "eeur", "apac", "oc"].includes(value))
+    err("--data-location must be wnam, enam, weur, eeur, apac, or oc");
+  return value as WorkerDataLocation;
+}
+
+function placementMode(value: string | undefined): "off" | "smart" | undefined {
+  if (!value) return undefined;
+  if (!["off", "smart"].includes(value)) err("--placement must be off or smart");
+  return value as "off" | "smart";
 }
 
 function durationMs(value: string | undefined, fallback: number): number {
@@ -533,12 +591,17 @@ export async function workersCommand(
         "template",
         "from-wrangler",
         "accept-partial",
+        "build-command",
+        "build-output",
+        "build-main",
         "name",
         "slug",
         "preview-budget",
         "production-budget",
         "force",
         "framework",
+        "data-location",
+        "placement",
       ]);
       if (rest.length > 1) {
         err("usage: xapi-to workers init [directory] [flags]");
@@ -558,18 +621,28 @@ export async function workersCommand(
         if (flags.force && flags.force !== "true") {
           err("--force does not accept a value");
         }
+        for (const flag of ["build-command", "build-output", "build-main"]) {
+          if (flags[flag] === "true" || flags[flag] === "") {
+            err(`--${flag} requires a value`);
+          }
+        }
         let result;
         try {
           result = importWranglerProject({
             wranglerPath: flags["from-wrangler"],
             acceptPartial: flags["accept-partial"] === "true",
             force: flags.force === "true",
+            buildCommand: flags["build-command"],
+            buildOutput: flags["build-output"],
+            buildMain: flags["build-main"],
             previewDailyBudgetUsd: flags["preview-budget"]
               ? budget(flags["preview-budget"], "--preview-budget")
               : 0.25,
             productionDailyBudgetUsd: flags["production-budget"]
               ? budget(flags["production-budget"], "--production-budget")
               : 2,
+            defaultResourceLocation: dataLocation(flags["data-location"]),
+            placementMode: placementMode(flags.placement),
           });
         } catch (error) {
           err(
@@ -588,6 +661,9 @@ export async function workersCommand(
       }
       if (flags["accept-partial"]) {
         err("--accept-partial is only valid with --from-wrangler");
+      }
+      for (const flag of ["build-command", "build-output", "build-main"]) {
+        if (flags[flag]) err(`--${flag} is only valid with --from-wrangler`);
       }
       if (flags.framework === "true" || flags.framework === "") {
         err("--framework requires auto, react, vite, vue, or next");
@@ -609,6 +685,8 @@ export async function workersCommand(
             productionDailyBudgetUsd: flags["production-budget"]
               ? budget(flags["production-budget"], "--production-budget")
               : 2,
+            defaultResourceLocation: dataLocation(flags["data-location"]),
+            placementMode: placementMode(flags.placement),
             force: flags.force === "true",
             framework: flags.framework === "true" ? undefined : flags.framework,
           }),
@@ -628,12 +706,22 @@ export async function workersCommand(
       if (flags.config === "true" || flags.config === "") {
         err("--config requires a path");
       }
-      const plan = await createWorkerPlan({
-        environment: environment(flags.env) as "preview" | "production",
-        configPath: flags.config,
-        clientOptions: options(),
-      });
-      printWorkerPlan(plan, flags.format);
+      try {
+        const prepared = await prepareWorkerPlan({
+          environment: environment(flags.env) as "preview" | "production",
+          configPath: flags.config,
+          clientOptions: options(),
+        });
+        printWorkerPlan(prepared.plan, flags.format);
+      } catch (error) {
+        if (error instanceof WorkerProjectBuildError) {
+          err(error.message, {
+            remoteChangesApplied: false,
+            ...error.recovery,
+          });
+        }
+        err(error instanceof Error ? error.message : "Worker plan failed");
+      }
       return;
     }
     case "retention": {
@@ -825,6 +913,57 @@ export async function workersCommand(
         ),
       );
       return;
+    case "inspect": {
+      assertFlags(flags, ["env", "config"]);
+      if (rest.length > 1) {
+        err("usage: xapi-to workers inspect [worker-id] --env ENV");
+      }
+      if (flags.config === "true" || flags.config === "") {
+        err("--config requires a path");
+      }
+      const selectedEnvironment = environment(flags.env) as
+        | "preview"
+        | "production";
+      let workerId: string | undefined = rest[0];
+      if (!workerId) {
+        try {
+          const project = loadWorkerProject(process.cwd(), flags.config);
+          workerId = project.config.workerId;
+        } catch (error) {
+          err(
+            error instanceof Error
+              ? error.message
+              : "Unable to load Worker project",
+          );
+        }
+        if (!workerId) {
+          err(
+            "Worker project is not linked yet; pass a Worker ID or run workers push first",
+          );
+        }
+      }
+      try {
+        const report = await inspectWorker({
+          workerId,
+          environment: selectedEnvironment,
+          clientOptions: options(),
+        });
+        if (
+          useHumanWorkerInspectionOutput({
+            flagFormat: flags.format,
+            envFormat: process.env.XAPI_OUTPUT,
+            stdoutIsTTY: process.stdout.isTTY,
+          })
+        ) {
+          console.log(formatWorkerInspection(report));
+        } else {
+          output(report, flags.format as OutputFormat | undefined);
+        }
+      } catch (error) {
+        err(error instanceof Error ? error.message : "Worker inspection failed");
+      }
+      return;
+    }
     case "create": {
       assertFlags(flags, [
         "name",
@@ -833,6 +972,8 @@ export async function workersCommand(
         "template",
         "preview-budget",
         "production-budget",
+        "data-location",
+        "placement",
       ]);
       if (rest.length) err("usage: xapi-to workers create [flags]");
       const template = flags.template || "worker";
@@ -852,6 +993,8 @@ export async function workersCommand(
             flags["production-budget"],
             "--production-budget",
           ),
+          defaultResourceLocation: dataLocation(flags["data-location"]),
+          placementMode: placementMode(flags.placement),
         }),
       );
       return;
@@ -979,6 +1122,22 @@ export async function workersCommand(
           budget(flags["daily-usd"], "--daily-usd"),
         ),
       );
+      return;
+    }
+    case "environment": {
+      assertFlags(flags, ["daily-usd", "data-location", "placement"]);
+      if (rest.length !== 2)
+        err("usage: xapi-to workers environment <worker-id> <preview|production> [--daily-usd USD] [--data-location REGION] [--placement off|smart]");
+      if (!["preview", "production"].includes(rest[1])) err("environment must be preview or production");
+      const location = dataLocation(flags["data-location"]);
+      const placement = placementMode(flags.placement);
+      if (!flags["daily-usd"] && !location && !placement)
+        err("provide --daily-usd, --data-location, or --placement");
+      output(await client.updateWorkerEnvironment(options(), rest[0], rest[1], {
+        ...(flags["daily-usd"] ? { dailyBudgetUsd: budget(flags["daily-usd"], "--daily-usd") } : {}),
+        ...(location ? { defaultResourceLocation: location } : {}),
+        ...(placement ? { placementMode: placement } : {}),
+      }));
       return;
     }
     case "audit":

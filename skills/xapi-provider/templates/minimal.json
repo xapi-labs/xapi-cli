@@ -1,0 +1,23 @@
+{
+  "name": "<<TODO: Service name>>",
+  "description": "<<TODO: Short marketplace description>>",
+  "category": "Public-Utils",
+  "host": "<<TODO: lowercase-host>>",
+  "baseUrl": "<<TODO: https://upstream.example.com>>",
+  "authType": "HEADER",
+  "privateHeaders": {
+    "<<TODO: upstream header name>>": "<<TODO: upstream secret>>"
+  },
+  "accessMode": "PROXY",
+  "isPublic": true,
+  "endpoints": [
+    {
+      "name": "<<TODO: Endpoint name>>",
+      "description": "<<TODO: What the endpoint does>>",
+      "method": "GET",
+      "path": "<<TODO: /endpoint-path>>",
+      "billingType": "PER_CALL",
+      "costPerCall": 0.001
+    }
+  ]
+}

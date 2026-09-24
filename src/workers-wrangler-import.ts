@@ -1,3 +1,10 @@
+import { validNativeCron } from './workers-cron.ts';
+import { createHash } from 'node:crypto';
+import {
+  normalizeNativeWorkerOptions,
+  type WorkerCacheOptions,
+  type WorkerVersionMetadata,
+} from "./workers-artifact.ts";
 import {
   existsSync,
   lstatSync,
@@ -47,6 +54,14 @@ export interface WranglerImportReport {
   compatible: boolean;
   entries: WranglerCompatibilityEntry[];
   summary: Record<WranglerCompatibilityCategory, number>;
+  deploymentPlan: Array<{
+    phase: "BEFORE_CODE" | "CODE" | "AFTER_CODE";
+    kind: "D1_MIGRATIONS" | "WORKER" | "QUEUE_CONSUMER" | "CRON";
+    environment: "preview" | "production";
+    status: "SUPPORTED" | "REQUIRES_MAPPING";
+    bindingName?: string;
+    configuration: Record<string, unknown>;
+  }>;
 }
 
 export interface ImportWranglerProjectOptions {
@@ -54,8 +69,13 @@ export interface ImportWranglerProjectOptions {
   wranglerPath: string;
   acceptPartial?: boolean;
   force?: boolean;
+  buildCommand?: string;
+  buildOutput?: string;
+  buildMain?: string;
   previewDailyBudgetUsd?: number;
   productionDailyBudgetUsd?: number;
+  defaultResourceLocation?: "wnam" | "enam" | "weur" | "eeur" | "apac" | "oc";
+  placementMode?: "off" | "smart";
 }
 
 export interface ImportWranglerProjectResult {
@@ -70,6 +90,8 @@ export interface ImportWranglerProjectResult {
 export interface WranglerDeploymentSettings {
   compatibilityDate?: string;
   compatibilityFlags: string[];
+  cacheOptions?: WorkerCacheOptions;
+  versionMetadata?: WorkerVersionMetadata;
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -90,21 +112,27 @@ const SUPPORTED_TOP_LEVEL = new Set([
   "compatibility_date",
   "compatibility_flags",
   "assets",
+  "cache",
+  "version_metadata",
 ]);
 const MANAGED_TOP_LEVEL = new Set([
   "kv_namespaces",
   "d1_databases",
   "r2_buckets",
   "durable_objects",
+  "migrations",
   "queues",
+  "triggers",
   "workflows",
   "containers",
 ]);
-const REENTER_TOP_LEVEL = new Set(["vars", "secrets", "secrets_store_secrets"]);
+const REENTER_TOP_LEVEL = new Set(["secrets", "secrets_store_secrets"]);
+const PUBLIC_VARIABLE_TOP_LEVEL = new Set(["vars"]);
 const IGNORED_TOP_LEVEL = new Set([
   "$schema",
   "account_id",
   "workers_dev",
+  "preview_urls",
   "route",
   "routes",
   "dev",
@@ -117,7 +145,6 @@ const IGNORED_TOP_LEVEL = new Set([
   "tsconfig",
   "rules",
   "build",
-  "triggers",
   "usage_model",
   "keep_vars",
   "send_metrics",
@@ -126,12 +153,14 @@ const IGNORED_TOP_LEVEL = new Set([
   "legacy_assets",
   "site",
   "limits",
-  "version_metadata",
   "tail_consumers",
   // Wrangler-generated framework configs can include build-time defaults that
   // have already been applied to the emitted Worker bundle. They are not
   // control-plane settings and do not need an xAPI desired-state mapping.
   "topLevelName",
+  "configPath",
+  "userConfigPath",
+  "definedEnvironments",
   "jsx_factory",
   "jsx_fragment",
   "python_modules",
@@ -468,7 +497,7 @@ function resourceList(
       item.binding,
       `${prefix}d1_databases[${index}]`,
       item,
-      new Set(["binding"]),
+      new Set(["binding", "migrations_dir", "migrations_table"]),
     ),
   );
   array(config.r2_buckets).forEach((item, index) =>
@@ -514,18 +543,20 @@ function resourceList(
       new Set(["binding"]),
     ),
   );
-  if (
-    queues?.consumers !== undefined &&
-    !structurallyEmpty(queues.consumers)
-  ) {
-    compatibilityEntry(
-      entries,
-      "UNSUPPORTED",
-      `${prefix}queues.consumers`,
-      "Queue consumer configuration is not imported; xAPI managed queues use the hosted Worker target",
-      { environment },
-    );
+  const queueNames = new Set<string>();
+  for (const consumer of array(queues?.consumers)) {
+    if (typeof consumer.queue === 'string') queueNames.add(consumer.queue);
+    if (typeof consumer.dead_letter_queue === 'string') queueNames.add(consumer.dead_letter_queue);
+    const allowed = new Set(['queue', 'max_batch_size', 'max_batch_timeout', 'max_retries', 'max_concurrency', 'retry_delay', 'dead_letter_queue']);
+    for (const key of Object.keys(consumer)) if (!allowed.has(key))
+      compatibilityEntry(entries, 'UNSUPPORTED', `${prefix}queues.consumers.${key}`, 'Unsupported Queue consumer option', { environment });
   }
+  for (const name of queueNames) {
+    if (!array(queues?.producers).some(item => item.queue === name))
+      resources.push({ type: 'queue', bindingName: queueBinding(config, name) });
+  }
+  if (queueNames.size) compatibilityEntry(entries, 'MANAGED', `${prefix}queues.consumers`,
+    'Platform event adapter invokes queue(batch), preserving explicit acknowledgements, retries and binary bodies; CF owns delivery and dead-letter routing.', { environment });
   array(config.workflows).forEach((item, index) =>
     add(
       "workflow",
@@ -555,6 +586,115 @@ function resourceList(
     });
 }
 
+function publicVariables(
+  config: UnknownRecord,
+  prefix: string,
+  environment: "preview" | "production",
+  entries: WranglerCompatibilityEntry[],
+): void {
+  const vars = record(config.vars);
+  for (const name of Object.keys(vars || {}).sort()) {
+    compatibilityEntry(
+      entries,
+      "SUPPORTED",
+      `${prefix}vars.${name}`,
+      "Public variables remain in Wrangler and are included in its native deployment bundle; sensitive values must use Secrets",
+      { environment, bindingName: name },
+    );
+  }
+}
+
+function managedDurableObjectMigrations(
+  config: UnknownRecord,
+  prefix: string,
+  environment: "preview" | "production",
+  resources: DesiredResource[],
+  entries: WranglerCompatibilityEntry[],
+): void {
+  if (config.migrations === undefined || structurallyEmpty(config.migrations)) {
+    return;
+  }
+  if (!Array.isArray(config.migrations)) {
+    compatibilityEntry(
+      entries,
+      "UNSUPPORTED",
+      `${prefix}migrations`,
+      "Wrangler migrations must be an array",
+      { environment },
+    );
+    return;
+  }
+
+  const declaredClasses = new Set(
+    resources.flatMap((resource) =>
+      resource.type === "durable_object" &&
+      typeof resource.className === "string"
+        ? [resource.className]
+        : [],
+    ),
+  );
+  const migratedClasses = new Set<string>();
+  let valid = true;
+
+  config.migrations.forEach((value, index) => {
+    const path = `${prefix}migrations[${index}]`;
+    const migration = record(value);
+    const keys = migration ? Object.keys(migration) : [];
+    const classes = migration?.new_sqlite_classes;
+    if (
+      !migration ||
+      typeof migration.tag !== "string" ||
+      !migration.tag.trim() ||
+      !Array.isArray(classes) ||
+      classes.length < 1 ||
+      classes.some(
+        (className) =>
+          typeof className !== "string" ||
+          !CLASS_NAME.test(className) ||
+          !declaredClasses.has(className) ||
+          migratedClasses.has(className),
+      ) ||
+      keys.some((key) => key !== "tag" && key !== "new_sqlite_classes")
+    ) {
+      valid = false;
+      compatibilityEntry(
+        entries,
+        "UNSUPPORTED",
+        path,
+        "Only initial new_sqlite_classes migrations that exactly match managed Durable Object bindings can be imported; rename, delete, regular-class, and repeated-class migrations require an explicit migration workflow",
+        { environment },
+      );
+      return;
+    }
+    for (const className of classes as string[]) migratedClasses.add(className);
+  });
+
+  if (
+    valid &&
+    (migratedClasses.size !== declaredClasses.size ||
+      [...declaredClasses].some((className) => !migratedClasses.has(className)))
+  ) {
+    compatibilityEntry(
+      entries,
+      "UNSUPPORTED",
+      `${prefix}migrations`,
+      "Initial SQLite migrations must exactly match the Durable Object classes managed by this environment",
+      { environment },
+    );
+    return;
+  }
+
+  if (valid) {
+    compatibilityEntry(
+      entries,
+      "MANAGED",
+      `${prefix}migrations`,
+      "xAPI will create the declared SQLite Durable Object classes through managed Workers for Platforms exports; provider migration tags are not copied",
+      { environment, resourceType: "durable_object" },
+    );
+  }
+}
+
 function secretNames(
   config: UnknownRecord,
   prefix: string,
@@ -562,10 +702,11 @@ function secretNames(
   entries: WranglerCompatibilityEntry[],
 ): string[] {
   const candidates = new Set<string>();
-  const vars = record(config.vars);
-  for (const name of Object.keys(vars || {})) candidates.add(name);
-  if (Array.isArray(config.secrets)) {
-    for (const value of config.secrets) {
+  const declaredSecrets = Array.isArray(config.secrets)
+    ? config.secrets
+    : record(config.secrets)?.required;
+  if (Array.isArray(declaredSecrets)) {
+    for (const value of declaredSecrets) {
       if (typeof value === "string") candidates.add(value);
     }
   }
@@ -605,6 +746,8 @@ function selectedConfig(
   if (!environmentConfig) return { config: root, prefix: "" };
   const merged: UnknownRecord = { ...root, ...environmentConfig };
   delete merged.env;
+  // Wrangler vars are non-inheritable for named environments.
+  if (!("vars" in environmentConfig)) delete merged.vars;
   return { config: merged, prefix: `env.${environment}.` };
 }
 
@@ -623,7 +766,10 @@ function inspectTopLevel(
       );
     } else if (MANAGED_TOP_LEVEL.has(key)) {
       // Individual binding entries carry the actionable report.
-    } else if (REENTER_TOP_LEVEL.has(key)) {
+    } else if (
+      REENTER_TOP_LEVEL.has(key) ||
+      PUBLIC_VARIABLE_TOP_LEVEL.has(key)
+    ) {
       // Secret/variable names are reported per environment without values.
     } else if (IGNORED_TOP_LEVEL.has(key)) {
       compatibilityEntry(
@@ -632,7 +778,9 @@ function inspectTopLevel(
         key,
         key === "account_id" || key === "route" || key === "routes"
           ? "Provider ownership is not transferred; xAPI uses its own Cloudflare account and routing"
-          : "This Wrangler deployment option is not copied into xAPI project state",
+          : key === "preview_urls"
+            ? "xAPI assigns an environment hostname, so Cloudflare preview URL generation is not copied"
+            : "This Wrangler deployment option is not copied into xAPI project state",
       );
     } else {
       if (structurallyEmpty(root[key])) continue;
@@ -666,7 +814,11 @@ function inspectTopLevel(
           "Retained through the referenced Wrangler environment configuration",
           { environment: name },
         );
-      } else if (MANAGED_TOP_LEVEL.has(key) || REENTER_TOP_LEVEL.has(key)) {
+      } else if (
+        MANAGED_TOP_LEVEL.has(key) ||
+        REENTER_TOP_LEVEL.has(key) ||
+        PUBLIC_VARIABLE_TOP_LEVEL.has(key)
+      ) {
         // Actionable binding and secret entries are reported separately.
       } else if (IGNORED_TOP_LEVEL.has(key) || key === "name") {
         compatibilityEntry(
@@ -741,6 +893,112 @@ function summary(
   return result;
 }
 
+function packageManager(rootDir: string): string {
+  if (existsSync(resolve(rootDir, "pnpm-lock.yaml"))) return "pnpm";
+  if (
+    existsSync(resolve(rootDir, "bun.lock")) ||
+    existsSync(resolve(rootDir, "bun.lockb"))
+  )
+    return "bun";
+  if (existsSync(resolve(rootDir, "yarn.lock"))) return "yarn";
+  return "npm";
+}
+
+function packageScripts(rootDir: string): Record<string, string> {
+  const path = resolve(rootDir, "package.json");
+  if (!existsSync(path)) return {};
+  try {
+    const packageJson = record(JSON.parse(readFileSync(path, "utf8")));
+    const scripts = record(packageJson?.scripts);
+    return Object.fromEntries(
+      Object.entries(scripts || {}).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function workerBuildScript(
+  scripts: Record<string, string>,
+): string | undefined {
+  if (scripts["xapi:build"]) return "xapi:build";
+  if (
+    scripts.build &&
+    /(?:^|\s)(?:npm|pnpm|yarn|bun)\s+run\s+build:worker(?:\s|$)/.test(
+      scripts.build,
+    )
+  ) {
+    return "build";
+  }
+  if (
+    scripts["build:worker"] &&
+    /(?:--outfile|\bvinext\b|\bwrangler\b)/.test(scripts["build:worker"])
+  ) {
+    return "build:worker";
+  }
+  return scripts.build ? "build" : undefined;
+}
+
+function outfileFromScript(script: string | undefined): string | undefined {
+  if (!script) return undefined;
+  const match = script.match(
+    /(?:^|\s)--outfile(?:=|\s+)(?:"([^"]+)"|'([^']+)'|([^\s]+))/,
+  );
+  return match?.[1] || match?.[2] || match?.[3];
+}
+
+function portableProjectPath(
+  rootDir: string,
+  baseDir: string,
+  value: string | undefined,
+): string | undefined {
+  if (!value || value.includes("\0")) return undefined;
+  const path = relative(rootDir, resolve(baseDir, value)).split(sep).join("/");
+  if (!path || path === ".." || path.startsWith("../")) return undefined;
+  return path;
+}
+
+function inferredBuild(
+  options: ImportWranglerProjectOptions,
+  rootDir: string,
+  sourceDir: string,
+  wrangler: UnknownRecord,
+): { command: string; output: string; main?: string; inferred: boolean } {
+  const scripts = packageScripts(rootDir);
+  const manager = packageManager(rootDir);
+  const workerScript = workerBuildScript(scripts);
+  const inferredCommand = workerScript
+    ? `${manager} run ${workerScript}`
+    : undefined;
+  const scriptOutput = portableProjectPath(
+    rootDir,
+    rootDir,
+    outfileFromScript(workerScript ? scripts[workerScript] : undefined),
+  );
+  const wranglerMain =
+    typeof wrangler.main === "string" ? wrangler.main.trim() : undefined;
+  const mainOutput =
+    wranglerMain &&
+    /\.(?:m?js)$/.test(wranglerMain) &&
+    (sourceDir === rootDir || wranglerMain.includes("/"))
+      ? portableProjectPath(rootDir, sourceDir, wranglerMain)
+      : undefined;
+  const output = options.buildOutput || scriptOutput || mainOutput;
+  return {
+    command: options.buildCommand || inferredCommand || "npm run build",
+    output: output || "dist/worker.mjs",
+    ...(options.buildMain ? { main: options.buildMain } : {}),
+    inferred: Boolean(
+      options.buildCommand ||
+        options.buildOutput ||
+        options.buildMain ||
+        (inferredCommand && output),
+    ),
+  };
+}
+
 export function importWranglerProject(
   options: ImportWranglerProjectOptions,
 ): ImportWranglerProjectResult {
@@ -752,6 +1010,7 @@ export function importWranglerProject(
   const rootDir = discoverProjectRoot(cwd, sourcePath);
   const configPath = resolve(rootDir, WORKER_PROJECT_CONFIG_FILE);
   const entries: WranglerCompatibilityEntry[] = [];
+  const deploymentPlan: WranglerImportReport["deploymentPlan"] = [];
   inspectTopLevel(wrangler, entries);
   if (typeof wrangler.main !== "string" || !wrangler.main.trim()) {
     compatibilityEntry(
@@ -766,6 +1025,118 @@ export function importWranglerProject(
     preview: selectedConfig(wrangler, "preview"),
     production: selectedConfig(wrangler, "production"),
   };
+  for (const environment of ["preview", "production"] as const) {
+    const { config, prefix } = desired[environment];
+    let nativeOptionsValid = true;
+    try {
+      normalizeNativeWorkerOptions({
+        cacheOptions: config.cache,
+        versionMetadata: config.version_metadata,
+      });
+    } catch (error) {
+      nativeOptionsValid = false;
+      compatibilityEntry(
+        entries,
+        "UNSUPPORTED",
+        `${prefix}cache/version_metadata`,
+        error instanceof Error ? error.message : "Invalid native options",
+        { environment },
+      );
+    }
+    deploymentPlan.push({
+      phase: "CODE",
+      kind: "WORKER",
+      environment,
+      status: nativeOptionsValid ? "SUPPORTED" : "REQUIRES_MAPPING",
+      configuration: {
+        ...(config.cache !== undefined ? { cache: config.cache } : {}),
+        ...(config.version_metadata !== undefined
+          ? { version_metadata: config.version_metadata }
+          : {}),
+      },
+    });
+    const queueConfig = record(config.queues);
+    for (const consumer of array(queueConfig?.consumers)) {
+      const producer = array(queueConfig?.producers).find(
+        (item) => item.queue === consumer.queue,
+      );
+      deploymentPlan.push({
+        phase: "AFTER_CODE",
+        kind: "QUEUE_CONSUMER",
+        environment,
+        status: "SUPPORTED",
+        bindingName: queueBinding(config, String(consumer.queue)),
+        configuration: Object.fromEntries(
+          Object.entries(consumer).filter(([key]) =>
+            [
+              "queue",
+              "max_batch_size",
+              "max_batch_timeout",
+              "max_retries",
+              "max_concurrency",
+              "retry_delay",
+              "dead_letter_queue",
+            ].includes(key),
+          ),
+        ),
+      });
+    }
+    const crons = record(config.triggers)?.crons;
+    if (Array.isArray(crons) && crons.length) {
+      const supportedCrons = crons.every(cron => typeof cron === 'string' && validNativeCron(cron));
+      if (!supportedCrons)
+        compatibilityEntry(entries, 'UNSUPPORTED', `${prefix}triggers.crons`, 'Invalid or unsupported CF numeric UTC Cron; check ranges and mapping support (no silent conversion)', { environment });
+      deploymentPlan.push({
+        phase: "AFTER_CODE",
+        kind: "CRON",
+        environment,
+        status: supportedCrons ? "SUPPORTED" : "REQUIRES_MAPPING",
+        configuration: { crons, timezone: "UTC" },
+      });
+      compatibilityEntry(
+        entries,
+        "MANAGED",
+        `${prefix}triggers.crons`,
+        `Platform scheduler invokes scheduled() through a metered event adapter (not native WfP Cron registration). Requested UTC schedules: ${crons.join(", ")}`,
+        { environment },
+      );
+    }
+    array(config.d1_databases).forEach((database, index) => {
+      if (
+        database.migrations_dir !== undefined ||
+        database.migrations_table !== undefined ||
+        existsSync(resolve(sourceDir, "migrations"))
+      ) {
+        deploymentPlan.push({
+          phase: "BEFORE_CODE",
+          kind: "D1_MIGRATIONS",
+          environment,
+          status: "SUPPORTED",
+          ...(typeof database.binding === "string"
+            ? { bindingName: database.binding }
+            : {}),
+          configuration: {
+            directory: database.migrations_dir ?? "migrations",
+            table: database.migrations_table ?? "d1_migrations",
+            relativeTo:
+              relative(rootDir, sourceDir).split(sep).join("/") || ".",
+          },
+        });
+        compatibilityEntry(
+          entries,
+          "MANAGED",
+          `${prefix}d1_databases[${index}].migrations`,
+          `D1 SQL migrations execute remotely against the owned binding before code deployment; directory=${String(database.migrations_dir ?? "migrations")}, table=${String(database.migrations_table ?? "d1_migrations")}. Code rollback does not roll back SQL.`,
+          {
+            environment,
+            ...(typeof database.binding === "string"
+              ? { bindingName: database.binding }
+              : {}),
+          },
+        );
+      }
+    });
+  }
   const assets = staticAssets(
     desired.preview.config,
     desired.production.config,
@@ -790,6 +1161,32 @@ export function importWranglerProject(
     "production",
     entries,
   );
+  publicVariables(
+    desired.preview.config,
+    desired.preview.prefix,
+    "preview",
+    entries,
+  );
+  publicVariables(
+    desired.production.config,
+    desired.production.prefix,
+    "production",
+    entries,
+  );
+  managedDurableObjectMigrations(
+    desired.preview.config,
+    desired.preview.prefix,
+    "preview",
+    previewResources,
+    entries,
+  );
+  managedDurableObjectMigrations(
+    desired.production.config,
+    desired.production.prefix,
+    "production",
+    productionResources,
+    entries,
+  );
   const previewSecrets = secretNames(
     desired.preview.config,
     desired.preview.prefix,
@@ -802,11 +1199,14 @@ export function importWranglerProject(
     "production",
     entries,
   );
+  const build = inferredBuild(options, rootDir, sourceDir, wrangler);
   compatibilityEntry(
     entries,
-    "REENTER",
-    "build.output",
-    "Verify the generated bundle path; Wrangler source main is not necessarily the build output",
+    build.inferred ? "SUPPORTED" : "REENTER",
+    "build",
+    build.inferred
+      ? `Build inferred as ${build.command} → ${build.output}${build.main ? ` (main: ${build.main})` : ""}`
+      : "Verify build.command and build.output; Wrangler source main is not necessarily the deployable build output",
   );
 
   const sortedEntries = stableEntries(entries);
@@ -819,6 +1219,12 @@ export function importWranglerProject(
     ),
     entries: sortedEntries,
     summary: summary(sortedEntries),
+    deploymentPlan: deploymentPlan.sort(
+      (a, b) =>
+        a.environment.localeCompare(b.environment) ||
+        ["BEFORE_CODE", "CODE", "AFTER_CODE"].indexOf(a.phase) -
+          ["BEFORE_CODE", "CODE", "AFTER_CODE"].indexOf(b.phase),
+    ),
   };
   if (!report.compatible && !options.acceptPartial) {
     return {
@@ -857,18 +1263,26 @@ export function importWranglerProject(
       template: "worker" as const,
     },
     wrangler: wranglerPath,
-    build: { command: "npm run build", output: "dist/worker.mjs" },
+    build: {
+      command: build.command,
+      output: build.output,
+      ...(build.main ? { main: build.main } : {}),
+    },
     ...(assets ? { assets } : {}),
     ...(containers ? { containers } : {}),
     environments: {
       preview: {
         dailyBudgetUsd: budget(options.previewDailyBudgetUsd, "preview"),
+        ...(options.defaultResourceLocation ? { defaultResourceLocation: options.defaultResourceLocation } : {}),
+        ...(options.placementMode ? { placementMode: options.placementMode } : {}),
         healthCheck: "/health",
         resources: previewResources,
         secrets: previewSecrets,
       },
       production: {
         dailyBudgetUsd: budget(options.productionDailyBudgetUsd, "production"),
+        ...(options.defaultResourceLocation ? { defaultResourceLocation: options.defaultResourceLocation } : {}),
+        ...(options.placementMode ? { placementMode: options.placementMode } : {}),
         healthCheck: "/health",
         resources: productionResources,
         secrets: productionSecrets,
@@ -897,6 +1311,7 @@ export function importWranglerProject(
     nextSteps: [
       `Review ${WORKER_PROJECT_CONFIG_FILE}`,
       "Set every REENTER secret with xapi workers secrets set",
+      "Review public Wrangler vars; sensitive values belong in explicitly declared Secrets",
       "xapi workers plan --env preview",
     ],
   };
@@ -937,5 +1352,33 @@ export function readWranglerDeploymentSettings(
   return {
     ...(date ? { compatibilityDate: date } : {}),
     compatibilityFlags: [...new Set((rawFlags || []) as string[])].sort(),
+    ...normalizeNativeWorkerOptions({
+      cacheOptions: selected.cache,
+      versionMetadata: selected.version_metadata,
+    }),
   };
+}
+
+/** Read only public Wrangler vars, never .env/.dev.vars or process credentials. */
+export function readWranglerPublicVars(
+  project: LoadedWorkerProject,
+  environment: "preview" | "production",
+): unknown {
+  const path = resolveWorkerProjectPath(project, project.config.wrangler, "wrangler");
+  const { config } = parseWrangler(path);
+  return selectedConfig(config, environment).config.vars;
+}
+
+export function queueBinding(config: UnknownRecord, queue: string): string {
+  const producer = array(record(config.queues)?.producers).find(item => item.queue === queue);
+  return typeof producer?.binding === 'string' ? producer.binding :
+    'XAPI_QUEUE_' + createHash('sha256').update(queue).digest('hex').slice(0, 16).toUpperCase();
+}
+
+export function readWranglerEventConfig(project: LoadedWorkerProject, environment: 'preview' | 'production') {
+  const path = resolveWorkerProjectPath(project, project.config.wrangler, 'wrangler');
+  const { config } = parseWrangler(path);
+  const selected = selectedConfig(config, environment).config;
+  return { config: selected, directory: dirname(path), consumers: array(record(selected.queues)?.consumers),
+    crons: record(selected.triggers)?.crons, databases: array(selected.d1_databases) };
 }

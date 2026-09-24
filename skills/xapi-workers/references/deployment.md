@@ -2,6 +2,33 @@
 
 ## Project workflow
 
+Use one command layer for one task. For normal application deployment, stay in
+the project workflow:
+
+| Intent | Command | Writes live state |
+| --- | --- | --- |
+| Inspect one running environment | `workers inspect [worker-id] --env ENV` | No |
+| Build locally and compare exact desired state with xAPI | `workers plan --env ENV` | No remote writes |
+| Rebuild, present the final plan, reconcile and deploy preview | `workers push --env preview` | Yes, after confirmation |
+| Release the accepted preview Artifact | `workers promote --to production` | Yes |
+| Restore an earlier active version | `workers rollback --env ENV ...` | Yes |
+
+`workers inspect` accepts an explicit Worker ID or resolves it from the current
+`xapi.worker.json`. It combines Worker, environment, active Artifact and
+Deployment, routing, resource, Secret metadata, domain, and billing freshness
+reads into one report. Optional read failures stay `UNKNOWN`, never zero or
+success. It never reads Secret values and performs no health request that might
+trigger application behavior. Use `workers plan` separately when comparing
+local desired state with xAPI. Plan runs the configured local build first, validates
+the native bundle and static assets, and then displays the exact Artifact hash,
+resource/Secret/routing changes, budget-cap delta, price-book availability, and
+usage-dependent cost effects. A budget is a cap rather than a predicted charge;
+unknown traffic and storage must remain unknown.
+`workers build`, `upload`, and `deploy` are lower-level Artifact primitives for
+custom CI and recovery. A managed `build` only produces an Artifact; `deploy`
+only activates an existing Artifact. Neither replaces project convergence by
+`push`.
+
 ```sh
 export XAPI_API_HOST=api.test.xapi.to
 xapi workers templates
@@ -10,6 +37,12 @@ cd my-service
 xapi workers plan --env preview
 ```
 
+For an APAC-oriented service, initialize or edit the environment desired state
+with `defaultResourceLocation: "apac"` and `placementMode: "smart"`. The first
+setting applies only when xAPI creates new D1/R2 resources; the second emits
+Cloudflare's native Smart Placement metadata on Worker deployment. Workers
+remain global, and neither setting moves existing stored data.
+
 Choose the API host explicitly: `api.test.xapi.to` operates test-platform
 resources; `api.xapi.to` operates production-platform resources. `--env preview`
 selects a project's preview environment on that host, not the test API. A
@@ -17,6 +50,14 @@ production acceptance deployment can therefore use `api.xapi.to` with
 `--env preview`. Do not silently fall back to a saved test key or host.
 
 For an existing project use `xapi workers init --from-wrangler ./wrangler.jsonc` (TOML also supported). Generated framework configs may live below the project root, for example `dist/server/wrangler.json`; run the command from the package directory so xAPI writes `xapi.worker.json` beside `package.json` and resolves generated asset paths back to that root. Read its import report; do not auto-accept unsupported settings. xAPI creates environment-specific resources; do not copy another Cloudflare account's IDs.
+
+An initial Wrangler Durable Object migration containing only
+`new_sqlite_classes` is managed when its class set exactly matches the imported
+Durable Object bindings. xAPI creates those SQLite classes through managed
+Workers for Platforms exports and does not copy provider migration tags.
+Renames, deletions, regular-class migrations, repeated classes, and partial
+class sets remain blocked because they need an explicit state migration plan.
+`preview_urls` is also not copied: xAPI assigns the environment hostname.
 
 `xapi.worker.json` holds desired xAPI state and Worker ID; Wrangler holds entrypoint, compatibility and binding declarations. The persistent-agent template declares the six ordinary managed binding types so it can demonstrate the platform; Containers remain deployment-owned and must be declared explicitly. An ordinary application should declare only the resources its business logic uses. Do not add unrelated bindings merely to complete an acceptance checklist. Test the full resource matrix in a separate disposable Worker or environment, then clean up only that isolated test state. Install/build according to the generated project instructions. Inspect plans for missing permissions, prices, secrets, budget, and policy requirements.
 
@@ -40,7 +81,26 @@ npx wrangler deploy --dry-run \
   --outfile dist/app.worker.bundle
 ```
 
-Set `build.output` to the generated `.worker.bundle`, omit `build.main`, and set `assets.directory` to the generated client directory. `--dry-run` only creates the local Cloudflare upload artifact; `xapi workers push` remains the only publisher. The import report must show every unmapped Wrangler field; never split a framework application into per-file API uploads to work around an import problem.
+Set `build.output` to the generated `.worker.bundle`, omit `build.main`, and set `assets.directory` to the generated client directory. `--dry-run` only creates the local Cloudflare upload artifact; `xapi workers push` remains the only publisher. The CLI sends the complete modules/assets set in one authenticated multipart Artifact request. The import report must show every unmapped Wrangler field; never split a framework application into per-file API uploads to work around an import problem.
+
+The complete-project upload channel accepts up to 64 MiB of uncompressed
+Worker modules and 100 MiB of combined module/static-asset content; each static
+asset is limited to 25 MiB. There is no 200-module cutoff. A single-file build
+larger than 1 MiB automatically uses the bundle channel; do not split application
+code just to fit the old source-text endpoint. Native `.bundle` files have a
+separate 128 MiB envelope allowance for metadata/framing. Public ingress and
+Cloudflare account limits still apply, so local acceptance does not certify
+public upload capacity. Deploy the matching backend before the CLI update.
+
+Generated Wrangler configs may omit provider resource IDs and emit an
+`inherit` binding in the dry-run bundle. Declare that binding exactly once in
+the selected environment's `resources`; xAPI maps it by binding name and
+injects the environment-owned resource during deployment. Do not add a copied
+or placeholder Cloudflare resource ID merely to make the local bundle pass.
+
+For a package inside a pnpm, Yarn, or Bun workspace, run `init` from that
+package directory. The CLI uses the nearest lockfile up to the repository root
+and keeps the generated build command on the repository's package manager.
 
 ## Native Containers
 
@@ -85,15 +145,74 @@ Rollback restores code and compatibility settings, not data, schema, Secret valu
 
 Use the project's installed/pinned CLI, lockfile installation, and a scoped secret `XAPI_KEY`. Keep `XAPI_API_HOST` explicit and separate test/production credentials. CLI deployment does not require SSH into an API server or a Cloudflare account token.
 
-Run plan, build/push, active-status and business checks in order. `--non-interactive` suppresses prompts; it does not accept retention policy or bypass preflight:
+Run plan, push, inspect, active-status and business checks in order. Both plan
+and push prepare the local Artifact; push performs that work before any Worker,
+budget, resource, Artifact, or Deployment write. `--non-interactive` suppresses
+prompts; it does not bypass quote, balance or preflight checks. A separate retention-policy acceptance call is not required:
 
 ```sh
 xapi workers plan --env preview --format json
 xapi workers push --env preview --non-interactive
+xapi workers inspect --env preview --format json
 ```
 
 Promote in the already authorized release job after preview acceptance. Follow repository AGENTS.md and branch/PR rules; do not infer release authorization from a successful preview push. On uncertain results inspect deployments/logs and retry unchanged inputs so stable idempotency keys can recover the same operation. Do not change IDs or clear deletion flags to force deployment through.
 
-A `worker_control_*` conflict is a server rollout or environment-enrollment failure, not a hint to bypass xAPI with Wrangler. Preserve the existing deployment and resources, record the exact error code, inspect `workers audit`, and have the platform operator restore a compatible control-plane configuration before retrying the unchanged deployment.
+Inspect the exact `worker_control_*` code and operation status. A conflict can mean an overlapping change to the same script/resource, an unknown native result, a changed resource identity, or incompatible server configuration. It is not automatically an environment-enrollment problem. Users do not choose LEGACY/CONTROL. Preserve IDs and receipts; inspect `workers audit` and current deployment/resource state. On an explicitly requested retry, reuse unchanged inputs: the server may continue steps that have not been sent or repair known-success local state. Do not loop on UNKNOWN, clear operation records, switch modes, or bypass xAPI with Wrangler. Scope/configuration mismatches require platform investigation; ordinary in-progress operations require status inspection.
 
 For explicit artifact operations: `workers upload <worker-id> --file dist/worker.mjs --idempotency-key <stable-key>`, then `workers deploy <worker-id> --artifact <artifact-id> --env preview --idempotency-key <stable-release-key>`. Reuse a key only for identical inputs. `workers build` is an optional managed Sandbox build, not a requirement for deploying locally built code.
+
+
+### Native configuration and application deployment prerequisites
+
+`cache.enabled`, `cache.cross_version_cache` and `version_metadata.binding` are
+preserved through the Artifact and native upload. These require a backend version
+containing the native-options changes; an older deployment is not evidence of
+support. A stale `.bundle` whose cache/version settings disagree with the selected
+Wrangler environment must be rebuilt. Cache settings apply to the user Worker,
+not to the xAPI dispatcher. Required Secret names in `secrets.required` are
+imported; set their values through the Secrets API, never inside the Artifact.
+
+The import report includes `BEFORE_CODE` (D1 migrations), `CODE` (Worker
+configuration), and `AFTER_CODE` (Queue consumers and Cron). Current push/promote
+execute these steps only with the matching backend and Dispatcher release. Check
+the plan before confirmation; migrations are resolved relative to the referenced
+Wrangler file, constrained to the project, and frozen with their SHA256 before
+execution. Promote uses the selected Artifact plus the displayed local migration
+and event plan. It does not restore these from the old Artifact automatically.
+
+D1 files execute remotely through xAPI in order, recording each file and checksum
+in the target D1 database. Require APPLIED/ALREADY_APPLIED and remote:true receipts.
+An existing Wrangler record without a checksum is skipped with sha256:null: its
+original content has not been verified. Failed SQL stops later files/code release;
+completed migrations do not roll back with code. A lost response is reconciled
+against the remote ledger, never blindly replayed. Preserve partial receipts.
+
+Queue consumers invoke queue(batch, env, ctx) through the platform event adapter;
+CF owns ack/retry/delay/DLQ delivery. The adapter preserves message IDs, attempts,
+timestamps, logical names, binary bodies and waitUntil failure. It does not claim
+exactly-once or every possible V8 serialized type. Cron invokes scheduled() with
+scheduledTime, cron, noRetry and waitUntil. Only UTC numeric five-field expressions
+are currently supported, with CF weekdays 1=Sunday through 7=Saturday. Named fields,
+L/W/# and singleton steps are rejected before deployment. Do not delete unsupported
+settings or use --accept-partial to claim full compatibility.
+
+These are platform mappings over the existing metered Dispatcher path, not direct
+namespace native trigger registrations. Scheduler waiting is currently at most
+120 seconds; existing Dispatcher CPU/subrequest limits still apply. Configuration
+probes require the deployed signed adapter and real handlers; an HTML 200 is not
+readiness. Explicit crons:[] disables only CLI-owned schedules in the target
+environment; absent triggers preserves them. Independently created user schedules
+are not removed.
+
+A successful push proves deployment/configuration receipts and the configured
+HTTP health probe, not live Queue/Cron or financial acceptance. Before reporting
+CF acceptance, verify actual Queue messages/retries/DLQ, a naturally triggered Cron,
+remote D1 ledger and business side effects, pause/ownership controls, and attributed
+usage/billing on the selected xAPI test environment. Local workerd/Miniflare,
+mocked transport and run-now alone are insufficient. Never bypass xAPI with a direct
+Wrangler cloud deployment to manufacture a successful result.
+
+## Plan freshness
+
+The CLI freezes the project configuration and the target environment's active deployment ID when preparing the plan. If the JSON changes during build/confirmation, or another deployment becomes active before submission, rerun the plan and review its effects. Do not retry the old plan by changing its IDs. The API checks `expectedActiveDeploymentId` again when claiming deployment; `null` means the environment had no active deployment. This is a check at deployment submission, not a long-lived environment lock. Independent resources that are omitted from bindings are retained and may still incur storage costs.

@@ -1,7 +1,11 @@
-import { existsSync, lstatSync, statSync } from "node:fs";
-import type { WorkersClientOptions } from "./workers-client.ts";
+import { nativeDeploymentPlan, publicNativeDeploymentPlan, type NativeDeploymentPlan } from './workers-native-deployment.ts';
+import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
+import type {
+  WorkerBillingQueryKind,
+  WorkersClientOptions,
+} from "./workers-client.ts";
 import * as workersClient from "./workers-client.ts";
-import { loadWorkerArtifactInput, validateNativeDeploymentMetadata, WorkerArtifactError } from "./workers-artifact.ts";
+import { WorkerArtifactError } from "./workers-artifact.ts";
 import { deploymentPrefix, currentMatchingDeployment } from "./workers-deployment-state.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
 import {
@@ -12,6 +16,13 @@ import {
   resolveWorkerProjectPath,
 } from "./workers-project.ts";
 import { remoteWorkerResourceState } from "./workers-resource-state.ts";
+import {
+  prepareWorkerProjectBundle,
+  loadWorkerProjectBundle,
+  WorkerProjectBuildError,
+  type WorkerProjectBuildRunner,
+} from "./workers-project-build.ts";
+import type { LoadedWorkerArtifact } from "./workers-artifact.ts";
 
 export type WorkerPlanOperation =
   | "CREATE"
@@ -23,6 +34,7 @@ export type WorkerPlanOperation =
 export type WorkerPlanKind =
   | "worker"
   | "budget"
+  | "placement"
   | "resource"
   | "secret"
   | "routing"
@@ -40,6 +52,7 @@ export interface WorkerPlanAction {
 
 export interface WorkerDeploymentPlan {
   schemaVersion: 1;
+  nativeSteps?: { migrations: Array<{ bindingName: string; table: string; name: string; sha256: string }>; consumers: unknown[]; crons: string[] };
   project: {
     rootDir: string;
     configPath: string;
@@ -48,7 +61,25 @@ export interface WorkerDeploymentPlan {
     build: { command: string; output: string; main?: string };
   };
   environment: "preview" | "production";
-  remote: { linked: boolean; workerId?: string };
+  remote: { linked: boolean; workerId?: string; activeDeploymentId?: string | null };
+  costImpact: {
+    status: "AVAILABLE" | "PARTIAL" | "UNKNOWN";
+    desiredDailyBudgetUsd: number;
+    currentDailyBudgetUsd?: number;
+    dailyBudgetDeltaUsd?: number;
+    priceBook?: {
+      version?: string;
+      effectiveFrom?: string;
+      rateCount: number;
+    };
+    meteredChanges: Array<{
+      kind: "worker" | "resource";
+      key: string;
+      type?: string;
+      effect: "USAGE_DEPENDENT";
+    }>;
+    notes: string[];
+  };
   canApply: boolean;
   summary: Record<WorkerPlanOperation, number>;
   actions: WorkerPlanAction[];
@@ -67,6 +98,12 @@ export interface PlanClient {
     id: string,
     environment: string,
   ): Promise<unknown>;
+  workerBillingQuery?(
+    options: WorkersClientOptions,
+    id: string,
+    environment: string,
+    kind: WorkerBillingQueryKind,
+  ): Promise<unknown>;
 }
 
 export interface CreateWorkerPlanOptions {
@@ -77,6 +114,17 @@ export interface CreateWorkerPlanOptions {
   client?: PlanClient;
 }
 
+export interface PrepareWorkerPlanOptions extends CreateWorkerPlanOptions {
+  runBuild?: WorkerProjectBuildRunner;
+}
+
+export interface PreparedWorkerPlan {
+  plan: WorkerDeploymentPlan;
+  bundle: LoadedWorkerArtifact;
+  nativePlan: NativeDeploymentPlan;
+  configContent: string;
+}
+
 type UnknownRecord = Record<string, unknown>;
 type DesiredResource =
   WorkerProjectConfig["environments"]["preview"]["resources"][number];
@@ -84,11 +132,12 @@ type DesiredResource =
 const KIND_ORDER: Record<WorkerPlanKind, number> = {
   worker: 0,
   budget: 1,
-  resource: 2,
-  secret: 3,
-  routing: 4,
-  artifact: 5,
-  deployment: 6,
+  placement: 2,
+  resource: 3,
+  secret: 4,
+  routing: 5,
+  artifact: 6,
+  deployment: 7,
 };
 
 function record(value: unknown): UnknownRecord | undefined {
@@ -316,10 +365,10 @@ function compareResources(
   )) {
     add(
       actions,
-      "MANUAL",
+      "NO_CHANGE",
       "resource",
       name,
-      `Remote-only resource may keep accruing charges. Adopt it with \`xapi workers resources pull --env ${environment}\`, or back it up and run \`xapi workers resources destroy --env ${environment} --binding ${name} --yes\``,
+      `Not referenced by this JSON: remove its Worker binding on deploy, retain the resource and its storage charges. Physical deletion requires resources destroy.`,
       undefined,
       {
         ...(string(existing.id) ? { resourceId: string(existing.id) } : {}),
@@ -400,28 +449,13 @@ async function localArtifact(project: LoadedWorkerProject, environment: "preview
   );
   if (!existsSync(path)) return {};
   try {
-    const artifact = await loadWorkerArtifactInput(
-      path,
-      project.config.build.main,
-      project.config.assets
-        ? {
-            ...project.config.assets,
-            directory: resolveWorkerProjectPath(
-              project,
-              project.config.assets.directory,
-              "assets.directory",
-            ),
-          }
-        : undefined,
-      project.config.containers,
-    );
-    validateNativeDeploymentMetadata(artifact, readWranglerDeploymentSettings(project, environment), project.config.environments[environment].resources);
+    const artifact = await loadWorkerProjectBundle(project, environment);
     return {
       sha256: artifact.contentSha256,
       sizeBytes: artifact.sizeBytes,
     };
   } catch (error) {
-    if (error instanceof WorkerArtifactError) {
+    if (error instanceof WorkerArtifactError || error instanceof WorkerProjectBuildError) {
       return { blocked: error.message };
     }
     throw error;
@@ -535,7 +569,7 @@ async function artifactAndDeployment(
     !actions.some(a => a.kind === "resource" && a.operation === "CREATE")
       ? currentMatchingDeployment(deployments, environmentState, artifactId,
           deploymentPrefix(String(remote.id), environmentName, artifactId,
-            readWranglerDeploymentSettings(project, environmentName), environmentState, resources, secrets))
+            readWranglerDeploymentSettings(project, environmentName), environmentState, resources.filter(resource => project.config.environments[environmentName].resources.some(desired => desired.bindingName === resource.bindingName)), secrets))
       : undefined;
   if (active) {
     add(
@@ -570,6 +604,73 @@ function planSummary(
   };
   for (const action of actions) result[action.operation] += 1;
   return result;
+}
+
+function planCostImpact(
+  actions: WorkerPlanAction[],
+  desiredDailyBudgetUsd: number,
+  currentDailyBudgetUsd: number | undefined,
+  priceResponse: unknown,
+): WorkerDeploymentPlan["costImpact"] {
+  const envelope = record(priceResponse);
+  const data = record(envelope?.data);
+  const rates = Array.isArray(data?.rates) ? data.rates : undefined;
+  const priceVersion = string(data?.version);
+  const effectiveFrom = string(data?.effectiveFrom);
+  const meteredChanges: WorkerDeploymentPlan["costImpact"]["meteredChanges"] =
+    actions
+      .filter(
+        (action) =>
+          ["CREATE", "UPDATE"].includes(action.operation) &&
+          (action.kind === "worker" || action.kind === "resource"),
+      )
+      .map((action) => ({
+        kind: action.kind as "worker" | "resource",
+        key: action.key,
+        ...(action.kind === "resource" && string(action.desired?.type)
+          ? { type: string(action.desired?.type) }
+          : {}),
+        effect: "USAGE_DEPENDENT" as const,
+      }));
+  const notes = [
+    "The daily budget is a spending cap, not a predicted charge.",
+    "Worker and managed-resource charges depend on measured usage; plan does not invent traffic or storage assumptions.",
+  ];
+  if (!rates) {
+    notes.push(
+      "The active price book could not be read for this environment; inspect billing before production promotion.",
+    );
+  }
+  return {
+    status: rates
+      ? currentDailyBudgetUsd === undefined
+        ? "PARTIAL"
+        : "AVAILABLE"
+      : currentDailyBudgetUsd === undefined
+        ? "UNKNOWN"
+        : "PARTIAL",
+    desiredDailyBudgetUsd,
+    ...(currentDailyBudgetUsd !== undefined
+      ? {
+          currentDailyBudgetUsd,
+          dailyBudgetDeltaUsd:
+            Math.round(
+              (desiredDailyBudgetUsd - currentDailyBudgetUsd) * 1_000_000,
+            ) / 1_000_000,
+        }
+      : {}),
+    ...(rates
+      ? {
+          priceBook: {
+            ...(priceVersion ? { version: priceVersion } : {}),
+            ...(effectiveFrom ? { effectiveFrom } : {}),
+            rateCount: rates.length,
+          },
+        }
+      : {}),
+    meteredChanges,
+    notes,
+  };
 }
 
 export async function createWorkerPlan(
@@ -710,6 +811,35 @@ export async function createWorkerPlan(
     );
   }
 
+  const desiredPlacement = {
+    ...(desired.defaultResourceLocation ? { defaultResourceLocation: desired.defaultResourceLocation } : {}),
+    ...(desired.placementMode ? { placementMode: desired.placementMode } : {}),
+  };
+  if (Object.keys(desiredPlacement).length) {
+    const currentPlacement = {
+      ...(string(remoteEnvironmentState?.defaultResourceLocation)
+        ? { defaultResourceLocation: string(remoteEnvironmentState?.defaultResourceLocation) }
+        : {}),
+      placementMode: string(remoteEnvironmentState?.placementMode) || "off",
+    };
+    const matches =
+      (!desired.defaultResourceLocation || currentPlacement.defaultResourceLocation === desired.defaultResourceLocation) &&
+      (!desired.placementMode || currentPlacement.placementMode === desired.placementMode);
+    add(
+      actions,
+      remoteEnvironmentState ? (matches ? "NO_CHANGE" : "UPDATE") : "CREATE",
+      "placement",
+      options.environment,
+      remoteEnvironmentState
+        ? matches
+          ? "Environment placement already matches desired state"
+          : "Update native Cloudflare environment placement before deployment"
+        : "Set native Cloudflare environment placement during Worker creation",
+      desiredPlacement,
+      remoteEnvironmentState ? currentPlacement : undefined,
+    );
+  }
+
   prerequisiteBlocked =
     compareResources(actions, desired.resources, remoteResources, options.environment) ||
     prerequisiteBlocked;
@@ -744,6 +874,22 @@ export async function createWorkerPlan(
     options.environment,
   );
 
+  let priceResponse: unknown;
+  if (remote && api.workerBillingQuery) {
+    try {
+      priceResponse = await api.workerBillingQuery(
+        options.clientOptions,
+        project.config.workerId!,
+        options.environment,
+        "prices",
+      );
+    } catch {
+      // Price visibility is advisory. A transient billing read must not turn a
+      // valid deployment diff into a false success or a false blocker.
+    }
+  }
+
+  const native = nativeDeploymentPlan(project, options.environment);
   actions.sort(
     (a, b) =>
       KIND_ORDER[a.kind] - KIND_ORDER[b.kind] ||
@@ -753,6 +899,7 @@ export async function createWorkerPlan(
   const summary = planSummary(actions);
   return {
     schemaVersion: 1,
+    nativeSteps: publicNativeDeploymentPlan(native),
     project: {
       rootDir: project.rootDir,
       configPath: project.configPath,
@@ -767,8 +914,15 @@ export async function createWorkerPlan(
     environment: options.environment,
     remote: {
       linked: !!remote,
+      activeDeploymentId: string(remoteEnvironmentState?.activeDeploymentId) || null,
       ...(remote ? { workerId: string(remote.id) } : {}),
     },
+    costImpact: planCostImpact(
+      actions,
+      desired.dailyBudgetUsd,
+      currentBudget,
+      priceResponse,
+    ),
     canApply:
       summary.BLOCKED === 0 &&
       !actions.some(
@@ -778,4 +932,30 @@ export async function createWorkerPlan(
     summary,
     actions,
   };
+}
+
+/**
+ * Build and validate the exact local bundle before calculating the remote diff.
+ * This may update local build output, but it never writes to the xAPI control
+ * plane. Both `workers plan` and `workers push` use this path so the reviewed
+ * Artifact is the one that push will upload.
+ */
+export async function prepareWorkerPlan(
+  options: PrepareWorkerPlanOptions,
+): Promise<PreparedWorkerPlan> {
+  const project = loadWorkerProject(options.cwd, options.configPath);
+  const configContent = readFileSync(project.configPath, "utf8");
+  validatePlanInputs(project);
+  const bundle = await prepareWorkerProjectBundle(
+    project,
+    options.environment,
+    options.runBuild,
+  );
+  const nativePlan = nativeDeploymentPlan(project, options.environment);
+  const plan = await createWorkerPlan(options);
+  if (readFileSync(project.configPath, "utf8") !== configContent)
+    throw new WorkerProjectBuildError("Project configuration changed while planning; rerun the plan", { remoteChangesApplied: false });
+  if (JSON.stringify(plan.nativeSteps) !== JSON.stringify(publicNativeDeploymentPlan(nativePlan)))
+    throw new Error('Wrangler configuration or migrations changed while planning; rerun the plan');
+  return { plan, bundle, nativePlan, configContent };
 }

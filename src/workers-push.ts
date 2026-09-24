@@ -1,3 +1,4 @@
+import { NativeDeploymentError, applyNativeDeploymentPhase, type NativeDeploymentClient } from './workers-native-deployment.ts';
 import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -7,14 +8,10 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { HttpError, isRetryableRequestError } from "./client.ts";
 import {
   type LoadedWorkerArtifact,
-  loadWorkerArtifactInput,
-  validateNativeDeploymentMetadata,
-  WorkerArtifactError,
   type WorkerArtifactUploadRequest,
 } from "./workers-artifact.ts";
 import type { WorkersClientOptions } from "./workers-client.ts";
@@ -23,21 +20,27 @@ import {
   type LoadedWorkerProject,
   WorkerProjectConfigError,
   loadWorkerProject,
-  resolveWorkerProjectPath,
   workerProjectConfigSchema,
 } from "./workers-project.ts";
 import {
-  createWorkerPlan,
+  prepareWorkerPlan,
   type PlanClient,
   type WorkerDeploymentPlan,
 } from "./workers-plan.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
 import { remoteWorkerResourceState } from "./workers-resource-state.ts";
 import { deploymentPrefix, deploymentKey, currentMatchingDeployment } from "./workers-deployment-state.ts";
+import {
+  inspectWorker,
+  type WorkerInspection,
+} from "./workers-inspect.ts";
+import {
+  WorkerProjectBuildError,
+  type WorkerProjectBuildRunner,
+} from "./workers-project-build.ts";
 
 const WORKER_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const BUILD_TIMEOUT_MS = 15 * 60_000;
 const DEPLOYMENT_TIMEOUT_MS = 3 * 60_000;
 const HEALTH_ATTEMPTS = 10;
 const HEALTH_INTERVAL_MS = 1_000;
@@ -55,16 +58,26 @@ export interface DeploymentClient {
   ): Promise<unknown>;
 }
 
-export interface PushClient extends PlanClient, DeploymentClient {
+export interface PushClient extends PlanClient, DeploymentClient, NativeDeploymentClient {
+  listWorkerDomains(
+    options: WorkersClientOptions,
+    id: string,
+  ): Promise<unknown>;
+  workerBillingQuery(
+    options: WorkersClientOptions,
+    id: string,
+    environment: string,
+    kind: "prices" | "overview",
+  ): Promise<unknown>;
   createWorker(
     options: WorkersClientOptions,
     input: Record<string, unknown>,
   ): Promise<unknown>;
-  updateWorkerBudget(
+  updateWorkerEnvironment(
     options: WorkersClientOptions,
     id: string,
     environment: string,
-    dailyBudgetUsd: number,
+    input: { dailyBudgetUsd?: number; defaultResourceLocation?: string; placementMode?: string },
   ): Promise<unknown>;
   createWorkerResource(
     options: WorkersClientOptions,
@@ -121,7 +134,7 @@ export interface PushWorkerProjectOptions {
   client?: PushClient;
   confirm?: (plan: WorkerDeploymentPlan) => Promise<boolean>;
   onPlan?: (plan: WorkerDeploymentPlan) => void;
-  runBuild?: (command: string, cwd: string) => Promise<void>;
+  runBuild?: WorkerProjectBuildRunner;
   fetchPublic?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
 }
@@ -134,10 +147,12 @@ export interface WorkerPushResult {
   resources: { created: string[]; unchanged: string[] };
   artifact: { id: string; contentSha256: string; sizeBytes: number };
   deployment: { id: string; status: "ACTIVE"; idempotencyKey: string };
+  nativeReceipts: unknown[];
   publicUrl: string;
   routing?: { mode?: string; webAppReady: boolean; publicOrigin?: string; publicBasePath?: string };
   health: { url: string; status: number; attempts: number };
-  commands: { logs: string; promote: string };
+  inspection: WorkerInspection;
+  commands: { inspect: string; logs: string; promote: string };
 }
 
 export class WorkerPushError extends Error {
@@ -201,62 +216,6 @@ function shouldReconcileWrite(error: unknown): boolean {
   );
 }
 
-function sanitizedBuildEnvironment(): NodeJS.ProcessEnv {
-  return Object.fromEntries(
-    Object.entries(process.env).filter(
-      ([name]) =>
-        !/(?:^|_)(?:API_?KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS?)(?:$|_)/i.test(
-          name,
-        ) && name !== "XAPI_KEY",
-    ),
-  );
-}
-
-async function defaultRunBuild(command: string, cwd: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(command, {
-      cwd,
-      env: sanitizedBuildEnvironment(),
-      shell: true,
-      stdio: "inherit",
-    });
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(
-        new WorkerPushError(
-          `Build exceeded the ${BUILD_TIMEOUT_MS / 60_000} minute timeout`,
-        ),
-      );
-    }, BUILD_TIMEOUT_MS);
-    child.once("error", (error) => {
-      clearTimeout(timer);
-      reject(new WorkerPushError(`Unable to start build: ${error.message}`));
-    });
-    child.once("exit", (code, signal) => {
-      clearTimeout(timer);
-      if (code === 0) resolve();
-      else {
-        reject(
-          new WorkerPushError(
-            code === 127
-              ? "Build command could not run because a required executable was not found"
-              : `Build failed${signal ? ` with ${signal}` : ` with exit code ${code}`}`,
-            {
-              buildCommand: command,
-              projectRoot: cwd,
-              ...(code === 127
-                ? {
-                    next: "Install the package manager used by build.command, then rerun workers push",
-                  }
-                : {}),
-            },
-          ),
-        );
-      }
-    });
-  });
-}
-
 async function terminalConfirm(): Promise<boolean> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new WorkerPushError(
@@ -272,36 +231,6 @@ async function terminalConfirm(): Promise<boolean> {
     return /^(?:y|yes)$/i.test(answer.trim());
   } finally {
     prompt.close();
-  }
-}
-
-async function validateBundle(project: LoadedWorkerProject): Promise<LoadedWorkerArtifact> {
-  const path = resolveWorkerProjectPath(
-    project,
-    project.config.build.output,
-    "build.output",
-  );
-  try {
-    return await loadWorkerArtifactInput(
-      path,
-      project.config.build.main,
-      project.config.assets
-        ? {
-            ...project.config.assets,
-            directory: resolveWorkerProjectPath(
-              project,
-              project.config.assets.directory,
-              "assets.directory",
-            ),
-          }
-        : undefined,
-      project.config.containers,
-    );
-  } catch (error) {
-    if (error instanceof WorkerArtifactError) {
-      throw new WorkerPushError(error.message);
-    }
-    throw error;
   }
 }
 
@@ -406,6 +335,12 @@ async function ensureWorker(
         previewDailyBudgetUsd: desired.environments.preview.dailyBudgetUsd,
         productionDailyBudgetUsd:
           desired.environments.production.dailyBudgetUsd,
+        ...(desired.environments.preview.defaultResourceLocation
+          ? { defaultResourceLocation: desired.environments.preview.defaultResourceLocation }
+          : {}),
+        ...(desired.environments.preview.placementMode
+          ? { placementMode: desired.environments.preview.placementMode }
+          : {}),
       }),
       "created Worker",
     );
@@ -426,28 +361,32 @@ async function ensureWorker(
   return { worker: created, id, created: true };
 }
 
-async function ensureBudget(
+async function ensureEnvironment(
   api: PushClient,
   options: WorkersClientOptions,
   workerId: string,
-  desired: number,
+  desired: LoadedWorkerProject["config"]["environments"]["preview"],
 ): Promise<void> {
   let worker = record(await api.getWorker(options, workerId), "Worker");
   let environment = environmentOf(worker, "preview");
-  if (
-    Math.abs((amount(environment.dailyBudgetUsd) ?? NaN) - desired) <= 0.00005
-  ) {
+  const matches = () =>
+    Math.abs((amount(environment.dailyBudgetUsd) ?? NaN) - desired.dailyBudgetUsd) <= 0.00005 &&
+    (!desired.defaultResourceLocation || text(environment.defaultResourceLocation) === desired.defaultResourceLocation) &&
+    (!desired.placementMode || (text(environment.placementMode) || "off") === desired.placementMode);
+  if (matches()) {
     return;
   }
   try {
-    await api.updateWorkerBudget(options, workerId, "preview", desired);
+    await api.updateWorkerEnvironment(options, workerId, "preview", {
+      dailyBudgetUsd: desired.dailyBudgetUsd,
+      ...(desired.defaultResourceLocation ? { defaultResourceLocation: desired.defaultResourceLocation } : {}),
+      ...(desired.placementMode ? { placementMode: desired.placementMode } : {}),
+    });
   } catch (error) {
     if (!shouldReconcileWrite(error)) throw error;
     worker = record(await api.getWorker(options, workerId), "Worker");
     environment = environmentOf(worker, "preview");
-    if (
-      Math.abs((amount(environment.dailyBudgetUsd) ?? NaN) - desired) > 0.00005
-    ) {
+    if (!matches()) {
       throw error;
     }
   }
@@ -554,7 +493,7 @@ async function ensureArtifact(
   api: PushClient,
   options: WorkersClientOptions,
   workerId: string,
-  bundle: Awaited<ReturnType<typeof validateBundle>>,
+  bundle: LoadedWorkerArtifact,
 ): Promise<UnknownRecord> {
   const idempotencyKey = stableKey(
     "xapi-worker-artifact-v1",
@@ -576,6 +515,17 @@ async function ensureArtifact(
       "Artifact",
     );
   } catch (error) {
+    if (error instanceof HttpError && error.status === 413 && "bundle" in bundle.upload) {
+      throw new WorkerPushError(
+        "The xAPI control plane rejected the complete-project upload before Artifact creation",
+        {
+          errorCode: "worker_artifact_ingress_too_small",
+          endpoint: `/api/v1/workers/${workerId}/artifacts/bundle`,
+          expectedIngressLimitMiB: 128,
+          next: "Deploy the control-plane multipart Artifact endpoint and its scoped 128 MiB ingress route, then rerun workers push",
+        },
+      );
+    }
     if (!shouldReconcileWrite(error)) throw error;
     const reconciled = await find();
     if (reconciled) return reconciled;
@@ -661,6 +611,8 @@ export async function ensureActiveDeployment(
   compatibility: ReturnType<typeof readWranglerDeploymentSettings>,
   sleep: (milliseconds: number) => Promise<void>,
   retentionPriceVersion?: string,
+  desiredBindings?: string[],
+  expectedActiveDeploymentId?: string | null,
 ): Promise<{ deployment: UnknownRecord; idempotencyKey: string }> {
   const currentWorker = record(
     await api.getWorker(options, workerId),
@@ -671,13 +623,24 @@ export async function ensureActiveDeployment(
     api.listWorkerResources(options, workerId, environment),
     api.listWorkerSecrets(options, workerId, environment),
   ]);
+  const resourceRows = records(resourceState, "managed resources");
+  const selected = desiredBindings ? desiredBindings.map(name => {
+    const matches = resourceRows.filter(row => row.bindingName === name);
+    if (matches.length !== 1 || !text(matches[0].id))
+      throw new WorkerPushError(`Resource binding ${name} is missing or ambiguous; rerun plan`);
+    return matches[0];
+  }) : resourceRows;
+  const resourceIds = selected.filter(row => row.type !== "CONTAINER_APPLICATION").map(row => text(row.id)!);
   const prefix = deploymentPrefix(workerId, environment, artifactId, compatibility,
-    environmentState, records(resourceState, "managed resources"), records(secretState, "Secrets"));
+    environmentState, selected, records(secretState, "Secrets"));
   const alreadyActive = currentMatchingDeployment(records(currentWorker.deployments || [], "Deployments"),
     environmentState, artifactId, prefix);
   if (alreadyActive) {
     return { deployment: alreadyActive, idempotencyKey: text(alreadyActive.idempotencyKey)! };
   }
+  if (expectedActiveDeploymentId !== undefined &&
+      expectedActiveDeploymentId !== (text(environmentState.activeDeploymentId) || null))
+    throw new WorkerPushError("Active deployment changed after plan; rerun plan before replacing it", {workerId});
   const idempotencyKey = deploymentKey(prefix, environmentState);
   let deployment = await deploymentFromWorker(
     api,
@@ -691,6 +654,8 @@ export async function ensureActiveDeployment(
         await api.deployWorker(options, workerId, {
           environment,
           artifactId,
+          ...(desiredBindings ? {resourceIds} : {}),
+          ...(expectedActiveDeploymentId !== undefined ? {expectedActiveDeploymentId} : {}),
           idempotencyKey,
           compatibilityDate: compatibility.compatibilityDate,
           compatibilityFlags: compatibility.compatibilityFlags,
@@ -707,17 +672,9 @@ export async function ensureActiveDeployment(
         idempotencyKey,
       );
       if (!deployment) {
-        deployment = record(
-          await api.deployWorker(options, workerId, {
-            environment,
-            artifactId,
-            idempotencyKey,
-            compatibilityDate: compatibility.compatibilityDate,
-            compatibilityFlags: compatibility.compatibilityFlags,
-            ...(retentionPriceVersion ? { retentionPriceVersion } : {}),
-          }),
-          "Deployment",
-        );
+        throw new WorkerPushError("Deployment result is unconfirmed; inspect it or explicitly retry the command. No second publish was sent", {
+          workerId, artifactId, idempotencyKey, resultUnconfirmed: true,
+        });
       }
     }
   }
@@ -824,17 +781,31 @@ export async function pushWorkerProject(
     );
   }
   const api = options.client || (workersClient as PushClient);
+  let prepared: Awaited<ReturnType<typeof prepareWorkerPlan>>;
+  try {
+    prepared = await prepareWorkerPlan({
+      cwd: options.cwd,
+      configPath: options.configPath,
+      environment: "preview",
+      clientOptions: options.clientOptions,
+      client: api,
+      runBuild: options.runBuild,
+    });
+  } catch (error) {
+    if (error instanceof WorkerProjectBuildError) {
+      throw new WorkerPushError(error.message, {
+        remoteChangesApplied: false,
+        ...error.recovery,
+      });
+    }
+    throw error;
+  }
   const project = loadWorkerProject(options.cwd, options.configPath);
-  const initialConfig = readFileSync(project.configPath, "utf8");
+  const initialConfig = prepared.configContent;
   const initialConfigSha256 = sha256(initialConfig);
   const compatibility = readWranglerDeploymentSettings(project, "preview");
-  const initialPlan = await createWorkerPlan({
-    cwd: project.rootDir,
-    configPath: project.configPath,
-    environment: "preview",
-    clientOptions: options.clientOptions,
-    client: api,
-  });
+  const initialPlan = prepared.plan;
+  const bundle = prepared.bundle;
   options.onPlan?.(initialPlan);
   const blockers = unsafePlanBlockers(initialPlan, !project.config.workerId);
   if (blockers.length || (options.nonInteractive && !initialPlan.canApply)) {
@@ -865,6 +836,9 @@ export async function pushWorkerProject(
   }
 
   let workerState: { worker: UnknownRecord; id: string; created: boolean };
+  if (sha256(readFileSync(project.configPath, "utf8")) !== initialConfigSha256 ||
+      JSON.stringify(readWranglerDeploymentSettings(project, "preview")) !== JSON.stringify(compatibility))
+    throw new WorkerPushError("Deployment configuration changed after plan; run push again to review the new plan", { remoteChangesApplied: false });
   try {
     workerState = await ensureWorker(
       project,
@@ -881,12 +855,19 @@ export async function pushWorkerProject(
     );
   }
   const linkedProject = loadWorkerProject(project.rootDir, project.configPath);
+  if (JSON.stringify({ ...linkedProject.config, workerId: project.config.workerId }) !== JSON.stringify(project.config))
+    throw new WorkerPushError("Deployment configuration changed during Worker setup; rerun plan", { workerId: workerState.id });
+  if (initialPlan.remote.activeDeploymentId !== undefined &&
+      initialPlan.remote.activeDeploymentId !== (text(environmentOf(workerState.worker, "preview").activeDeploymentId) || null))
+    throw new WorkerPushError("Active deployment changed after plan; rerun plan before replacing it", {workerId: workerState.id});
+  const nativeReceipts: unknown[] = [];
+  let releasedDeploymentId: string | undefined;
   try {
-    await ensureBudget(
+    await ensureEnvironment(
       api,
       options.clientOptions,
       workerState.id,
-      linkedProject.config.environments.preview.dailyBudgetUsd,
+      linkedProject.config.environments.preview,
     );
     const resources = await ensureManagedResources(
       api,
@@ -896,6 +877,7 @@ export async function pushWorkerProject(
       linkedProject.config.environments.preview.resources,
       options.retentionPriceVersion,
     );
+    const nativePlan = prepared.nativePlan;
     const missing = await missingSecrets(
       api,
       options.clientOptions,
@@ -904,7 +886,7 @@ export async function pushWorkerProject(
     );
     if (missing.length) {
       throw new WorkerPushError(
-        "Worker prerequisites were saved, but required Secrets are missing; build and deployment were not started",
+        "Worker prerequisites were saved, but required Secrets are missing; the validated local build was not uploaded or deployed",
         {
           workerId: workerState.id,
           missingSecrets: missing,
@@ -915,12 +897,6 @@ export async function pushWorkerProject(
         },
       );
     }
-    await (options.runBuild || defaultRunBuild)(
-      linkedProject.config.build.command,
-      linkedProject.rootDir,
-    );
-    const bundle = await validateBundle(linkedProject);
-    validateNativeDeploymentMetadata(bundle, compatibility, linkedProject.config.environments.preview.resources);
     const artifact = await ensureArtifact(
       api,
       options.clientOptions,
@@ -938,6 +914,7 @@ export async function pushWorkerProject(
         },
       );
     }
+    nativeReceipts.push(...await applyNativeDeploymentPhase(api, options.clientOptions, workerState.id, "preview", nativePlan, "BEFORE_CODE"));
     const deployed = await ensureActiveDeployment(
       api,
       options.clientOptions,
@@ -949,7 +926,11 @@ export async function pushWorkerProject(
         ((milliseconds) =>
           new Promise((resolve) => setTimeout(resolve, milliseconds))),
       options.retentionPriceVersion,
+      linkedProject.config.environments.preview.resources.map(resource => resource.bindingName),
+      initialPlan.remote.activeDeploymentId,
     );
+    releasedDeploymentId = text(deployed.deployment.id);
+    nativeReceipts.push(...await applyNativeDeploymentPhase(api, options.clientOptions, workerState.id, "preview", nativePlan, "AFTER_CODE"));
     const deploymentId = text(deployed.deployment.id);
     if (!deploymentId) {
       throw new WorkerPushError("ACTIVE deployment response is missing id");
@@ -969,10 +950,17 @@ export async function pushWorkerProject(
     );
     const publicUrl = text(environmentOf(finalWorker, "preview").publicUrl)!;
     const finalEnvironment = environmentOf(finalWorker, "preview");
+    const inspection = await inspectWorker({
+      workerId: workerState.id,
+      environment: "preview",
+      clientOptions: options.clientOptions,
+      client: api,
+    });
     return {
       schemaVersion: 1,
       status: "ACTIVE",
       initialPlan,
+      nativeReceipts,
       worker: {
         id: workerState.id,
         created: workerState.created,
@@ -997,7 +985,9 @@ export async function pushWorkerProject(
         publicBasePath: text(finalEnvironment.publicBasePath),
       } } : {}),
       health,
+      inspection,
       commands: {
+        inspect: `xapi workers inspect ${workerState.id} --env preview`,
         logs: `xapi workers logs ${workerState.id} --env preview`,
         promote: "xapi workers promote --to production",
       },
@@ -1007,6 +997,9 @@ export async function pushWorkerProject(
       throw new WorkerPushError(error.message, {
         workerId: workerState.id,
         resourcesPreserved: true,
+        releasedDeploymentId,
+        nativeReceipts: [...nativeReceipts, ...(error instanceof NativeDeploymentError ? error.completed : [])],
+        ...(error instanceof NativeDeploymentError ? { failedPhase: error.phase } : {}),
         ...error.recovery,
       });
     }
@@ -1015,6 +1008,9 @@ export async function pushWorkerProject(
       {
         workerId: workerState.id,
         resourcesPreserved: true,
+        releasedDeploymentId,
+        nativeReceipts: [...nativeReceipts, ...(error instanceof NativeDeploymentError ? error.completed : [])],
+        ...(error instanceof NativeDeploymentError ? { failedPhase: error.phase } : {}),
         recovery: `xapi workers plan --env preview`,
       },
     );

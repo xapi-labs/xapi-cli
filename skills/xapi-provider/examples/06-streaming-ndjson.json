@@ -1,0 +1,30 @@
+{
+  "name": "File Chunker API",
+  "description": "NDJSON file processing billed by chunks generated.",
+  "category": "Data-Analysis",
+  "host": "file-chunker",
+  "baseUrl": "https://files.example.com",
+  "authType": "HEADER",
+  "privateHeaders": { "X-API-Key": "replace-with-upstream-secret" },
+  "accessMode": "PROXY",
+  "endpoints": [
+    {
+      "name": "Stream file chunks",
+      "method": "POST",
+      "path": "/v1/files/:fileId/chunks",
+      "pathParams": {
+        "fileId": {
+          "required": true,
+          "description": "File identifier",
+          "schema": { "type": "string" }
+        }
+      },
+      "billingType": "PER_RESOURCE",
+      "costPerResource": 0.02,
+      "resourceCountJsonPath": "chunks_generated",
+      "estimatedMaxResources": 50,
+      "supportsStreaming": true,
+      "streamFormat": "ndjson"
+    }
+  ]
+}
