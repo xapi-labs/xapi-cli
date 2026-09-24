@@ -1,0 +1,36 @@
+{
+  "name": "<<TODO: AI service name>>",
+  "description": "<<TODO: Models and supported interfaces>>",
+  "category": "AI-Models",
+  "host": "<<TODO: lowercase-host>>",
+  "baseUrl": "<<TODO: https://upstream.example.com>>",
+  "authType": "BEARER",
+  "privateHeaders": {
+    "Authorization": "<<TODO: upstream token>>"
+  },
+  "accessMode": "PROXY",
+  "isPublic": true,
+  "endpoints": [
+    {
+      "name": "Chat completions",
+      "description": "OpenAI-compatible chat completion",
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "billingType": "PER_TOKEN",
+      "servedModels": ["<<TODO: model-name>>"],
+      "tokenPricing": {
+        "<<TODO: model-name>>": {
+          "inputPricePerToken": 0.000001,
+          "outputPricePerToken": 0.000003
+        },
+        "default": {
+          "inputPricePerToken": 0.000001,
+          "outputPricePerToken": 0.000003
+        }
+      },
+      "estimatedMaxTokens": 4096,
+      "supportsStreaming": true,
+      "streamFormat": "sse"
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "name": "Web Search API",
+  "description": "Web search billed by the number of results.",
+  "category": "Data-Analysis",
+  "host": "web-search-demo",
+  "baseUrl": "https://search.example.com",
+  "authType": "HEADER",
+  "privateHeaders": { "X-Subscription-Token": "replace-with-upstream-secret" },
+  "accessMode": "PROXY",
+  "endpoints": [
+    {
+      "name": "Search the web",
+      "method": "GET",
+      "path": "/v1/search",
+      "params": {
+        "q": {
+          "required": true,
+          "description": "Search keywords",
+          "schema": { "type": "string" }
+        },
+        "limit": {
+          "required": false,
+          "description": "Maximum results",
+          "schema": { "type": "integer", "default": 10, "minimum": 1, "maximum": 100 }
+        }
+      },
+      "billingType": "PER_RESOURCE",
+      "costPerResource": 0.005,
+      "resourceCountJsonPath": "data.items",
+      "estimatedMaxResources": 100
+    }
+  ]
+}

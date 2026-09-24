@@ -170,7 +170,7 @@ function fakePlatform(
       }
       return snapshot();
     },
-    updateWorkerBudget: async () => {
+    updateWorkerEnvironment: async () => {
       calls.updateBudget += 1;
       return { dailyBudgetUsd: 0.25 };
     },
@@ -179,6 +179,7 @@ function fakePlatform(
       calls.createResource += 1;
       state.resources.push({
         ...input,
+        id: `resource-${calls.createResource}`,
         type: input.type.toUpperCase(),
         status: "ACTIVE",
       });
@@ -189,6 +190,12 @@ function fakePlatform(
       return state.resources.at(-1);
     },
     listWorkerSecrets: async () => state.secrets,
+    listWorkerDomains: async () => [],
+    workerBillingQuery: async () => ({
+      snapshotId: "snapshot-1",
+      dataQuality: "COMPLETE",
+      data: { lifecycleState: "RUNNING", dailyBudgetUsd: 0.25 },
+    }),
     listWorkerArtifacts: async () => state.artifacts,
     uploadWorkerArtifact: async (_api, _id, input) => {
       calls.uploadArtifact += 1;
@@ -227,6 +234,7 @@ function fakePlatform(
     deployWorker: async (_api, _id, input) => {
       calls.deploy += 1;
       const deployment = {
+        resourceIds: input.resourceIds,
         id: "deployment-1",
         idempotencyKey: input.idempotencyKey,
         artifactId: input.artifactId,
@@ -345,6 +353,9 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(readFileSync(join(root, "observed-key.txt"), "utf8")).toBe("");
     expect(first.resources.created).toEqual(["STATE"]);
     expect(first.deployment.status).toBe("ACTIVE");
+    expect(first.inspection.mode).toBe("READ_ONLY");
+    expect(first.inspection.environment.status).toBe("ACTIVE");
+    expect(first.commands.inspect).toContain(`inspect ${workerId}`);
     expect(first.health.url).toBe(
       "https://push-agent.example.test/w/agent/preview/health",
     );
@@ -380,7 +391,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(planViews).toHaveLength(1);
   });
 
-  test("interactive bootstrap saves prerequisites but stops before build when a Secret is missing", async () => {
+  test("interactive bootstrap validates the build before saving prerequisites, then stops for a missing Secret", async () => {
     const root = fixture({ secrets: ["MODEL_KEY"] });
     const platform = fakePlatform();
     let buildCalls = 0;
@@ -394,6 +405,11 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
         confirm: async () => true,
         runBuild: async () => {
           buildCalls += 1;
+          mkdirSync(join(root, "dist"), { recursive: true });
+          writeFileSync(
+            join(root, "dist/worker.mjs"),
+            "export default {fetch(){return new Response('ok')}};",
+          );
         },
       });
     } catch (error) {
@@ -405,13 +421,13 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(JSON.stringify(caught?.recovery)).toContain(
       `secrets set ${workerId} MODEL_KEY`,
     );
-    expect(buildCalls).toBe(0);
+    expect(buildCalls).toBe(1);
     expect(platform.calls.uploadArtifact).toBe(0);
     expect(platform.calls.deploy).toBe(0);
     expect(loadWorkerProject(root).config.workerId).toBe(workerId);
   });
 
-  test("refuses to deploy through remote-only resource drift", async () => {
+  test("unreferenced resources remain stored but are excluded from deployed bindings", async () => {
     const root = fixture({ linked: true });
     const platform = fakePlatform({ exists: true });
     platform.state.resources.push({
@@ -421,8 +437,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
       status: "ACTIVE",
     });
     let confirmations = 0;
-    await expect(
-      pushWorkerProject({
+    await pushWorkerProject({
         cwd: root,
         environment: "preview",
         clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
@@ -431,16 +446,65 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
           confirmations += 1;
           return true;
         },
-      }),
-    ).rejects.toThrow("requires reconciliation");
-    expect(confirmations).toBe(0);
-    expect(platform.calls).toEqual({
-      createWorker: 0,
-      updateBudget: 0,
-      createResource: 0,
-      uploadArtifact: 0,
-      deploy: 0,
+        runBuild: async () => {
+          mkdirSync(join(root, "dist"), { recursive: true });
+          writeFileSync(
+            join(root, "dist/worker.mjs"),
+            "export default {fetch(){return new Response('ok')}};",
+          );
+        },
+        fetchPublic: (async () => Response.json({ ok: true })) as unknown as typeof fetch,
+        sleep: async () => undefined,
     });
+    expect(confirmations).toBe(1);
+    expect(platform.state.resources).toHaveLength(1);
+    expect(platform.state.resources[0].id).toBe("resource-old-db");
+    expect(platform.state.deployments[0].resourceIds).toEqual([]);
+    expect(platform.calls.deploy).toBe(1);
+  });
+
+  test.each(["build", "confirmation"])("rejects JSON edits during %s before remote mutations", async (phase) => {
+    const root = fixture({ linked: true });
+    const platform = fakePlatform({ exists: true });
+    const edit = () => {
+      const path = join(root, "xapi.worker.json");
+      const config = JSON.parse(readFileSync(path, "utf8"));
+      config.environments.preview.dailyBudgetUsd = 0.5;
+      writeFileSync(path, JSON.stringify(config));
+    };
+    await expect(pushWorkerProject({
+      cwd: root, environment: "preview",
+      clientOptions: {apiHost:"localhost:3003", apiKey:"test-key"}, client: platform.client,
+      runBuild: async () => {
+        mkdirSync(join(root,"dist"), {recursive:true});
+        writeFileSync(join(root,"dist/worker.mjs"), "export default {fetch(){return new Response('ok')}}");
+        if (phase === "build") edit();
+      },
+      confirm: async () => { if (phase === "confirmation") edit(); return true; },
+    })).rejects.toThrow("configuration changed");
+    expect(platform.calls.uploadArtifact).toBe(0);
+    expect(platform.calls.deploy).toBe(0);
+    expect(platform.calls.createWorker).toBe(0);
+  });
+
+  test("rejects a deployment published while the user reviewed the plan before resource writes", async () => {
+    const root = fixture({linked:true, resources:[{type:"kv_namespace",bindingName:"STATE"}]});
+    const platform = fakePlatform({exists:true});
+    await expect(pushWorkerProject({
+      cwd:root, environment:"preview", client:platform.client,
+      clientOptions:{apiHost:"localhost:3003",apiKey:"test-key"},
+      runBuild:async()=>{
+        mkdirSync(join(root,"dist"),{recursive:true});
+        writeFileSync(join(root,"dist/worker.mjs"),"export default {fetch(){return new Response('ok')}}");
+      },
+      confirm:async()=>{
+        platform.state.deployments.push({id:"newer-deployment",status:"ACTIVE",environment:"preview"});
+        return true;
+      },
+    })).rejects.toThrow("changed");
+    expect(platform.calls.createResource).toBe(0);
+    expect(platform.calls.uploadArtifact).toBe(0);
+    expect(platform.calls.deploy).toBe(0);
   });
 
   test("non-interactive mode fails a missing-Secret plan before any mutation", async () => {
@@ -453,6 +517,13 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
         clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
         client: platform.client,
         nonInteractive: true,
+        runBuild: async () => {
+          mkdirSync(join(root, "dist"), { recursive: true });
+          writeFileSync(
+            join(root, "dist/worker.mjs"),
+            "export default {fetch(){return new Response('ok')}};",
+          );
+        },
       }),
     ).rejects.toThrow("requires reconciliation");
     expect(platform.calls.createWorker).toBe(0);
@@ -469,6 +540,13 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
         clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
         client: platform.client,
         confirm: async () => false,
+        runBuild: async () => {
+          mkdirSync(join(root, "dist"), { recursive: true });
+          writeFileSync(
+            join(root, "dist/worker.mjs"),
+            "export default {fetch(){return new Response('ok')}};",
+          );
+        },
       }),
     ).rejects.toThrow("cancelled");
     expect(platform.calls.createWorker).toBe(0);
@@ -495,6 +573,13 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
         clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
         client: platform.client,
         confirm: async () => true,
+        runBuild: async () => {
+          mkdirSync(join(root, "dist"), { recursive: true });
+          writeFileSync(
+            join(root, "dist/worker.mjs"),
+            "export default {fetch(){return new Response('ok')}};",
+          );
+        },
       });
     } catch (error) {
       caught = error as WorkerPushError;
@@ -533,7 +618,41 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(platform.calls.deploy).toBe(1);
   });
 
-  test("reconciles an HTTP 500 and safely retries Artifact and Deployment writes with the same idempotency key", async () => {
+  test("applies declared environment placement before preview deployment", async () => {
+    const root = fixture({ linked: true });
+    const path = join(root, "xapi.worker.json");
+    const config = JSON.parse(readFileSync(path, "utf8"));
+    config.environments.preview.defaultResourceLocation = "apac";
+    config.environments.preview.placementMode = "smart";
+    writeFileSync(path, JSON.stringify(config));
+    const platform = fakePlatform({ exists: true });
+    let update: Record<string, unknown> | undefined;
+    platform.client.updateWorkerEnvironment = async (_options, _id, _environment, input) => {
+      update = input;
+      return input;
+    };
+    await pushWorkerProject({
+      cwd: root,
+      environment: "preview",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: platform.client,
+      confirm: async () => true,
+      runBuild: async () => {
+        mkdirSync(join(root, "dist"), { recursive: true });
+        writeFileSync(join(root, "dist/worker.mjs"), "export default {};");
+      },
+      fetchPublic: (async () =>
+        Response.json({ ok: true })) as unknown as typeof fetch,
+      sleep: async () => undefined,
+    });
+    expect(update).toEqual({
+      dailyBudgetUsd: 0.25,
+      defaultResourceLocation: "apac",
+      placementMode: "smart",
+    });
+  });
+
+  test("immutable Artifact upload can retry; an unconfirmed publish requires an explicit retry", async () => {
     const root = fixture({ linked: true });
     const platform = fakePlatform({ exists: true });
     const upload = platform.client.uploadWorkerArtifact.bind(platform.client);
@@ -554,9 +673,9 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
       }
       return deploy(...args);
     };
-    const result = await pushWorkerProject({
+    const options = {
       cwd: root,
-      environment: "preview",
+      environment: "preview" as const,
       clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
       client: platform.client,
       confirm: async () => true,
@@ -570,7 +689,10 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
       fetchPublic: (async () =>
         Response.json({ ok: true })) as unknown as typeof fetch,
       sleep: async () => undefined,
-    });
+    };
+    await expect(pushWorkerProject(options)).rejects.toThrow("No second publish was sent");
+    expect(deployAttempts).toBe(1);
+    const result = await pushWorkerProject(options);
     expect(result.status).toBe("ACTIVE");
     expect(uploadAttempts).toBe(2);
     expect(deployAttempts).toBe(2);
@@ -601,6 +723,9 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
       "missing-package-manager-that-does-not-exist run build",
     );
     expect(caught?.recovery.next).toContain("Install the package manager");
+    expect(caught?.recovery.remoteChangesApplied).toBe(false);
+    expect(platform.calls.createWorker).toBe(0);
+    expect(platform.calls.createResource).toBe(0);
     expect(platform.calls.uploadArtifact).toBe(0);
     expect(platform.calls.deploy).toBe(0);
   });
@@ -630,9 +755,55 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(caught).toBeInstanceOf(WorkerPushError);
     expect(caught?.message).toContain("imports that are not in the Artifact");
     expect(caught?.recovery).toEqual(
-      expect.objectContaining({ workerId, resourcesPreserved: true }),
+      expect.objectContaining({ remoteChangesApplied: false }),
     );
+    expect(platform.calls.createWorker).toBe(0);
+    expect(platform.calls.createResource).toBe(0);
     expect(platform.calls.uploadArtifact).toBe(0);
+    expect(platform.calls.deploy).toBe(0);
+  });
+
+  test("diagnoses a stale control-plane ingress when bundle upload returns 413", async () => {
+    const root = fixture({ linked: true });
+    const configPath = join(root, "xapi.worker.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    config.build = { command: "fake-build", output: "dist", main: "worker.mjs" };
+    writeFileSync(configPath, JSON.stringify(config, null, 2));
+    const platform = fakePlatform({ exists: true });
+    platform.client.uploadWorkerArtifact = async () => {
+      throw new HttpError(413, "Request Entity Too Large");
+    };
+
+    let caught: WorkerPushError | undefined;
+    try {
+      await pushWorkerProject({
+        cwd: root,
+        environment: "preview",
+        clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+        client: platform.client,
+        confirm: async () => true,
+        runBuild: async () => {
+          mkdirSync(join(root, "dist"), { recursive: true });
+          writeFileSync(
+            join(root, "dist/worker.mjs"),
+            'import "./chunk.mjs"; export default {};',
+          );
+          writeFileSync(join(root, "dist/chunk.mjs"), "export {};");
+        },
+      });
+    } catch (error) {
+      caught = error as WorkerPushError;
+    }
+
+    expect(caught?.message).toContain("complete-project upload");
+    expect(caught?.recovery).toEqual(
+      expect.objectContaining({
+        workerId,
+        resourcesPreserved: true,
+        errorCode: "worker_artifact_ingress_too_small",
+        expectedIngressLimitMiB: 128,
+      }),
+    );
     expect(platform.calls.deploy).toBe(0);
   });
 

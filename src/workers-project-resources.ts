@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { renameSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { mergeResourceChanges, resourceSyncState, sameResource } from "./workers-resource-sync.ts";
 import {
   loadWorkerProject,
   type WorkerProjectConfig,
@@ -53,6 +54,7 @@ export interface PullProjectResourcesResult {
     added: string[];
     updated: string[];
     unchanged: string[];
+    removed: string[];
   }>;
   nextSteps: string[];
 }
@@ -195,6 +197,8 @@ export async function pullProjectResources(
     );
   }
   const api = options.client || workersClient;
+  const originalConfig = readFileSync(project.configPath, "utf8");
+  const sync = resourceSyncState(project.configPath, options.clientOptions.apiHost, workerId);
   const liveByEnvironment = await Promise.all(
     options.environments.map(async (environment) => ({
       environment,
@@ -211,14 +215,17 @@ export async function pullProjectResources(
   const result: PullProjectResourcesResult["environments"] = [];
   let changed = false;
 
-  // Pull is an all-or-nothing local merge. It never deletes declarations and
-  // never writes provider IDs, so pending local work is preserved.
+  // Pull updates declarations only, never the provider. A previous observation
+  // and local snapshot preserve deliberate local removals and pending changes.
   for (const { environment, resources } of liveByEnvironment) {
     const seen = new Set<string>();
     const added: string[] = [];
     const updated: string[] = [];
     const unchanged: string[] = [];
+    const removed: string[] = [];
     const desired = config.environments[environment].resources;
+    const observed: Resource[] = [];
+    const baseline = sync.state.environments[environment];
     for (const raw of [...resources].sort((left, right) => {
       const leftName = remoteWorkerResourceState(left).bindingName || "";
       const rightName = remoteWorkerResourceState(right).bindingName || "";
@@ -254,6 +261,8 @@ export async function pullProjectResources(
           `${environment} binding ${state.bindingName} has unsupported type ${state.rawType || "UNKNOWN"} or incomplete Durable Object metadata`,
         );
       }
+      observed.push(remote);
+      if (baseline) continue;
       const index = desired.findIndex(
         (item) => item.bindingName === remote.bindingName,
       );
@@ -277,10 +286,27 @@ export async function pullProjectResources(
         unchanged.push(remote.bindingName);
       }
     }
-    result.push({ name: environment, added, updated, unchanged });
+    if (baseline) {
+      const merged = mergeResourceChanges(desired, observed, baseline, environment);
+      for (const item of merged) {
+        const prior = desired.find(row => row.bindingName === item.bindingName);
+        if (!prior) added.push(item.bindingName);
+        else if (!sameResource(prior, item)) updated.push(item.bindingName);
+        else unchanged.push(item.bindingName);
+      }
+      for (const item of desired) if (!merged.some(row => row.bindingName === item.bindingName)) removed.push(item.bindingName);
+      config.environments[environment].resources = merged;
+      changed ||= !!(added.length || updated.length || removed.length);
+    }
+    sync.state.environments[environment] = { local: structuredClone(config.environments[environment].resources), remote: observed };
+    result.push({ name: environment, added, updated, unchanged, removed });
   }
 
+  if (readFileSync(project.configPath, "utf8") !== originalConfig)
+    throw new WorkerProjectConfigError("worker_project_config_changed", "Project JSON changed during pull; no changes were written. Run pull again");
+  sync.assertUnchanged();
   if (changed) writeConfig(project.configPath, config);
+  sync.save();
   return {
     changed,
     configPath: project.configPath,
@@ -422,12 +448,11 @@ export function removeProjectResource(
     bindingName: selectedBinding,
     nextSteps: project.config.workerId
       ? [
+          ...steps(options.environments),
+          "Deployment removes the binding; the remote resource and its storage charges remain until explicit destruction",
           ...options.environments.flatMap((environment) => [
-            `xapi workers plan --env ${environment}`,
-            `Keep it: xapi workers resources pull --env ${environment}`,
             `Delete its data after backup: xapi workers resources destroy --env ${environment} --binding ${selectedBinding} --yes`,
           ]),
-          "Re-run plan after that choice; deploy only after MANUAL resource drift is gone",
         ]
       : steps(options.environments),
   };

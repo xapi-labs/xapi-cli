@@ -1,6 +1,6 @@
 # WebSocket Gateway Guide
 
-Use xAPI's WebSocket Gateway for full-duplex, low-latency sessions such as OpenAI Realtime, streaming speech recognition, bidirectional text-to-speech, simultaneous interpretation, and podcast generation.
+Use xAPI's WebSocket Gateway for full-duplex, low-latency sessions such as GPT Live, OpenAI Realtime, streaming speech recognition, bidirectional text-to-speech, simultaneous interpretation, and podcast generation.
 
 The WebSocket Gateway shares the public `ai.xapi.to` host with the HTTP AI Gateway, but it is a separate protocol surface. An HTTP request continues to use the AI Gateway; a valid WebSocket Upgrade request is routed to the WebSocket Gateway.
 
@@ -9,6 +9,7 @@ The WebSocket Gateway shares the public `ai.xapi.to` host with the HTTP AI Gatew
 - [Choose the right interface](#choose-the-right-interface)
 - [Public URLs and routing](#public-urls-and-routing)
 - [Authentication](#authentication)
+- [GPT Live example](#gpt-live-example)
 - [OpenAI Realtime example](#openai-realtime-example)
 - [Browser connections](#browser-connections)
 - [Native protocol endpoints](#native-protocol-endpoints)
@@ -39,6 +40,7 @@ Current curated production paths include:
 
 | Path | Protocol | Typical use |
 |---|---|---|
+| `/v1/live/sessions` on the GPT Live service host | OpenAI Live Sessions JSON events | GPT-Live 1 voice with Client or managed Responses delegation |
 | `/v1/realtime` | OpenAI Realtime GA JSON events | Realtime text and voice |
 | `/v1/asr` | Volcengine ASR binary frames | Streaming speech recognition |
 | `/v1/tts` | Doubao bidirectional TTS binary frames | Streaming text-to-speech |
@@ -56,6 +58,15 @@ wss://<service-slug>.p.xapi.to/<endpoint-path>
 ```
 
 This avoids shared-path ambiguity and is required when the desired service uses a provider-native protocol that is not selected by the unified path. Console Try-It and review workflows can also address an endpoint exactly with `?endpoint=<endpoint-id>`.
+
+GPT Live currently uses the service-specific URL:
+
+```text
+wss://openai-live.p.xapi.to/v1/live/sessions
+```
+
+Do not replace it with `/v1/realtime`. Live Sessions uses `session.start` and
+`session.started`; Realtime uses a different session lifecycle and event model.
 
 ## Authentication
 
@@ -77,6 +88,43 @@ wscat -c "wss://ai.xapi.to/v1/realtime" \
 The Gateway also accepts `?token=<XAPI_KEY>` or `?xapi-key=<XAPI_KEY>` for clients that cannot set headers. Avoid query authentication for long-lived keys: URLs are commonly retained in browser history, access logs, error reports, and monitoring systems.
 
 Authentication is checked before the WebSocket upgrade. Invalid handshakes therefore return an HTTP status instead of opening and immediately closing a socket.
+
+## GPT Live example
+
+GPT Live is a provider-native JSON event protocol, not an Action `call` and not
+OpenAI Realtime. The first client frame must be `session.start`. The production
+endpoint locks the Live model to `gpt-live-1`, disables storage, and lets the
+caller choose `client` or `responses` delegation once per connection. In
+`responses` mode, the managed Responses model and its limits remain
+server-controlled.
+
+The packaged `examples/openai-gpt-live-text.mjs` demonstrates the smallest
+managed-Responses lifecycle: connect with a server-side xAPI key, send
+`session.start`, wait for `session.started`, create a text item, request a
+response, and finish with `session.close` after the nested response completes.
+It intentionally omits microphone capture so the protocol boundary is clear.
+
+```bash
+# Install the example's WebSocket transport in your application directory.
+npm install ws
+
+# Supply XAPI_KEY through the process environment; never put it in source code
+# or pass it as a command-line argument.
+node examples/openai-gpt-live-text.mjs "Answer in one short sentence."
+```
+
+Voice clients use the same session lifecycle, then send base64 PCM chunks as
+`session.input_audio.append` events and consume `session.output_audio.delta`.
+Audio format, voice, interruption behavior, and the complete event schema must
+follow the current Live Sessions contract. Do not copy Realtime
+`conversation.item.create` or `input_audio_buffer.*` events into a Live session.
+
+With `client` delegation, the application must handle
+`session.delegation.created`, run its own text-model request, and return the
+result with `session.commentary.append`, then wait for
+`session.commentary.appended`. Selecting `client` does not make xAPI run a
+model on the application's behalf. Use `responses` when the managed backend is
+desired.
 
 ## OpenAI Realtime example
 
@@ -121,14 +169,25 @@ Do not send the retired `OpenAI-Beta: realtime=v1` header. Session settings, aud
 The browser `WebSocket` API cannot set arbitrary handshake headers. The Gateway accepts an xAPI key or temporary token through a subprotocol entry:
 
 ```javascript
-const temporaryToken = await getTemporaryTokenFromYourBackend();
+const credential = await getEndpointBoundCredentialFromYourBackend(endpointId);
+if (Date.now() >= new Date(credential.latestStartAt).getTime()) {
+  throw new Error("refresh the credential before opening a full new session");
+}
 const ws = new WebSocket(
-  "wss://ai.xapi.to/v1/realtime",
-  [`xapi-key.${temporaryToken}`],
+  "wss://openai-live.p.xapi.to/v1/live/sessions",
+  ["xapi-ws-v1", `xapi-key.${credential.token}`],
 );
 ```
 
 Never embed a long-lived xAPI key in frontend JavaScript. Use the authenticated xAPI Console Try-It flow or your backend to obtain a short-lived token, then pass only that token to the browser. The Console's `POST /api/keys/ws-token` flow mints a temporary token for a WebSocket endpoint; it requires a logged-in entity account and an endpoint ID, and is not authenticated with a normal xAPI key.
+
+The credential is endpoint-bound and returns `expiresAt`, `latestStartAt`, and
+`maxDurationSec`. It may be reused for reconnects only while the new connection
+starts before `latestStartAt`; after that boundary, mint a fresh credential so
+the full advertised session and final `session.close` exchange fit inside its
+lifetime. If an endpoint declares public subprotocols, retain them and append
+the `xapi-key.*` entry; otherwise use the non-secret `xapi-ws-v1` marker shown
+above. Never log the secret subprotocol value.
 
 If a browser integration must use `?token=`, use only a short-lived token and avoid logging the complete URL.
 
@@ -138,6 +197,7 @@ The Gateway forwards frames without translating the application protocol. The se
 
 | Adapter | Client frames | Important client requirement |
 |---|---|---|
+| `openai-live` | UTF-8 JSON text | First frame is `session.start`; choose Client or managed Responses delegation once. |
 | `openai-realtime` | UTF-8 JSON text | Use OpenAI Realtime GA events. |
 | `volcengine-asr` | Binary | Send the Volcengine ASR header/config/audio frame sequence; PCM configuration must match the audio bytes. |
 | `doubao-realtime` | Binary | Use the Doubao end-to-end realtime dialogue protocol through its service host or exact endpoint. |

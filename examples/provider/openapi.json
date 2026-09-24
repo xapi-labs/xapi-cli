@@ -1,0 +1,34 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Example Provider API",
+    "version": "1.0.0",
+    "description": "Replace this example with your own upstream API contract.",
+    "x-xapi-category": "Public-Utils",
+    "x-xapi-host": "example-provider-api"
+  },
+  "servers": [{ "url": "https://upstream.example.com" }],
+  "paths": {
+    "/status": {
+      "get": {
+        "summary": "Get status",
+        "description": "Return the upstream service status.",
+        "x-xapi-billing": { "type": "PER_CALL", "costPerCall": 0.001 },
+        "responses": {
+          "200": {
+            "description": "Service status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "status": { "type": "string" } }
+                },
+                "example": { "status": "ok" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

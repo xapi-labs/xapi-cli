@@ -18,10 +18,11 @@ const sorted = (rows: Row[]) => rows.sort((a, b) => String(a.bindingName).locale
 // Provider observations must not cause deployments. No secret plaintext is read.
 export function deploymentPrefix(workerId: string, environment: string, artifactId: string,
   compatibility: { compatibilityDate?: string; compatibilityFlags?: string[] },
-  environmentState: Row, resources: Row[], secrets: Row[]): string {
-  return `v2-${hash({ workerId, environment: environment.toLowerCase(), artifactId,
+  environmentState: Row, resources: Row[], _secrets: Row[]): string {
+  return `v3-${hash({ workerId, environment: environment.toLowerCase(), artifactId,
     compatibilityDate: compatibility.compatibilityDate,
     compatibilityFlags: [...(compatibility.compatibilityFlags || [])].sort(),
+    placementMode: environmentState.placementMode || "off",
     bindings: environmentState.bindings || [],
     resources: sorted(resources.map(r => {
       const config = (r.config || {}) as Row;
@@ -30,7 +31,6 @@ export function deploymentPrefix(workerId: string, environment: string, artifact
         className: config.className, state: config.state,
         status: r.status === "PROVISIONING" ? "ACTIVE" : r.status };
     })),
-    secrets: sorted(secrets.map(s => ({ bindingName: s.bindingName, version: s.version }))),
   })}-`;
 }
 

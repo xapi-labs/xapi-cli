@@ -8,6 +8,7 @@ import type { WorkerPushResult } from "../workers-push.ts";
 const result: WorkerPushResult = {
   schemaVersion: 1,
   status: "ACTIVE",
+  nativeReceipts: [],
   initialPlan: {
     schemaVersion: 1,
     project: {
@@ -18,6 +19,15 @@ const result: WorkerPushResult = {
     },
     environment: "preview",
     remote: { linked: true, workerId: "worker-id" },
+    costImpact: {
+      status: "AVAILABLE",
+      desiredDailyBudgetUsd: 0.25,
+      currentDailyBudgetUsd: 0.25,
+      dailyBudgetDeltaUsd: 0,
+      priceBook: { version: "workers-v1", rateCount: 12 },
+      meteredChanges: [],
+      notes: [],
+    },
     canApply: true,
     summary: {
       CREATE: 2,
@@ -47,7 +57,21 @@ const result: WorkerPushResult = {
     status: 200,
     attempts: 1,
   },
+  inspection: {
+    schemaVersion: 1,
+    mode: "READ_ONLY",
+    controlPlane: "api.xapi.to",
+    worker: { id: "worker-id", status: "ACTIVE" },
+    environment: { name: "PREVIEW", status: "ACTIVE" },
+    resources: { status: "AVAILABLE", items: [] },
+    secrets: { status: "AVAILABLE", items: [] },
+    domains: { status: "AVAILABLE", items: [] },
+    billing: { status: "AVAILABLE", summary: { dataQuality: "COMPLETE" } },
+    diagnostics: [],
+    nextSteps: [],
+  },
   commands: {
+    inspect: "xapi workers inspect worker-id --env preview",
     logs: "xapi workers logs worker-id --env preview",
     promote: "xapi workers promote --to production",
   },
@@ -60,6 +84,7 @@ describe("Worker push terminal output", () => {
     expect(rendered).toContain("https://my-agent.example.test");
     expect(rendered).toContain("HTTP 200 · 1 attempt");
     expect(rendered).toContain("2 reused");
+    expect(rendered).toContain("xapi workers inspect worker-id --env preview");
     expect(rendered).toContain("xapi workers logs worker-id --env preview");
     expect(rendered).not.toContain('"initialPlan"');
   });

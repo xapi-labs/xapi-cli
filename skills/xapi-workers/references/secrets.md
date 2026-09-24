@@ -35,7 +35,9 @@ xapi workers secrets list <worker-id> --env preview
 xapi workers secrets status <worker-id> --env preview
 ```
 
-`list` returns xAPI metadata. `status` performs a read-only name comparison against Cloudflare and still never returns values. If a write times out, treat its result as unknown and run `status`; do not automatically replay a captured value. If the intended value cannot be proven, obtain or generate a fresh credential and rotate it.
+`list` returns xAPI metadata. `status` performs a read-only name comparison against Cloudflare and still never returns values. If a write times out, treat its result as unknown and run `status`; do not automatically replay a captured value. Name presence cannot prove a value. The user may explicitly set their intended value again; do not require credential rotation merely because a response was lost.
+
+JSON lists required Secret names, not values or an exclusive allowlist. Removing a name does not delete its value. Value writes are independent for each environment/key; unrelated resource work and code publication do not create a global Secret lock. The first write to an absent script may briefly coordinate script initialization.
 
 Code deploy, promotion, rollback, pause, and resume preserve provider secrets with Cloudflare native binding inheritance. They do not read values from xAPI or copy values between environments. A missing required binding should block activation rather than opening a route with incomplete runtime configuration.
 
