@@ -425,6 +425,24 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(platform.calls.uploadArtifact).toBe(0);
     expect(platform.calls.deploy).toBe(0);
     expect(loadWorkerProject(root).config.workerId).toBe(workerId);
+    expect(caught?.recovery.batchCommand).toBe(
+      `xapi workers secrets apply ${workerId} --env preview --env-file .env.worker`,
+    );
+    platform.state.secrets.push({ bindingName: "MODEL_KEY", version: 1 });
+    const resumed = await pushWorkerProject({
+      cwd: root,
+      environment: "preview",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: platform.client,
+      nonInteractive: true,
+      runBuild: async () => undefined,
+      fetchPublic: (async () => Response.json({ ok: true })) as unknown as typeof fetch,
+      sleep: async () => undefined,
+    });
+    expect(resumed.status).toBe("ACTIVE");
+    expect(platform.calls.createWorker).toBe(1);
+    expect(platform.calls.uploadArtifact).toBe(1);
+    expect(platform.calls.deploy).toBe(1);
   });
 
   test("unreferenced resources remain stored but are excluded from deployed bindings", async () => {

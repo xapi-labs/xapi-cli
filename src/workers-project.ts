@@ -283,12 +283,10 @@ function sensitiveConfigPath(
   path: string[] = [],
 ): string | null {
   if (typeof value === "string") {
-    // Worker slugs are public, schema-validated identifiers and commonly begin
-    // with "xapi-". Do not confuse a long product slug with an API key.
-    if (path.length === 2 && path[0] === "worker" && path[1] === "slug") {
-      return null;
-    }
-    return /\b(?:cfat|sk|xapi)[-_][A-Za-z0-9_+/=-]{12,}\b/i.test(value)
+    // xAPI issues sk- keys; older CLI configuration also uses xapi_.
+    // "xapi-" is an ordinary project/path prefix, not a credential format.
+    // Check values even in public identifiers: a real key must not leak there.
+    return /\b(?:(?:cfat|sk)[-_]|xapi_)[A-Za-z0-9_+/=-]{12,}\b/i.test(value)
       ? path.join(".") || "<root>"
       : null;
   }

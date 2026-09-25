@@ -141,6 +141,7 @@ CREATE FLAGS
 INIT FLAGS
   --template TEMPLATE                   worker|agent|chat|webhook|persistent-agent
   --from-wrangler PATH                  Import an existing wrangler.jsonc or wrangler.toml
+                                       Cannot combine with target directory, --template, --name, --slug, or --framework
   --accept-partial                      Write only after explicitly accepting unsupported fields
   --build-command COMMAND               Override the imported project build command
   --build-output PATH                   Override the deployable bundle/module path

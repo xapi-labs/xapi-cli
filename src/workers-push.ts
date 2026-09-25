@@ -890,6 +890,8 @@ export async function pushWorkerProject(
         {
           workerId: workerState.id,
           missingSecrets: missing,
+          batchCommand: `xapi workers secrets apply ${workerState.id} --env preview --env-file .env.worker`,
+          next: "Set the missing Secret values, then rerun the original push command; workerId is already saved in the project config",
           commands: missing.map(
             (name) =>
               `xapi workers secrets set ${workerState.id} ${name} --env preview --from-env ${name}`,

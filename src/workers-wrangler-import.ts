@@ -1312,7 +1312,7 @@ export function importWranglerProject(
     config: parsed.data,
     nextSteps: [
       `Review ${WORKER_PROJECT_CONFIG_FILE}`,
-      "Set every REENTER secret with xapi workers secrets set",
+      "For required Secrets on a new project: interactive push saves workerId and stops before upload/deploy; then use secrets apply or set and rerun push. For CI, create the Worker, save workerId, and set Secrets before non-interactive push",
       "Review public Wrangler vars; sensitive values belong in explicitly declared Secrets",
       "xapi workers plan --env preview",
     ],

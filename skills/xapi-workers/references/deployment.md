@@ -62,13 +62,14 @@ class sets remain blocked because they need an explicit state migration plan.
 `xapi.worker.json` holds desired xAPI state and Worker ID; Wrangler holds entrypoint, compatibility and binding declarations. The persistent-agent template declares the six ordinary managed binding types so it can demonstrate the platform; Containers remain deployment-owned and must be declared explicitly. An ordinary application should declare only the resources its business logic uses. Do not add unrelated bindings merely to complete an acceptance checklist. Test the full resource matrix in a separate disposable Worker or environment, then clean up only that isolated test state. Install/build according to the generated project instructions. Inspect plans for missing permissions, prices, secrets, budget, and policy requirements.
 
 ```sh
+# No required Secrets: push can complete the deployment directly.
+# Required Secrets: follow secrets.md's first-project setup before expecting a release.
 xapi workers push --env preview
 xapi workers get <worker-id> --format json
-xapi workers secrets set <worker-id> APP_TOKEN --env preview --from-env APP_TOKEN
 xapi workers logs <worker-id> --env preview --since 10m
 ```
 
-If provisioning requires an accepted retention quote, follow lifecycle.md and pass its exact `--retention-price-version VERSION`; do not invent a version. Configure credentials with [secrets.md](secrets.md); xAPI never needs a code deployment to retain or replay their values. Never report a blocked preflight as successful deployment.
+If provisioning requires an accepted retention quote, follow lifecycle.md and pass its exact `--retention-price-version VERSION`; do not invent a version. Configure public vars and credentials with [secrets.md](secrets.md), including its interactive bootstrap and non-interactive first-project setup; xAPI never needs a code deployment to retain or replay their values. Never report a blocked preflight as successful deployment.
 
 Use the Node and package-manager version required by the application before `plan` or `push`; the CLI runs the configured build command unchanged. If the project declares `engines.node`, activate a compatible runtime first. A build-runtime failure is an application build failure and must occur before any deployment write; rerun the same push only after correcting the local runtime.
 
@@ -80,6 +81,8 @@ npx wrangler deploy --dry-run \
   --config dist/server/wrangler.json \
   --outfile dist/app.worker.bundle
 ```
+
+This example assumes the generated Wrangler config represents the target environment at its root. If it defines `env.preview`, add `--env preview` to the dry-run command; use the matching environment for the framework build too. The CLI runs `build.command` as written, so it does not automatically add Wrangler's environment flag. Never package root vars while planning a named environment, and never pass a nonexistent environment just to follow an example.
 
 Set `build.output` to the generated `.worker.bundle`, omit `build.main`, and set `assets.directory` to the generated client directory. `--dry-run` only creates the local Cloudflare upload artifact; `xapi workers push` remains the only publisher. The CLI sends the complete modules/assets set in one authenticated multipart Artifact request. The import report must show every unmapped Wrangler field; never split a framework application into per-file API uploads to work around an import problem.
 

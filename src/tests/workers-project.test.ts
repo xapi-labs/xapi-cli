@@ -239,6 +239,48 @@ describe("Worker project configuration", () => {
     );
   });
 
+  test("accepts ordinary xapi-prefixed display names and project paths", () => {
+    const root = fixture({
+      worker: {
+        name: "xapi-resource-debug",
+        slug: "xapi-resource-debug",
+        template: "worker",
+      },
+      wrangler: "xapi-worker/wrangler.jsonc",
+      build: {
+        command: "node xapi-worker/build.mjs",
+        output: "xapi-worker/worker.mjs",
+      },
+      assets: { directory: "xapi-worker/public" },
+    });
+    expect(loadWorkerProject(root).config.build.output).toBe("xapi-worker/worker.mjs");
+    expect(loadWorkerProject(root).config.worker.name).toBe("xapi-resource-debug");
+  });
+
+  test("still rejects recognized credentials in public identifiers and paths", () => {
+    for (const credential of [
+      `sk-${"a".repeat(48)}`,
+      `cfat_${"a".repeat(32)}`,
+      `xapi_${"a".repeat(32)}`,
+    ]) {
+      for (const override of [
+        { worker: { name: credential, slug: "safe-worker", template: "worker" } },
+        { build: { command: "npm run build", output: `dist/${credential}.mjs` } },
+      ]) {
+        expect(() => loadWorkerProject(fixture(override))).toThrow(
+          "must not contain credentials or Secret values",
+        );
+      }
+    }
+    expect(() => loadWorkerProject(fixture({
+      worker: {
+        name: "Public name",
+        slug: `sk-${"a".repeat(40)}`,
+        template: "worker",
+      },
+    }))).toThrow("must not contain credentials or Secret values");
+  });
+
   test("allows declared secret names but never credential-shaped values", () => {
     const namesRoot = fixture({
       environments: {
