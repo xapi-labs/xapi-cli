@@ -521,3 +521,17 @@ test("reports ordered remote migrations and explicit platform event mappings", (
     );
   }
 });
+
+test('imports native Workflow class and rejects external script declarations instead of discarding ownership', () => {
+  const root = workspace();
+  const config = {name:'workflow-project',main:'src/index.js',compatibility_date:'2026-09-01',
+    workflows:[{name:'upstream-flow',binding:'PIPELINE',class_name:'Pipeline'}]};
+  writeFileSync(join(root,'wrangler.jsonc'),JSON.stringify(config));
+  expect(importWranglerProject({cwd:root,wranglerPath:'wrangler.jsonc'}).wrote).toBe(true);
+  expect(loadWorkerProject(root).config.environments.preview.resources).toContainEqual({type:'workflow',bindingName:'PIPELINE',className:'Pipeline'});
+  rmSync(join(root,'xapi.worker.json'));
+  writeFileSync(join(root,'wrangler.jsonc'),JSON.stringify({...config,workflows:[{...config.workflows[0],script_name:'foreign'}]}));
+  const result=importWranglerProject({cwd:root,wranglerPath:'wrangler.jsonc'});
+  expect(result.wrote).toBe(false);
+  expect(result.report.entries).toContainEqual(expect.objectContaining({category:'UNSUPPORTED',path:'workflows[0].script_name'}));
+});

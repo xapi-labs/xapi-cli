@@ -12,7 +12,7 @@ xapi workers resources create <worker-id> --env preview --type d1 --binding DB
 xapi workers resources create <worker-id> --env preview --type r2 --binding FILES
 xapi workers resources create <worker-id> --env preview --type do --binding COORDINATOR --class-name Coordinator
 xapi workers resources create <worker-id> --env preview --type queue --binding JOBS
-xapi workers resources create <worker-id> --env preview --type workflow --binding PIPELINE
+xapi workers resources create <worker-id> --env preview --type workflow --binding PIPELINE --class-name Pipeline
 ```
 
 Do not run `resources create` for a Container. Declare it in Wrangler and `xapi.worker.json`, then deploy. After deployment, `resources list` exposes a read-only `CONTAINER_APPLICATION` record containing the physical application ID, image, instance type, maximum instances, placement, and rollout receipt. Its binding-like `CONTAINER_<hash>` key is an internal stable identity, not a Worker `env` binding.
@@ -31,7 +31,11 @@ Supply the explicitly accepted retention price version when required. Redeploy a
 | Workflow | Start and poll the instance to terminal state | Instance ID, final status and durable result |
 | Schedule | Trigger an immediate run and inspect run history | Schedule/run ID and resulting business change |
 
-For imported native Queue consumers, the managed adapter invokes `queue(batch, env, ctx)` and returns ack/retry decisions to Cloudflare. The compatibility HTTP mode instead routes the following envelope to the same Worker environment; do not mistake that route for a native handler:
+For a native Workflow, declare `workflows: [{ binding: "PIPELINE", name: "pipeline", class_name: "Pipeline" }]` in Wrangler, export `Pipeline extends WorkflowEntrypoint` from your Worker, and import the configuration with `workers init --from-wrangler`. The xAPI resource declaration must retain `type: "workflow"`, `bindingName: "PIPELINE"`, and `className: "Pipeline"`. The original physical workflow name is remapped to this environment's managed resource. A declaration can be prepared before its first code deployment; it is not yet a completed running Workflow. A binding to another script is not silently imported as a local class.
+
+Start it through `env.PIPELINE.create({ params: { taskId } })`, then poll `env.PIPELINE.get(id).status()` through an authenticated application endpoint and verify its durable output. The same Worker holds the application's bindings and Secret values. A normal new deployment is allowed while an instance waits; Cloudflare owns how the running instance resumes. Do not promise that every step stays on the original application version, and do not add a deployment block for active instances.
+
+For imported native Queue consumers, the managed adapter invokes `queue(batch, env, ctx)` and returns ack/retry decisions to Cloudflare. For an existing compatibility Workflow created without a class declaration, the HTTP adapter instead routes the following envelope to the same Worker environment; do not mistake that route for a native handler:
 
 ```js
 await env.JOBS.send({ path: "/tasks/report", method: "POST", body: { taskId } });

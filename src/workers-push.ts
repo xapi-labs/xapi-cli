@@ -400,7 +400,7 @@ export function resourceMatches(
   const remoteLocation = state.requestedLocation || state.effectiveLocation;
   return (
     state.type === desired.type &&
-    (desired.type !== "durable_object" || state.className === desired.className) &&
+    (!["durable_object", "workflow"].includes(String(desired.type)) || state.className === desired.className) &&
     (!desired.location || remoteLocation === desired.location) &&
     (!desired.readReplication ||
       state.readReplication === desired.readReplication)

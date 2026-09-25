@@ -13,6 +13,7 @@ import * as workersClient from "./workers-client.ts";
 import {
   desiredResourceFromRemote,
   remoteWorkerResourceState,
+  resourceReadyForDeployment,
   type WorkerDesiredResource,
 } from "./workers-resource-state.ts";
 
@@ -163,7 +164,7 @@ function sameOrConflict(
   const comparableLocation = state.requestedLocation || state.effectiveLocation;
   const conflicts =
     local.type !== remote.type ||
-    (local.type === "durable_object" && local.className !== remote.className) ||
+    (["durable_object", "workflow"].includes(local.type) && local.className !== remote.className) ||
     (local.location && local.location !== comparableLocation) ||
     (local.readReplication &&
       local.readReplication !== state.readReplication);
@@ -247,8 +248,7 @@ export async function pullProjectResources(
       }
       seen.add(state.bindingName);
       const ready =
-        state.status === "ACTIVE" ||
-        (state.type === "durable_object" && state.status === "PROVISIONING");
+        resourceReadyForDeployment(state);
       if (!ready) {
         throw new WorkerProjectConfigError(
           "worker_project_resource_pull_not_ready",
@@ -394,12 +394,12 @@ export function updateProjectResource(
     }
     if (
       project.config.workerId &&
-      existing.type === "durable_object" &&
+      ["durable_object", "workflow"].includes(existing.type) &&
       existing.className !== parsedResource.data.className
     ) {
       throw new WorkerProjectConfigError(
         "worker_project_resource_class_change",
-        `${environment} Durable Object ${existing.bindingName} uses class ${existing.className}; create a new binding and migrate state instead of changing the class in place`,
+        `${environment} ${existing.type} ${existing.bindingName} uses class ${existing.className}; create a new binding and migrate state instead of changing the class in place`,
       );
     }
     if (JSON.stringify(existing) !== JSON.stringify(parsedResource.data)) {

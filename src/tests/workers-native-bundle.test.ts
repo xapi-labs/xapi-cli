@@ -343,3 +343,17 @@ test("rejects malformed cache settings and unsupported metadata binding fields",
     ),
   ).rejects.toThrow("mapping");
 });
+
+test('maps native Workflow classes through owned resource declarations without retaining physical names', async () => {
+ const binding = {name:'PIPELINE',type:'workflow',workflow_name:'upstream-physical-flow',class_name:'Pipeline'};
+ const part = {...metadata,content:JSON.stringify({...JSON.parse(metadata.content),bindings:[binding]})};
+ const artifact = await loadWorkerArtifactInput(bundle([part,entry]));
+ const settings = {compatibilityDate:'2026-09-10',compatibilityFlags:['nodejs_compat']};
+ validateNativeDeploymentMetadata(artifact,settings,[{type:'workflow',bindingName:'PIPELINE',className:'Pipeline'}]);
+ expect(JSON.stringify(artifact.upload)).not.toContain('upstream-physical-flow');
+ for (const resource of [[],[{type:'workflow',bindingName:'PIPELINE'}],[{type:'workflow',bindingName:'PIPELINE',className:'Other'}]])
+   expect(()=>validateNativeDeploymentMetadata(artifact,settings,resource)).toThrow('PIPELINE');
+ for (const extra of [{script_name:'foreign-worker'},{class_name:''},{workflow_name:null}]) {
+   await expect(loadWorkerArtifactInput(bundle([{...part,content:JSON.stringify({...JSON.parse(metadata.content),bindings:[{...binding,...extra}]})},entry]))).rejects.toThrow('binding metadata');
+ }
+});

@@ -1,3 +1,4 @@
+import { remoteWorkerResourceState } from "./workers-resource-state.ts";
 import { createHash } from "node:crypto";
 
 type Row = Record<string, unknown>;
@@ -28,7 +29,7 @@ export function deploymentPrefix(workerId: string, environment: string, artifact
       const config = (r.config || {}) as Row;
       return { id: r.id, bindingName: r.bindingName, type: r.type,
         providerResourceId: r.providerResourceId, providerResourceName: r.providerResourceName,
-        className: config.className, state: config.state,
+        className: remoteWorkerResourceState(r).className, state: config.state,
         status: r.status === "PROVISIONING" ? "ACTIVE" : r.status };
     })),
   })}-`;

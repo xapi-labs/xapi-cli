@@ -455,20 +455,20 @@ function resourceList(
     const name = bindingName(rawName, `${path}.binding`, entries, environment);
     if (!name) return;
     if (
-      type === "durable_object" &&
+      ["durable_object", "workflow"].includes(type) &&
       (typeof className !== "string" || !CLASS_NAME.test(className))
     ) {
       compatibilityEntry(
         entries,
         "UNSUPPORTED",
         `${path}.class_name`,
-        "Durable Object class_name is required and must be a JavaScript class identifier",
+        "Resource class_name is required and must be a JavaScript class identifier",
         { environment, bindingName: name },
       );
       return;
     }
     const resource: DesiredResource =
-      type === "durable_object"
+      ["durable_object", "workflow"].includes(type)
         ? { type, bindingName: name, className: className as string }
         : { type, bindingName: name };
     resources.push(resource);
@@ -557,15 +557,17 @@ function resourceList(
   }
   if (queueNames.size) compatibilityEntry(entries, 'MANAGED', `${prefix}queues.consumers`,
     'Platform event adapter invokes queue(batch), preserving explicit acknowledgements, retries and binary bodies; CF owns delivery and dead-letter routing.', { environment });
-  array(config.workflows).forEach((item, index) =>
-    add(
-      "workflow",
-      item.binding,
-      `${prefix}workflows[${index}]`,
-      item,
-      new Set(["binding"]),
-    ),
-  );
+  array(config.workflows).forEach((item, index) => {
+    const path = `${prefix}workflows[${index}]`;
+    if (item.script_name !== undefined) {
+      compatibilityEntry(entries, "UNSUPPORTED", `${path}.script_name`,
+        "An external Workflow script cannot be remapped to this project's class; import the owning project separately",
+        { environment });
+      return;
+    }
+    add("workflow", item.binding, path, item,
+      new Set(["binding", "class_name"]), item.class_name);
+  });
 
   const seen = new Set<string>();
   return resources

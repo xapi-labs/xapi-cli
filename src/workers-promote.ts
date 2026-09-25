@@ -1,3 +1,4 @@
+import { remoteWorkerResourceState, resourceReadyForDeployment } from "./workers-resource-state.ts";
 import { nativeDeploymentPlan, publicNativeDeploymentPlan, applyNativeDeploymentPhase, NativeDeploymentError, type NativeDeploymentClient, type NativeDeploymentPlan } from './workers-native-deployment.ts';
 import { createInterface } from "node:readline/promises";
 import type { WorkersClientOptions } from "./workers-client.ts";
@@ -243,9 +244,7 @@ function productionChecks(
     }
     remoteResources.delete(resource.bindingName);
     const status = text(current.status) || "UNKNOWN";
-    const statusReady =
-      status === "ACTIVE" ||
-      (resource.type === "durable_object" && status === "PROVISIONING");
+    const statusReady = resourceReadyForDeployment(remoteWorkerResourceState(current));
     if (!resourceMatches(current, resource) || !statusReady) {
       checks.push({
         status: "BLOCKED",

@@ -55,11 +55,11 @@ export const workerManagedResourceSchema = z
         message: "is required for a durable_object resource",
       });
     }
-    if (resource.type !== "durable_object" && resource.className) {
+    if (!["durable_object", "workflow"].includes(resource.type) && resource.className) {
       context.addIssue({
         code: "custom",
         path: ["className"],
-        message: "is only valid for a durable_object resource",
+        message: "is only valid for a durable_object or workflow resource",
       });
     }
     if (

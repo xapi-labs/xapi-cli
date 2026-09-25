@@ -15,7 +15,7 @@ import {
   loadWorkerProject,
   resolveWorkerProjectPath,
 } from "./workers-project.ts";
-import { remoteWorkerResourceState } from "./workers-resource-state.ts";
+import { remoteWorkerResourceState, resourceReadyForDeployment } from "./workers-resource-state.ts";
 import {
   prepareWorkerProjectBundle,
   loadWorkerProjectBundle,
@@ -291,7 +291,7 @@ function compareResources(
     };
     if (
       existingType !== resource.type ||
-      (resource.type === "durable_object" &&
+      (["durable_object", "workflow"].includes(resource.type) &&
         existingClassName !== resource.className)
     ) {
       blocked = true;
@@ -300,7 +300,7 @@ function compareResources(
         "BLOCKED",
         "resource",
         resource.bindingName,
-        "A binding with the same name has a different type or Durable Object class; automatic replacement is unsafe",
+        "A binding with the same name has a different type or resource class; automatic replacement is unsafe",
         desiredState,
         {
           type: existingType || string(existing.type) || "unknown",
@@ -332,9 +332,7 @@ function compareResources(
       continue;
     }
     const status = state.status;
-    const readyForDeployment =
-      status === "ACTIVE" ||
-      (resource.type === "durable_object" && status === "PROVISIONING");
+    const readyForDeployment = resourceReadyForDeployment(state);
     if (!readyForDeployment) {
       blocked = true;
       add(
@@ -354,7 +352,7 @@ function compareResources(
       "resource",
       resource.bindingName,
       status === "PROVISIONING"
-        ? "Durable Object declaration matches and will become ACTIVE with the next deployment"
+        ? "Resource declaration is prepared and will become ACTIVE with the next deployment"
         : "Managed resource already matches desired state",
       desiredState,
       { status, ...currentPlacement },

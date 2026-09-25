@@ -217,7 +217,7 @@ RESOURCE FLAGS
   --env preview|production|both Project resource environment
   --config PATH                 Explicit xapi.worker.json path
   --type kv|d1|r2|do|queue|workflow
-  --class-name NAME             Exported class for a Durable Object
+  --class-name NAME             Exported class for a Durable Object or native Workflow
   --location REGION             D1/R2 placement: wnam|enam|weur|eeur|apac|oc
   --read-replication MODE       D1 replicas: auto|disabled
   --binding NAME                Uppercase env binding, for example STATE or FILES
@@ -1676,7 +1676,7 @@ export async function workersCommand(
         const className =
           type === "do"
             ? required(flags["class-name"], "--class-name")
-            : undefined;
+            : type === "workflow" ? flags["class-name"] : undefined;
         const location = flags.location;
         if (
           location &&

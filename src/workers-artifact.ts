@@ -695,6 +695,12 @@ export async function loadWorkerArtifactInput(
         )
       );
     if (["d1", "r2_bucket", "kv_namespace", "inherit"].includes(String(binding.type))) return false;
+    if (binding.type === "workflow") {
+      return typeof binding.class_name !== "string" ||
+        !/^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/.test(binding.class_name) ||
+        typeof binding.workflow_name !== "string" || !binding.workflow_name ||
+        Object.keys(binding).some(key => !["name", "type", "class_name", "workflow_name"].includes(key));
+    }
     if (binding.type === "durable_object_namespace") {
       // Only a class in this script can map to the declared managed DO. An
       // external script/namespace needs its own ownership-aware API contract.
@@ -892,6 +898,15 @@ export function validateNativeDeploymentMetadata(
         throw new WorkerArtifactError(
           `Duplicate Worker binding: ${binding.name}`,
         );
+      continue;
+    }
+    if (binding.type === "workflow") {
+      if (matching.length !== 1 || matching[0].type !== "workflow" ||
+        matching[0].className !== binding.class_name) {
+        throw new WorkerArtifactError(
+          `Native Workflow binding ${binding.name} must match its declared xAPI class`,
+        );
+      }
       continue;
     }
     if (binding.type === "durable_object_namespace") {

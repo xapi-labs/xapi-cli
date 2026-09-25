@@ -170,7 +170,7 @@
         {
           "if": { "properties": { "type": { "const": "durable_object" } } },
           "then": { "required": ["className"] },
-          "else": { "not": { "required": ["className"] } }
+          "else": { "if": { "properties": { "type": { "not": { "const": "workflow" } } } }, "then": { "not": { "required": ["className"] } } }
         },
         {
           "if": { "required": ["location"] },
