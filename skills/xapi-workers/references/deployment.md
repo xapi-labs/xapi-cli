@@ -107,7 +107,7 @@ and keeps the generated build command on the repository's package manager.
 Cloudflare Containers are part of the Worker deployment, not an ordinary binding created with `workers resources create`. Keep the native relationship explicit:
 
 1. Wrangler declares a Durable Object binding and `containers[].class_name` for the same class in the same Worker.
-2. `xapi workers init --from-wrangler ...` imports the Container settings into shared `xapi.worker.json` state and creates separate DO resources for preview and production.
+2. `xapi workers init --from-wrangler ...` imports the Container settings into `xapi.worker.json` and writes separate desired DO declarations for preview and production. Init is local only; push creates the remote resources for the selected environment.
 3. `xapi workers plan --env preview` must show the DO creation and an Artifact change. Verify `workers capabilities` reports `container_application` available before applying.
 4. `xapi workers push --env preview` uploads the Worker, resolves the exact preview DO namespace, creates or updates the Container Application, submits the required rollout, records its application ID and receipt for metering, and only then marks the deployment ACTIVE. Native rollout convergence remains separately observable; xAPI keeps both old and new risk capacity counted until Cloudflare confirms it.
 
