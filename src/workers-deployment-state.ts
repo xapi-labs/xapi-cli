@@ -47,3 +47,20 @@ export function currentMatchingDeployment(deployments: Row[], environmentState: 
 export function deploymentKey(prefix: string, environmentState: Row): string {
   return prefix + hash(environmentState.activeDeploymentId || "initial").slice(0, 32);
 }
+
+// A user retry may advance only past a terminal receipt proving no provider
+// writes. Error codes or FAILED alone do not establish that boundary.
+export function safeDeploymentRetryKey(baseKey: string, deployment: Row): string | undefined {
+  const outcome = deployment.outcome as Row | undefined;
+  const provider = deployment.providerResult as Row | undefined;
+  if (deployment.status !== "FAILED" || typeof deployment.id !== "string" || !deployment.id || deployment.deployedAt ||
+      !outcome || !["FAILED", "CANCELLED", "TIMED_OUT"].includes(String(outcome.execution)) ||
+      !["NOT_DISPATCHED", "NO_WRITES"].includes(String(outcome.providerEffect)) ||
+      typeof outcome.operationId !== "string" || !outcome.operationId ||
+      outcome.operationId !== provider?.controlOperationId || outcome.supersededBy || outcome.observation ||
+      !Array.isArray(outcome.steps) || !outcome.steps.every(step => step &&
+        ["PLANNED", "SKIPPED"].includes(step.state) && !step.evidence)) return undefined;
+  // Keep the original deployment prefix/activation scope and stay below the
+  // API's 128-character limit. Mutable receipt timestamps are not key inputs.
+  return `${baseKey}-r${hash([deployment.id, outcome.operationId]).slice(0, 24)}`;
+}

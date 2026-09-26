@@ -29,7 +29,7 @@ import {
 } from "./workers-plan.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
 import { remoteWorkerResourceState } from "./workers-resource-state.ts";
-import { deploymentPrefix, deploymentKey, currentMatchingDeployment } from "./workers-deployment-state.ts";
+import { deploymentPrefix, deploymentKey, currentMatchingDeployment, safeDeploymentRetryKey } from "./workers-deployment-state.ts";
 import {
   inspectWorker,
   type WorkerInspection,
@@ -59,6 +59,7 @@ export interface DeploymentClient {
 }
 
 export interface PushClient extends PlanClient, DeploymentClient, NativeDeploymentClient {
+  workerRetention?: typeof workersClient.workerRetention;
   listWorkerDomains(
     options: WorkersClientOptions,
     id: string,
@@ -475,6 +476,67 @@ export async function ensureManagedResources(
   return { created: created.sort(), unchanged: unchanged.sort() };
 }
 
+/** Quotes are checked before any resource write. The backend still owns atomic
+ * balance admission; this read is an early, actionable preflight, not a lock. */
+async function checkRetentionQuotes(
+  api: PushClient,
+  options: WorkersClientOptions,
+  workerId: string,
+  plan: WorkerDeploymentPlan,
+  priceVersion?: string,
+): Promise<void> {
+  const types = plan.actions
+    .filter(action => action.kind === "resource" && action.operation === "CREATE")
+    .map(action => String(action.desired?.type || "").toUpperCase());
+  const firstRelease = !plan.remote.activeDeploymentId;
+  if ((!types.length && !firstRelease) || !api.workerRetention) return;
+
+  const summary = await api.workerRetention(options, workerId, "preview");
+  if (summary.enabled === false) return;
+  const holds = records(summary.holds, "retention holds");
+  if (firstRelease && !holds.some(hold => hold.resourceType === "WORKER" && !hold.releasedAt)) {
+    types.push("WORKER");
+  }
+  const uniqueTypes = [...new Set(types)].sort();
+  if (!uniqueTypes.length) return;
+  const quotes = await Promise.all(uniqueTypes.map(async type => {
+    const quote = await api.workerRetention!(options, workerId, "preview", `/quote/${type}`);
+    if (!text(quote.priceVersion) || typeof quote.freezeUsd !== "string" || !/^\d+(?:\.\d+)?$/.test(quote.freezeUsd)) {
+      throw new WorkerPushError("Invalid retention quote; no resource was provisioned", {
+        workerId,
+        resourceType: type,
+      });
+    }
+    return {
+      resourceType: type,
+      count: types.filter(item => item === type).length,
+      freezeUsdPerResource: quote.freezeUsd,
+      priceVersion: quote.priceVersion as string,
+    };
+  }));
+  if (priceVersion && quotes.every(quote => quote.priceVersion === priceVersion)) return;
+  const versions = [...new Set(quotes.map(quote => quote.priceVersion))];
+  // Quote values from the server are data, not shell syntax.
+  const versionArg = versions.length === 1
+    ? "'" + versions[0].replace(/'/g, "'\"'\"'") + "'"
+    : "<matching-quote-version>";
+  throw new WorkerPushError(
+    priceVersion
+      ? "Retention quote changed; review the current quote before provisioning"
+      : "Retention quote required before provisioning; no resource or deployment was created",
+    {
+      workerId,
+      configLinked: true,
+      resourcesProvisioned: false,
+      quotes,
+      next: `Review refundable freezes (not consumption charges), then rerun xapi workers push --env preview --retention-price-version ${versionArg}`,
+      commands: uniqueTypes.map(type =>
+        `xapi workers retention quote ${workerId} --env preview --type ${type} --format json`,
+      ),
+    },
+  );
+}
+
 async function missingSecrets(
   api: PushClient,
   options: WorkersClientOptions,
@@ -613,6 +675,7 @@ export async function ensureActiveDeployment(
   retentionPriceVersion?: string,
   desiredBindings?: string[],
   expectedActiveDeploymentId?: string | null,
+  retrySafeFailures = false,
 ): Promise<{ deployment: UnknownRecord; idempotencyKey: string }> {
   const currentWorker = record(
     await api.getWorker(options, workerId),
@@ -641,13 +704,27 @@ export async function ensureActiveDeployment(
   if (expectedActiveDeploymentId !== undefined &&
       expectedActiveDeploymentId !== (text(environmentState.activeDeploymentId) || null))
     throw new WorkerPushError("Active deployment changed after plan; rerun plan before replacing it", {workerId});
-  const idempotencyKey = deploymentKey(prefix, environmentState);
-  let deployment = await deploymentFromWorker(
-    api,
-    options,
-    workerId,
-    idempotencyKey,
-  );
+  const baseKey = deploymentKey(prefix, environmentState);
+  let idempotencyKey = baseKey;
+  // The public Worker snapshot returns deployments newest first. Restrict
+  // retries to this exact input fingerprint and previous activation baseline;
+  // older failures need not remain in the bounded history response.
+  const deployments = records(currentWorker.deployments || [], "Deployments");
+  let deployment = retrySafeFailures
+    ? deployments.find(item => item.environmentId === environmentState.id && item.artifactId === artifactId &&
+        (item.idempotencyKey === baseKey || (typeof item.idempotencyKey === "string" &&
+          item.idempotencyKey.startsWith(`${baseKey}-r`) && /^[0-9a-f]{24}$/.test(item.idempotencyKey.slice(baseKey.length + 2)))))
+    : await deploymentFromWorker(api, options, workerId, idempotencyKey);
+  if (deployment && retrySafeFailures) {
+    idempotencyKey = text(deployment.idempotencyKey)!;
+    const retryKey = safeDeploymentRetryKey(baseKey, deployment);
+    if (retryKey) {
+      idempotencyKey = retryKey;
+      deployment = deployments.find(item => item.idempotencyKey === retryKey &&
+        item.environmentId === environmentState.id && item.artifactId === artifactId);
+    }
+  }
+  // At most one POST per invocation, even if it returns another safe failure.
   if (!deployment) {
     try {
       deployment = record(
@@ -823,6 +900,7 @@ export async function pushWorkerProject(
                       action.kind === "resource"),
                 )
                 .map((action) => `${action.kind}:${action.key}`),
+        details: initialPlan.actions.filter(action => action.operation === "BLOCKED" || action.operation === "MANUAL").map(action => ({ kind: action.kind, key: action.key, message: action.message })),
         next: "Resolve BLOCKED and MANUAL resource items, then rerun xapi workers plan --env preview",
       },
     );
@@ -863,6 +941,7 @@ export async function pushWorkerProject(
   const nativeReceipts: unknown[] = [];
   let releasedDeploymentId: string | undefined;
   try {
+    await checkRetentionQuotes(api, options.clientOptions, workerState.id, initialPlan, options.retentionPriceVersion);
     await ensureEnvironment(
       api,
       options.clientOptions,
@@ -930,6 +1009,7 @@ export async function pushWorkerProject(
       options.retentionPriceVersion,
       linkedProject.config.environments.preview.resources.map(resource => resource.bindingName),
       initialPlan.remote.activeDeploymentId,
+      true,
     );
     releasedDeploymentId = text(deployed.deployment.id);
     nativeReceipts.push(...await applyNativeDeploymentPhase(api, options.clientOptions, workerState.id, "preview", nativePlan, "AFTER_CODE"));

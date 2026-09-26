@@ -122,7 +122,7 @@ function fakePlatform(
     if (!state.worker) throw new Error("Worker does not exist");
     if (state.deployments.length) {
       state.deploymentReads += 1;
-      if (state.deploymentReads >= 2) {
+      if (state.deploymentReads >= 2 && state.deployments[0].status === "DEPLOYING") {
         state.deployments[0].status = "ACTIVE";
       }
     }
@@ -144,7 +144,7 @@ function fakePlatform(
         },
       ],
       artifacts: state.artifacts,
-      deployments: state.deployments,
+      deployments: [...state.deployments].reverse(),
     };
   };
   if (options.exists) {
@@ -884,5 +884,168 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     );
     expect(platform.calls.uploadArtifact).toBe(1);
     expect(platform.calls.deploy).toBe(1);
+  });
+});
+
+describe("deployment quote preflight", () => {
+  function setup(linked = false) {
+    const root = fixture({ linked, resources: [{ type: "kv_namespace", bindingName: "STATE" }] });
+    const platform = fakePlatform({ exists: linked });
+    const quotePaths: string[] = [];
+    platform.client.workerRetention = async (_options, _id, environment, path = "") => {
+      expect(environment).toBe("preview");
+      quotePaths.push(path);
+      return path ? { priceVersion: "price-v2", freezeUsd: "0.10" } : { enabled: true, holds: [] };
+    };
+    const options = {
+      cwd: root, environment: "preview" as const,
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: platform.client, confirm: async () => true,
+      runBuild: async () => {
+        mkdirSync(join(root, "dist"), { recursive: true });
+        writeFileSync(join(root, "dist/worker.mjs"), "export default {fetch(){return new Response('ok')}};");
+      },
+      fetchPublic: (async () => {
+        return Response.json({ ok: true });
+      }) as unknown as typeof fetch,
+      sleep: async () => undefined,
+    };
+    return { root, platform, quotePaths, options };
+  }
+
+  for (const version of [undefined, "old-price"]) {
+    test(`missing or stale quote (${version}) stops before resource writes and retains linked Worker`, async () => {
+      const { root, platform, quotePaths, options } = setup();
+      let failure: unknown;
+      try { await pushWorkerProject({ ...options, retentionPriceVersion: version }); }
+      catch (error) { failure = error; }
+      expect(failure).toBeInstanceOf(WorkerPushError);
+      expect((failure as WorkerPushError).message).toContain(version ? "quote changed" : "quote required");
+      expect(quotePaths.sort()).toEqual(["", "/quote/KV_NAMESPACE", "/quote/WORKER"]);
+      expect(platform.calls).toEqual({ createWorker: 1, updateBudget: 0, createResource: 0, uploadArtifact: 0, deploy: 0 });
+      expect(loadWorkerProject(root).config.workerId).toBe(workerId);
+      expect(JSON.stringify((failure as WorkerPushError).recovery)).toContain("price-v2");
+    });
+  }
+
+  test("reviewed quote deploys, no-op rerun skips quotes without republishing", async () => {
+    const { platform, quotePaths, options } = setup();
+    const first = await pushWorkerProject({ ...options, retentionPriceVersion: "price-v2" });
+    const requests = quotePaths.length;
+    const second = await pushWorkerProject(options);
+    expect(first.status).toBe("ACTIVE");
+    expect(second.status).toBe("ACTIVE");
+    expect(quotePaths.length).toBe(requests);
+    expect(platform.calls.deploy).toBe(1);
+    expect(platform.calls.createResource).toBe(1);
+  });
+
+  test("disabled retention introduces no quote requirement", async () => {
+    const { platform, options } = setup();
+    platform.client.workerRetention = async () => ({ enabled: false });
+    expect((await pushWorkerProject(options)).status).toBe("ACTIVE");
+  });
+
+  test("linked project stops before even a budget update when acceptance is missing", async () => {
+    const { root, platform, options } = setup(true);
+    const path = join(root, "xapi.worker.json");
+    const config = JSON.parse(readFileSync(path, "utf8"));
+    config.environments.preview.dailyBudgetUsd = 0.50;
+    writeFileSync(path, JSON.stringify(config));
+    await expect(pushWorkerProject(options)).rejects.toThrow("Retention quote required");
+    expect(platform.calls).toEqual({ createWorker: 0, updateBudget: 0, createResource: 0, uploadArtifact: 0, deploy: 0 });
+  });
+
+  for (const response of [
+    new HttpError(503, "quote unavailable"),
+    { priceVersion: "price-v2", freezeUsd: "unknown" },
+    { freezeUsd: "0.10" },
+  ]) {
+    test(`unavailable or invalid quote stops provisioning: ${JSON.stringify(response)}`, async () => {
+      const { platform, options } = setup();
+      platform.client.workerRetention = async (_options, _id, _environment, path = "") => {
+        if (!path) return { enabled: true, holds: [] };
+        if (response instanceof Error) throw response;
+        return response;
+      };
+      await expect(pushWorkerProject({ ...options, retentionPriceVersion: "price-v2" })).rejects.toBeInstanceOf(WorkerPushError);
+      expect(platform.calls).toEqual({ createWorker: 1, updateBudget: 0, createResource: 0, uploadArtifact: 0, deploy: 0 });
+    });
+  }
+
+  test("quotes each type once, counts resources, and does not re-quote an existing Worker hold", async () => {
+    const { root, platform, options, quotePaths } = setup(true);
+    const path = join(root, "xapi.worker.json");
+    const config = JSON.parse(readFileSync(path, "utf8"));
+    config.environments.preview.resources.push({ type: "kv_namespace", bindingName: "CACHE" });
+    writeFileSync(path, JSON.stringify(config));
+    const retention = platform.client.workerRetention!;
+    platform.client.workerRetention = async (...args) => args[3]
+      ? retention(...args)
+      : { enabled: true, holds: [{ resourceType: "WORKER", releasedAt: null }] };
+    let failure: unknown;
+    try { await pushWorkerProject(options); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(WorkerPushError);
+    expect(quotePaths).toEqual(["/quote/KV_NAMESPACE"]);
+    expect((failure as WorkerPushError).recovery.quotes).toEqual([
+      { resourceType: "KV_NAMESPACE", count: 2, freezeUsdPerResource: "0.10", priceVersion: "price-v2" },
+    ]);
+    expect(platform.calls.createResource).toBe(0);
+  });
+
+  test("backend quote rejection after preflight stops without automatically accepting or retrying", async () => {
+    const { platform, options } = setup();
+    let attempts = 0;
+    platform.client.createWorkerResource = async (_options, _id, _env, input) => {
+      attempts++;
+      expect(input.retentionPriceVersion).toBe("price-v2");
+      throw new HttpError(409, "retention_quote_acceptance_required");
+    };
+    await expect(pushWorkerProject({ ...options, retentionPriceVersion: "price-v2" })).rejects.toThrow("retention_quote_acceptance_required");
+    expect(attempts).toBe(1);
+    expect(platform.calls.uploadArtifact).toBe(0);
+    expect(platform.calls.deploy).toBe(0);
+  });
+
+  test("explicit push after a safe deployment quote failure reuses the artifact but sends a stable new attempt", async () => {
+    const { platform, options } = setup();
+    const posts: Record<string, unknown>[] = [];
+    platform.client.deployWorker = async (_options, _id, input) => {
+      posts.push(input);
+      platform.calls.deploy++;
+      const failed = posts.length === 1;
+      const receipt = { ...input, id: failed ? "failed-deployment" : "retry-deployment", environmentId: "env-preview",
+        status: failed ? "FAILED" : "ACTIVE", providerResult: { controlOperationId: "failed-operation" },
+        ...(failed ? { errorCode: "worker_control_cancelled_before_dispatch", outcome: {
+          operationId: "failed-operation", execution: "FAILED", providerEffect: "NOT_DISPATCHED",
+          steps: [{ id: "upload", state: "SKIPPED", evidence: null }], supersededBy: null, observation: null,
+        } } : {}) };
+      platform.state.deployments.push(receipt);
+      if (failed) throw new HttpError(409, "retention_quote_acceptance_required");
+      return receipt;
+    };
+    const quoted = { ...options, retentionPriceVersion: "price-v2" };
+    await expect(pushWorkerProject(quoted)).rejects.toThrow("retention_quote_acceptance_required");
+    expect(posts).toHaveLength(1);
+    expect((await pushWorkerProject(quoted)).status).toBe("ACTIVE");
+    expect(posts).toHaveLength(2);
+    expect(posts[1].artifactId).toBe(posts[0].artifactId);
+    expect(posts[1].idempotencyKey).not.toBe(posts[0].idempotencyKey);
+    expect(posts[1].retentionPriceVersion).toBe("price-v2");
+    expect(platform.calls.uploadArtifact).toBe(1);
+    expect((await pushWorkerProject(options)).deployment.id).toBe("retry-deployment");
+    expect(posts).toHaveLength(2);
+  });
+
+  test("cancelled resource remains blocked with an actionable same-binding hint and no write", async () => {
+    const { platform, options } = setup(true);
+    platform.state.resources.push({ id: "original-resource", bindingName: "STATE", type: "KV_NAMESPACE", status: "ERROR",
+      errorCode: "worker_control_cancelled_before_dispatch", providerResourceId: null });
+    let failure: unknown;
+    try { await pushWorkerProject({ ...options, retentionPriceVersion: "price-v2" }); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(WorkerPushError);
+    expect(JSON.stringify((failure as WorkerPushError).recovery.details)).toContain(`resources create ${workerId} --env preview --type kv --binding STATE`);
+    expect(platform.calls).toEqual({ createWorker: 0, updateBudget: 0, createResource: 0, uploadArtifact: 0, deploy: 0 });
+    expect(platform.state.resources[0].id).toBe("original-resource");
   });
 });

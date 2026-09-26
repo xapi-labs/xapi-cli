@@ -23,6 +23,16 @@ Production uses `api.xapi.to`. Select the test control plane explicitly:
 export XAPI_API_HOST=api.test.xapi.to
 ```
 
+Before test-domain discovery or `xapi workers domains attach`, set
+`XAPI_ACTION_HOST` to the actual test Action service host obtained from the
+operator's configuration; do not guess its hostname. `XAPI_API_HOST` and
+`XAPI_ACTION_HOST` must target the same platform environment. Public actions
+such as `xapi call domain.list` and the domain/DNS actions used by attach use
+the separate Action host, which defaults to `action.xapi.to` even when the API
+host is set to test. An `UNAUTHORIZED` response from that production Action
+host with a test key is not by itself evidence of a backend defect; check both
+host settings first. `--env preview` does not select the test platform hosts.
+
 Do not send the key directly to Cloudflare or any non-xAPI host. xAPI owns the Cloudflare account and API token.
 
 ## Prefer the project workflow
@@ -48,7 +58,7 @@ Choose the `init` form from the project you actually have:
 | Starting point | Command | What `init` does |
 | --- | --- | --- |
 | Empty directory / new service | `xapi workers init my-agent --template persistent-agent` | Creates a complete Worker package from a versioned local template. |
-| Existing React, Vite, Vue, or static Next.js package | `cd app && xapi workers init` | Detects the framework, keeps existing scripts, and adds only the xAPI adapter, Wrangler config, desired-state file, and xAPI package scripts. |
+| Existing React, Vite, Vue, or static Next.js package | `cd app && xapi workers init` | Detects the framework and adds a dependency-free ESM adapter, Wrangler config, desired-state file, and ignore entries; preserves the package manifest and lockfile. |
 | Existing Worker with Wrangler | `xapi workers init --from-wrangler ./wrangler.jsonc` | Imports supported settings after showing what is managed, ignored, or must be re-entered. |
 | Next.js SSR | Run `npx vinext check`, `npx vinext init`, then `xapi workers init --from-wrangler <generated-config>` | Uses the framework adapter's complete Worker bundle instead of treating SSR as static files. |
 
@@ -70,25 +80,30 @@ application's `dev`, `build`, or test scripts:
 ```bash
 cd existing-web-app
 xapi workers init
-npm install
-npm run xapi:build
+# Install the application's existing dependencies using the returned nextSteps.
 xapi workers plan --env preview
 xapi workers push --env preview
 ```
 
-The added files are `xapi.worker.json`, `wrangler.jsonc`, and
-`xapi-worker/index.ts`. The added package scripts are `xapi:build`,
-`xapi:worker:build`, and `xapi:worker:dev`. Review the generated diff before
-installing dependencies. A package inside a monorepo inherits the repository's
-declared package manager or lockfile; use the install and build commands printed
-by `init` rather than substituting npm. Re-running `init` is not a synchronization command;
+The generated files are `xapi.worker.json`, `wrangler.jsonc`, and
+`xapi-worker/index.mjs`, plus entries in `.gitignore`. The adapter is directly
+uploadable ESM; it needs no esbuild compilation or added tooling dependencies.
+`package.json`, existing dependencies, scripts, and lockfiles remain unchanged.
+`build.command` reuses the application's original build script, and `build.output`
+points to `xapi-worker/index.mjs`. Review the generated diff before installing
+dependencies. A package inside a monorepo inherits the repository's declared
+package manager or lockfile; use the install and build commands printed by
+`init` rather than substituting npm. For a fresh clone, these `nextSteps` use
+`npm ci`, a frozen-lockfile install, or modern Yarn's immutable install when the
+matching lockfile exists, and a normal install otherwise.
+Re-running `init` is not a synchronization command;
 once `xapi.worker.json` exists, manage it with the project and resource commands.
 
 Use `--framework react|vite|vue|next` only for ambiguous package metadata.
 Static Next.js requires `output: 'export'`. For Next.js SSR, do not generate a
 generic SPA Worker: run `npx vinext check` and `npx vinext init`, then import the
-generated Wrangler configuration. Local development remains a package concern
-(`xapi:worker:dev` runs Wrangler); there is no separate `workers dev` command.
+generated Wrangler configuration. Local development uses the application's
+existing development script; there is no separate `workers dev` command.
 
 The templates are versioned files packaged with the CLI, so `init` neither
 downloads nor executes remote code. The `persistent-agent` starter declares KV,
@@ -677,9 +692,9 @@ npx xapi-to workers build-provider-status
 npx xapi-to workers budget <worker-id> preview --daily-usd 0.50
 ```
 
-`invocations` shows request metadata and aggregate performance. `logs` reads Tail Worker console messages, exceptions, and traces; request/response bodies, headers, and query strings are deliberately excluded. `usage` shows authorization reservations, actual Tail-settled CPU charges, refunds, and the Cloudflare GraphQL reconciliation gap.
+`invocations` shows request metadata and aggregate performance. `logs` reads Tail Worker console messages, exceptions, and traces; request/response bodies, headers, and query strings are deliberately excluded. `usage` is a bounded diagnostic of daily usage, recent invocation charges (including postpaid receipts), ledger entries, and related wallet transactions. Historical reservation/refund records may still appear; use the billing queries above for complete ledger reconciliation.
 
-The dispatcher preauthorizes the maximum per-request charge before executing user code. It rejects exhausted account/API-key balances and environment daily budgets before dispatch; Tail telemetry settles actual CPU and refunds the unused reservation. If billing authorization is unavailable while enforcement is enabled, execution fails closed.
+Runtime billing is postpaid: the dispatcher checks signed admission state valid for at most five minutes, and Tail telemetry supplies actual request/CPU usage for settlement. It does not reserve a maximum charge and refund the difference per request. Balance and budget checks use periodically refreshed state, so daily budgets are not hard per-request spending caps. Admission fails closed when the state is unavailable, expired, or denies execution. `billing-status` reports platform billing configuration and readiness, not an individual consumption bill.
 
 Each environment receives an exact managed hostname. Use `publicUrl` immediately; it falls back to the shared dispatcher until the dedicated hostname reaches `ACTIVE`. The control plane attaches a Cloudflare Worker Custom Domain, waits for DNS and TLS, and detaches it during Worker deletion. On `ERROR`, inspect the recorded reason and retry explicitly:
 

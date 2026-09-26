@@ -623,3 +623,73 @@ describe("workers plan", () => {
     );
   });
 });
+
+describe("resource recovery guidance", () => {
+  for (const resource of [
+    { errorCode: "worker_control_cancelled_before_dispatch", providerResourceId: null, canRetry: true },
+    { errorCode: "worker_control_cancelled_before_dispatch", providerResourceId: "native-id", canRetry: false },
+    { errorCode: "worker_control_cancelled_before_dispatch", canRetry: false },
+    { errorCode: "provider_timeout", providerResourceId: null, canRetry: false },
+    { status: "UNKNOWN", errorCode: "worker_control_cancelled_before_dispatch", providerResourceId: null, canRetry: false },
+    { errorCode: "worker_control_cancelled_before_dispatch", providerResourceId: null, config: { __xapiDeletionIntentV1: {} }, canRetry: false },
+    { errorCode: "worker_control_cancelled_before_dispatch", providerResourceId: null, config: { controlDeletionRequested: true }, canRetry: false },
+  ]) {
+    test(`creation hint requires proven pre-dispatch cancellation: ${JSON.stringify(resource)}`, async () => {
+      const root = project({ linked: true });
+      const plan = await createWorkerPlan({
+        cwd: root, environment: "preview",
+        clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+        client: {
+          listWorkers: unexpected("listWorkers"),
+          getWorker: async () => ({ id: workerId, slug: "plan-agent", environments: [{ id: "env-preview", name: "PREVIEW", dailyBudgetUsd: 0.25 }], artifacts: [], deployments: [] }),
+          listWorkerResources: async () => [{ id: "original-resource", type: "KV_NAMESPACE", bindingName: "STATE", status: "ERROR", ...resource }],
+          listWorkerSecrets: async () => [{ bindingName: "MODEL_KEY", version: 1 }],
+          getWorkerVariableState: async () => ({ environment: "preview", activeDeploymentId: null, exists: false, variables: [] }),
+        },
+      });
+      const action = plan.actions.find(item => item.kind === "resource" && item.key === "STATE");
+      expect(action?.operation).toBe("BLOCKED");
+      expect(JSON.stringify(action).includes("Retry the same binding")).toBe(resource.canRetry);
+      expect(JSON.stringify(action)).toContain(workerId);
+    });
+  }
+
+  for (const [type, publicType, extra] of [
+    ["kv_namespace", "kv", {}],
+    ["d1_database", "d1", { location: "apac", readReplication: "disabled" }],
+    ["r2_bucket", "r2", { location: "weur" }],
+    ["durable_object", "do", { className: "$Counter" }],
+    ["queue", "queue", {}],
+    ["workflow", "workflow", { className: "Pipeline" }],
+  ] as const) {
+    test(`same-binding hint uses public --type ${publicType} and preserves configuration`, async () => {
+      const root = project({ linked: true });
+      const path = join(root, "xapi.worker.json");
+      const config = JSON.parse(readFileSync(path, "utf8"));
+      config.environments.preview.resources = [{ type, bindingName: "STATE", ...extra }];
+      writeFileSync(path, JSON.stringify(config));
+      const plan = await createWorkerPlan({
+        cwd: root, environment: "preview", clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+        client: {
+          listWorkers: unexpected("listWorkers"),
+          getWorker: async () => ({ id: workerId, slug: "plan-agent", environments: [{ id: "env-preview", name: "PREVIEW", dailyBudgetUsd: 0.25 }], artifacts: [], deployments: [] }),
+          listWorkerResources: async () => [{ id: "original-resource", type: type.toUpperCase(), bindingName: "STATE", status: "ERROR",
+            errorCode: "worker_control_cancelled_before_dispatch", providerResourceId: null,
+            config: { ...extra, ...("location" in extra ? { requestedLocation: extra.location } : {}) } }],
+          listWorkerSecrets: async () => [{ bindingName: "MODEL_KEY", version: 1 }],
+          getWorkerVariableState: async () => ({ environment: "preview", activeDeploymentId: null, exists: false, variables: [] }),
+        },
+      });
+      const action = plan.actions.find(item => item.kind === "resource" && item.key === "STATE");
+      expect(action?.operation).toBe("BLOCKED");
+      expect(action?.message).toContain(`resources create ${workerId} --env preview --type ${publicType} --binding STATE`);
+      if ("className" in extra) expect(action?.message).toContain(`--class-name '${extra.className}'`);
+      if ("location" in extra) expect(action?.message).toContain(`--location ${extra.location}`);
+      if ("readReplication" in extra) expect(action?.message).toContain(`--read-replication ${extra.readReplication}`);
+      expect(action?.message).toContain("--retention-price-version <current-quote-version>");
+      expect(action?.message).toContain("Preserve the existing resource ID");
+      expect(plan.canApply).toBe(false);
+      expect(plan.costImpact.notes.join(" ")).toContain("risk-control target, not a hard spending cap");
+    });
+  }
+});

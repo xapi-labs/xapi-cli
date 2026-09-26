@@ -132,6 +132,15 @@ type UnknownRecord = Record<string, unknown>;
 type DesiredResource =
   WorkerProjectConfig["environments"]["preview"]["resources"][number];
 
+const PUBLIC_RESOURCE_TYPES: Record<DesiredResource["type"], string> = {
+  kv_namespace: "kv",
+  d1_database: "d1",
+  r2_bucket: "r2",
+  durable_object: "do",
+  queue: "queue",
+  workflow: "workflow",
+};
+
 const KIND_ORDER: Record<WorkerPlanKind, number> = {
   worker: 0,
   budget: 1,
@@ -234,6 +243,7 @@ function compareResources(
   desired: DesiredResource[],
   remote: UnknownRecord[],
   environment: "preview" | "production",
+  workerId?: string,
 ): boolean {
   let blocked = false;
   const remoteByName = new Map<string, UnknownRecord>();
@@ -338,12 +348,19 @@ function compareResources(
     const readyForDeployment = resourceReadyForDeployment(state);
     if (!readyForDeployment) {
       blocked = true;
+      const config = record(existing.config);
+      const cancelledBeforeDispatch = status === "ERROR" &&
+        existing.errorCode === "worker_control_cancelled_before_dispatch" &&
+        existing.providerResourceId === null &&
+        config?.__xapiDeletionIntentV1 === undefined && !config?.controlDeletionRequested;
       add(
         actions,
         "BLOCKED",
         "resource",
         resource.bindingName,
-        `Managed resource is ${status}; wait for or repair it before deployment`,
+        cancelledBeforeDispatch
+          ? `Previous creation was cancelled before provider dispatch. Retry the same binding: xapi workers resources create ${workerId || "<worker-id>"} --env ${environment} --type ${PUBLIC_RESOURCE_TYPES[resource.type]} --binding ${resource.bindingName}${resource.className ? ` --class-name '${resource.className}'` : ""}${resource.location ? ` --location ${resource.location}` : ""}${resource.readReplication ? ` --read-replication ${resource.readReplication}` : ""} --retention-price-version <current-quote-version>; then rerun plan. Preserve the existing resource ID.`
+          : `Managed resource is ${status}; inspect xapi workers resources list ${workerId || "<worker-id>"} --env ${environment} and workers audit ${workerId || "<worker-id>"} before retrying. No resource will be recreated automatically.`,
         desiredState,
         { status, ...currentPlacement },
       );
@@ -667,8 +684,9 @@ function planCostImpact(
         effect: "USAGE_DEPENDENT" as const,
       }));
   const notes = [
-    "The daily budget is a spending cap, not a predicted charge.",
+    "The daily budget is a risk-control target, not a hard spending cap or predicted charge; observation and edge propagation can delay enforcement.",
     "Worker and managed-resource charges depend on measured usage; plan does not invent traffic or storage assumptions.",
+    "First release and new resources may require a refundable retention quote. Push checks it before provisioning; a new project must first save its empty Worker record to obtain the scoped quote. READY is not balance or provider admission.",
   ];
   if (!rates) {
     notes.push(
@@ -878,7 +896,7 @@ export async function createWorkerPlan(
   }
 
   prerequisiteBlocked =
-    compareResources(actions, desired.resources, remoteResources, options.environment) ||
+    compareResources(actions, desired.resources, remoteResources, options.environment, project.config.workerId) ||
     prerequisiteBlocked;
   prerequisiteBlocked =
     compareSecrets(actions, desired.secrets, remoteSecrets) ||
