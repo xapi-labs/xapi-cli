@@ -496,16 +496,16 @@ test scripts:
 ```bash
 cd existing-web-app
 xapi workers init
-npm install
-npm run xapi:build
+# Run the existing package-manager install command printed by init.
+# plan and push run the configured existing build.
 xapi workers plan --env preview
 xapi workers push --env preview
 ```
 
-The initializer adds `xapi:build`, `xapi:worker:build`, and
-`xapi:worker:dev`, plus a small `xapi-worker/index.ts`, `wrangler.jsonc`, and
-`xapi.worker.json`. `xapi:worker:dev` is only a package script around Wrangler;
-there is no separate xAPI local runtime. For workspace packages, `init` walks
+The initializer preserves package.json, dependencies, scripts and lockfiles.
+It adds a dependency-free `xapi-worker/index.mjs`, `wrangler.jsonc`, and
+`xapi.worker.json`. It does not add `xapi:build` or other package scripts;
+use the existing development command. There is no separate xAPI local runtime. For workspace packages, `init` walks
 to the repository root and honors its declared `packageManager` or lockfile;
 the printed install and build commands are therefore safe for Yarn and pnpm
 monorepos as well as npm and Bun projects. Use `--framework react|vite|vue|next`
@@ -538,8 +538,9 @@ When `webAppReady` is false, production promotion asks you to review the base
 path, root-relative routes, and OAuth callbacks without blocking applications
 that deliberately support path-prefix hosting. Project bundles use one
 authenticated multipart request: modules and static assets are not uploaded as
-independent deployments. Limits are 200 modules / 10 MiB module content,
-10,000 assets / 25 MiB per asset, and 100 MiB total decoded project content.
+independent deployments. Limits are 64 MiB aggregate module content (no arbitrary 200-module cutoff),
+100,000 assets / 25 MiB per asset, and 100 MiB total decoded project content.
+These are CLI validation limits; the platform and provider also validate uploads.
 
 Environment placement is declared beside the budget. Workers remain globally
 deployed; the data location is inherited only by newly created D1/R2 resources,
@@ -780,9 +781,27 @@ xapi-to workers budget <worker-id> production --daily-usd 3
 xapi-to workers delete <worker-id> --yes
 ```
 
-Set `XAPI_API_HOST=test.xapi.to` for the test control plane. Mutating requests
+Set `XAPI_API_HOST=api.test.xapi.to` for the test control plane. Mutating requests
 are not retried automatically; when a deployment result is uncertain, inspect
 the Worker and retry with the same idempotency key.
+
+For a custom hostname, `workers domains attach --xdomain-domain-id` automates
+ownership TXT through xdomain. Without an xdomain record, use the public manual
+DNS flow (the authoritative zone must still belong to the platform CF account):
+
+```sh
+xapi-to workers domains challenge <worker-id> --env preview \
+  --hostname chat.example.com --format json > challenge.json
+# Publish the exact TXT dns.name / dns.value from challenge.json, then:
+xapi-to workers domains attach <worker-id> --env preview --challenge-file challenge.json
+xapi-to workers domains list <worker-id>
+```
+
+Remove that temporary TXT after attachment is accepted. `PROVISIONING` is not
+yet `ACTIVE`; verify TLS/routing and then the application's business route.
+See the bundled [domain guide](skills/xapi-workers/references/domains.md) for
+DNS propagation, expiry and explicit retry instructions. No custom domain is
+required to use a platform-provided public address.
 
 ### OAuth
 

@@ -1,6 +1,43 @@
-# xdomain + xAPI Workers domains
+# xAPI Workers domains
 
 Use this workflow when a domain managed through xAPI Domains must serve one xAPI Worker environment. The supported first version requires the domain's Cloudflare zone and Workers for Platforms to belong to the same platform Cloudflare account.
+
+Platform-generated addresses do not require this workflow. For your own hostname,
+choose xdomain automatic DNS below, or manual DNS when no xdomain domain record
+exists. Both use the same xAPI ownership and binding APIs; manual DNS does not
+bypass the same-account zone requirement. Where a domain was purchased is not
+the determining factor; its authoritative Cloudflare zone is.
+
+## Manual DNS without an xdomain record
+
+The target must have an active deployment. Request a scoped challenge:
+
+```sh
+xapi workers domains challenge <worker-id> --env preview \
+  --hostname chat.example.com --format json > challenge.json
+```
+
+Publish the exact TXT `dns.name` / `dns.value` from this file through your DNS
+provider. If the provider asks for a relative record name, remove only your zone's
+suffix. Keep the short-lived challenge out of source control. Then submit once:
+
+```sh
+xapi workers domains attach <worker-id> --env preview --challenge-file challenge.json
+xapi workers domains list <worker-id>
+```
+
+This attach sends one request, with no automatic mutation retry. If DNS is still
+pending, wait for propagation and explicitly repeat attach using the same file
+before `expiresAt`. If the challenge expired, request a new one and replace the
+TXT value. If the request timed out, list first: an accepted domain has an ID;
+use `domains retry <worker-id> <domain-id>` for that domain when needed rather than
+claiming the timeout means no binding was created. xAPI remains authoritative for
+ownership, resource state and whether the request may proceed.
+
+Once accepted, remove only the exact temporary challenge TXT. Manual mode does
+not change DNS on your behalf. `PROVISIONING` is accepted but TLS/routing remains
+pending; query `domains list` until `ACTIVE`, then verify the application route.
+An unconfirmed binding is not a reason to rebuild or redeploy the application.
 
 ## What the combined command does
 
@@ -14,7 +51,7 @@ Use this workflow when a domain managed through xAPI Domains must serve one xAPI
 
 Cloudflare owns the final DNS record, certificate, TLS renewal, and request routing. Do not add a competing A, AAAA, or CNAME record. The runtime request path resolves the exact hostname from platform edge state; it does not call xdomain, the xAPI control plane, or a customer database.
 
-## Attach
+## Automatic DNS with xdomain
 
 Inspect the Worker and domain before changing anything:
 

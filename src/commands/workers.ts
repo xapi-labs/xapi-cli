@@ -44,6 +44,8 @@ import {
   workerBillingOutputMode,
 } from "../workers-billing-output.ts";
 import { bindXdomainWorker } from "../workers-domain-bind.ts";
+import { readWorkerDomainChallenge } from "../workers-domain-challenge.ts";
+import { formatWorkerRetentionGuidance, type WorkerRetentionGuidanceOptions } from "../workers-operation-guidance.ts";
 import { inspectWorker } from "../workers-inspect.ts";
 import {
   formatWorkerInspection,
@@ -91,7 +93,9 @@ RESOURCES, BILLING, AND LIFECYCLE
   retention show|quote|accept|pause|resume|keep-paused|delete <worker-id> --env ENV
   billing prices|overview|usage|ledger|forecast|risk|lifecycle <worker-id> --env preview|production
   domains list <worker-id>
+  domains challenge <worker-id> --env ENV --hostname HOSTNAME --format json
   domains attach <worker-id> --env ENV --xdomain-domain-id ID [--subdomain @]
+  domains attach <worker-id> --env ENV --challenge-file challenge.json
   domains detach <worker-id> <domain-id> --yes
   domains retry <worker-id> <domain-id>
   schedules list <worker-id>
@@ -727,15 +731,16 @@ export async function workersCommand(
       return;
     }
     case "retention": {
-      assertFlags(flags, ["env", "type", "price-version", "yes"]);
+      assertFlags(flags, ["env", "type", "price-version", "yes", "json"]);
       const [action, id, ...extra] = rest;
       if (!id || extra.length || !["show", "quote", "accept", "pause", "resume", "keep-paused", "delete"].includes(action)) err("usage: workers retention show|quote|accept|pause|resume|keep-paused|delete <worker-id> --env ENV");
       const env = environment(flags.env);
+      const retentionOutputMode = workerBillingOutputMode(flags);
       if (["accept", "delete"].includes(action) && flags.yes !== "true") err("--yes is required to accept automatic reserve-exhaustion deletion or delete this environment");
       const result = await client.workerRetention(options(), id, env,
         action === "quote" ? `/quote/${encodeURIComponent(flags.type || "WORKER")}` : action === "accept" ? "/accept" : action === "show" ? "" : "/actions",
         action === "accept" ? { policyVersion: "retention-v3", automaticDeletionAccepted: true, priceVersion: required(flags["price-version"], "--price-version") } : ["show", "quote"].includes(action) ? undefined : { action });
-      if (flags.format === "json") output(result);
+      if (retentionOutputMode === "json") output(result, "json");
       else {
         const state = result.lifecycle || result;
         console.log(`Worker ${id} · ${env}\nState: ${state.state || (result.enabled === false ? "retention disabled" : "quote / policy")}`);
@@ -752,6 +757,10 @@ export async function workersCommand(
         if (state.pauseReason) console.log(`Pause reason: ${state.pauseReason}`);
         if (result.fundingSource) console.log(`Funding: ${result.fundingSource}`);
         if (state.graceDeadlineAt) console.log(`Deletion deadline: ${state.graceDeadlineAt}`);
+        console.log(formatWorkerRetentionGuidance({
+          action: action as WorkerRetentionGuidanceOptions["action"],
+          workerId: id, environment: env, response: result,
+        }));
         console.log("Frozen funds remain yours; freezing is not a consumption charge. Use --format json for full evidence.");
       }
       return;
@@ -1329,6 +1338,16 @@ export async function workersCommand(
     }
     case "domains": {
       const [action, ...domainArgs] = rest;
+      if (action === "challenge") {
+        assertFlags(flags, ["env", "hostname"]);
+        output(await client.createWorkerDomainChallenge(
+          options(),
+          oneId(domainArgs, "usage: xapi-to workers domains challenge <worker-id> --env ENV --hostname HOSTNAME"),
+          environment(flags.env),
+          required(flags.hostname, "--hostname"),
+        ));
+        return;
+      }
       if (action === "list") {
         assertFlags(flags);
         output(
@@ -1343,11 +1362,19 @@ export async function workersCommand(
         return;
       }
       if (action === "attach") {
-        assertFlags(flags, ["env", "xdomain-domain-id", "subdomain", "timeout"]);
+        assertFlags(flags, ["env", "xdomain-domain-id", "subdomain", "timeout", "challenge-file"]);
         const workerId = oneId(
           domainArgs,
-          "usage: xapi-to workers domains attach <worker-id> --env ENV --xdomain-domain-id ID [--subdomain @]",
+          "usage: xapi-to workers domains attach <worker-id> --env ENV (--xdomain-domain-id ID [--subdomain @] | --challenge-file PATH)",
         );
+        if (flags["challenge-file"]) {
+          if (flags["xdomain-domain-id"] || flags.subdomain || flags.timeout) {
+            err("--challenge-file cannot be combined with --xdomain-domain-id, --subdomain or --timeout; manual attachment sends one request");
+          }
+          const challenge = await readWorkerDomainChallenge(flags["challenge-file"], environment(flags.env));
+          output(await client.attachWorkerDomain(options(), workerId, challenge.challengeToken));
+          return;
+        }
         const cfg = getConfig();
         requireApiKey(cfg);
         output(
@@ -1397,7 +1424,7 @@ export async function workersCommand(
         );
         return;
       }
-      err("usage: xapi-to workers domains <list|attach|detach|retry> ...");
+      err("usage: xapi-to workers domains <list|challenge|attach|detach|retry> ...");
     }
     case "schedules": {
       const [action, ...scheduleArgs] = rest;

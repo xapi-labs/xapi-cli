@@ -703,6 +703,14 @@ npx xapi-to workers domains list <worker-id> --format pretty
 npx xapi-to workers domains retry <worker-id> <domain-id>
 ```
 
+For your own hostname, use `workers domains attach --xdomain-domain-id` for
+automated DNS, or `workers domains challenge --env ENV --hostname HOSTNAME`
+followed by manual TXT and `domains attach --env ENV --challenge-file PATH`
+when no xdomain record exists. Both require an authoritative zone in the
+platform Cloudflare account; they do not support arbitrary external accounts.
+Read [the domain workflow](../../xapi-workers/references/domains.md) before
+binding. Platform-generated addresses need no separate domain purchase.
+
 Bindings are risk-tiered. A catalog entry describes product policy; `workers capabilities` is the live Cloudflare token preflight. A failed D1 item, for example, must identify `D1 Edit` and block D1 creation while leaving unrelated resources usable.
 
 ## Delete safely

@@ -22,6 +22,24 @@ Use actions permitted by the current lifecycle. Manual pause, low balance and pe
 
 System retention pause/delete is a durable policy intent and is retried by the system after rechecking current policy, generation and native identity. Failed/expired management attempts must not indefinitely block stopping consumption. This differs from user-requested mutations, which are not automatically replayed. Missing final samples remain metering gaps; deletion permission does not itself authorize a refund or financial release.
 
+## Status and bounded observation
+
+A successful action response or an accepted/requested lifecycle intent is not completion. Read `billing lifecycle` for the same Worker and environment: `data.state` is the lifecycle projection; `phase`, `completedSteps` and `totalSteps` describe recorded step receipts, not an enumeration of every expected step. A complete receipt count, completed phase or absent `nextStep` alone does not prove the whole operation finished. Report `nextStep` and `blockerCodes` as returned, including failed steps and unresolved prerequisites.
+
+After an action, use read-only follow-up commands with the original target:
+
+```sh
+xapi workers billing lifecycle <worker-id> --env preview
+xapi workers retention show <worker-id> --env preview
+xapi workers inspect <worker-id> --env preview
+```
+
+Substitute the actual Worker ID and environment. No wait is required. If polling is useful, choose a finite observation window and report the last observed state, blockers and remaining checks when it ends. Ending or interrupting local polling stops observation; it does not cancel the backend operation. Do not automatically repeat pause, resume, delete or other mutations as a status check, and do not interpret failure or timeout as rollback.
+
+`SUSPENDED_GRACE` means execution is paused: retained storage is not deleted or refunded by pausing, and retention charges may continue. `DELETED` still needs separate cleanup, final-metering and reserve-release evidence. Unknown collector freshness or missing samples mean unknown usage/cost, not zero.
+
+An `ACTIVE` deployment is distinct from public availability. Inspection presents platform and active domain URLs separately, using reported HTTPS URLs or validated reported hostnames. An active domain can be platform-managed or custom; its presence does not change the canonical URL or establish readiness. Verify HTTPS reachability and application behavior separately; metadata inspection does not perform that probe.
+
 For crash recovery, distinguish slow live ownership from an expired lease or exited process. Do not kill shared services to reproduce a failure. Use an isolated authorized test process/environment. Record deployment ID, lease/recovery state, delete intent and reserve changes; verify no script is recreated after deletion wins.
 
 ## Delete one Container Application
@@ -48,7 +66,7 @@ Keep the operation ID and inspect its result. With the unified execution backend
    ```
 
    `workers delete <worker-id> --yes` is whole-Worker deletion; use only when the whole project is disposable and authorized.
-4. Poll lifecycle, resources and public reachability to a terminal outcome. An accepted request, deleted UI badge or retained historical deployment reference is not physical-destruction proof. If provider proof is unavailable to this key, report that limitation; don't treat an API visibility 404 alone as proof.
+4. Read lifecycle, resources and public reachability for completion evidence. If polling, use a finite observation window; if it ends before a terminal outcome, report the pending state and read-only follow-up. An accepted request, deleted UI badge or retained historical deployment reference is not physical-destruction proof. If provider proof is unavailable to this key, report that limitation; don't treat an API visibility 404 alone as proof.
 5. Query final retention/ledger evidence: unused reserve released, actual retention/cleanup charges accounted for, pending final metering and late adjustments identified. Verify a repeat read/recovery does not cause a second refund or resource resurrection.
 
 Natural expiry refund is a separate test: use an isolated disposable environment and observe its actual policy trigger/deadline. Manual deletion cannot substitute for it. Keep billing evidence after cleanup and list residual resources or pending refunds explicitly.

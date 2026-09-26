@@ -1,4 +1,5 @@
 import type { WorkerBillingQueryKind } from "./workers-client.ts";
+import { workerLifecycleGuidance, workerReadOnlyFollowups } from "./workers-operation-guidance.ts";
 
 type RecordValue = Record<string, unknown>;
 export type WorkerBillingOutputMode = "human" | "json";
@@ -67,6 +68,9 @@ function qualityLines(response: RecordValue): string[] {
     row("Data quality", quality),
     row("Complete through", completeThrough),
     ...warning,
+    ...(completeThrough === "—"
+      ? ["  ! Collector freshness is unknown; missing metering is not zero usage or zero cost."]
+      : []),
   ];
 }
 
@@ -297,6 +301,14 @@ export function formatWorkerBillingResponse(
     ...qualityLines(response),
     "",
     ...FORMATTERS[kind](data),
+    ...(kind === "lifecycle"
+      ? [
+          "",
+          "Guidance",
+          ...workerLifecycleGuidance(data).map(line => `  ${line}`),
+          ...workerReadOnlyFollowups(response).map(command => `  ${command}`),
+        ]
+      : []),
     RULE,
   ].join("\n");
 }
