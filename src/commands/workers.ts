@@ -291,9 +291,10 @@ STARTING POINTS
     Run vinext check/init first, then import its generated Wrangler config.
 
 WRITES
-  Existing frontends gain xapi.worker.json, wrangler.jsonc,
-  xapi-worker/index.ts, and xapi:* package scripts. Re-running init is not a
-  resource synchronization operation.
+  Existing static frontends gain xapi.worker.json, wrangler.jsonc,
+  xapi-worker/index.mjs, and local ignore entries. Existing package.json,
+  dependencies, scripts, and lockfiles are preserved.
+  Re-running init is not a resource synchronization operation.
 
 FLAGS
   --template worker|agent|chat|webhook|persistent-agent
