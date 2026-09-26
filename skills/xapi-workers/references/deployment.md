@@ -37,6 +37,39 @@ cd my-service
 xapi workers plan --env preview
 ```
 
+### Existing static web applications
+
+For a Vite-based client application (including React or Vue), start in its
+application package directory:
+
+```sh
+xapi workers init . --framework vite
+# Install the added build tools with the application's declared package manager.
+xapi workers plan --env preview
+```
+
+Keep the application's existing build script and lockfile as the baseline.
+Initialization adds deployment scripts and development dependencies; inspect
+the resulting package/lockfile diff and rebuild before publishing. A dependency
+resolution failure is a local build problem, not proof that Workers cannot run
+the application. Do not upgrade unrelated application dependencies to hide it.
+
+The generated Vite configuration assumes `dist`. Check the actual build output:
+custom Vite builds and SvelteKit **static** adapters can emit `build`, `docs`, or
+another directory. Set `assets.directory` in both `xapi.worker.json` and its
+referenced Wrangler config to that directory, relative to each config file.
+Keep `build.output` pointing to the Worker entry bundle, not the static directory.
+An SSR application needs its framework's native Worker bundle instead; a static
+adapter cannot replace its server-side behavior.
+
+Retain the application's routing behavior. `single-page-application` is suitable
+for an SPA's client-side routes; it does not make missing JS/CSS files valid.
+After publication, check a real deep link and refresh, resource MIME types,
+actual UI actions, and any PWA/local-storage persistence across an update.
+The generated health endpoint checks transport only. Use the returned routing
+readiness to distinguish a root hostname from `PATH_FALLBACK`; do not invent
+per-page forwarding rules or count health 200 as application acceptance.
+
 For an APAC-oriented service, initialize or edit the environment desired state
 with `defaultResourceLocation: "apac"` and `placementMode: "smart"`. The first
 setting applies only when xAPI creates new D1/R2 resources; the second emits
