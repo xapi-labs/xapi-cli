@@ -47,6 +47,14 @@ Compare only the same host, Worker, environment, UTC day and filter scope. A res
 - Unknown R2 actions need explicit classification. Never default all unknown operations to free or Class A. A user-approved provisional xAPI waiver for one named operation does not establish Cloudflare's official price, and does not cover Queue deliveries triggered by notifications or other API actions.
 - Provider free allowances, subscriptions and shared infrastructure costs require separate provider evidence. A zero account invoice under a free allowance does not prove an operation is intrinsically free.
 
+## Delayed observations are not a confirmed collection defect
+
+A five-minute collection schedule is not a promise that Cloudflare will expose all usage within five minutes. An empty result, `lastSuccessfulAt`, and a cursor watermark prove different things: a successful query can return no observations, and a watermark alone does not prove that all usage before it is available. `lastObservedAt` describes the latest observed usage bucket; for an idle resource, its age alone is not proof of a stalled collector.
+
+If a known operation is absent, preserve its resource identity and time window, then take a later bounded snapshot. Compare the same resource, dataset, window, and latest revisions. If facts subsequently arrive, check that the ledger charges only the change in cumulative usage and keeps the original price snapshot. Do not count old and revised quantities as separate operations, force a new deployment, change prices, or restart resources just to make a bill appear. Stop polling at the stated observation deadline and report the missing evidence; do not claim free usage or a collection bug without matching query/response evidence.
+
+For a real discrepancy, give the operator the exact resource/window and sanitized cursor/error metadata. Distinguish a provider data delay, a query/identity mismatch, a mapping failure, and a settlement failure before proposing a fix. Never promise a universal provider reporting delay based on one test.
+
 ## Real cost experiment
 
 Capture baseline snapshot and full ledger. Perform a bounded, named business operation; record request/job/object IDs and UTC times. Poll collection within a bounded window and capture a second full ledger plus same-snapshot overview. Identify new and adjusted entries, rather than subtracting rounded UI totals. Account for background jobs, retries, asynchronous CPU and delayed storage facts. If crossing UTC midnight, reconcile each day separately.
