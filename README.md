@@ -642,6 +642,12 @@ no-op, while reusing a binding for another type is rejected. `--env both`
 declares the same binding independently for preview and production; it does not
 make both environments share one physical resource.
 
+Resource and static-assets binding names are case-sensitive: `Chat`, `CHAT`, and
+`chat` remain distinct. They must match `^[A-Za-z][A-Za-z0-9_]{0,63}$`; import,
+resource editing, and deployment preserve the spelling. This is a bounded native
+identifier subset, not full JavaScript identifier support. Secret names retain
+`^[A-Z][A-Z0-9_]{0,63}$` and their existing value-management behavior.
+
 `push` creates missing preview resources only after its full plan passes.
 `promote` performs the same production preflight and, after confirmation,
 creates missing production declarations before activating the exact tested

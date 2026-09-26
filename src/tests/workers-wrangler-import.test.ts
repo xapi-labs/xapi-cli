@@ -28,6 +28,46 @@ function workspace(): string {
 }
 
 describe("Wrangler project import", () => {
+  test("imports the official durable-chat Chat binding and initial SQLite migration unchanged", () => {
+    const root = workspace();
+    // cloudflare/templates@a0bb6ef9a990a5ec4afecab50edf56c69676b031,
+    // durable-chat-template/wrangler.json (native config; no dependency build required).
+    const native = {
+      compatibility_date: "2025-10-08", main: "src/server/index.ts", name: "durable-chat-template",
+      migrations: [{ new_sqlite_classes: ["Chat"], tag: "v1" }],
+      assets: { directory: "./public", binding: "ASSETS", not_found_handling: "single-page-application" },
+      build: { command: "esbuild src/client/index.tsx --bundle --splitting --format=esm --platform=browser --outdir=public/dist" },
+      durable_objects: { bindings: [{ class_name: "Chat", name: "Chat" }] },
+      observability: { enabled: true }, upload_source_maps: true,
+    };
+    const path = join(root, "wrangler.json");
+    const original = JSON.stringify(native);
+    writeFileSync(path, original);
+    const result = importWranglerProject({ cwd: root, wranglerPath: path,
+      buildCommand: "npx wrangler deploy --dry-run --outfile dist/worker.bundle",
+      buildOutput: "dist/worker.bundle", previewDailyBudgetUsd: 0.25, productionDailyBudgetUsd: 0.25 });
+    expect(result.wrote).toBe(true);
+    expect(result.report.compatible).toBe(true);
+    expect(result.report.entries.filter(entry => entry.category === "UNSUPPORTED")).toEqual([]);
+    expect(result.report.entries.filter(entry => entry.category === "MANAGED" && entry.path === "migrations")).toHaveLength(2);
+    const config = loadWorkerProject(root).config;
+    for (const env of ["preview", "production"] as const) {
+      expect(config.environments[env].resources).toEqual([{ type: "durable_object", bindingName: "Chat", className: "Chat" }]);
+    }
+    expect(config.assets?.binding).toBe("ASSETS");
+    expect(readFileSync(path, "utf8")).toBe(original);
+  });
+
+  test("keeps mixed-case Secrets unsupported when importing resource bindings", () => {
+    const root = workspace();
+    writeFileSync(join(root, "wrangler.json"), JSON.stringify({ name: "chat", main: "index.ts",
+      durable_objects: { bindings: [{ name: "Chat", class_name: "Chat" }] }, secrets: ["ApiKey"] }));
+    const result = importWranglerProject({ cwd: root, wranglerPath: "wrangler.json" });
+    expect(result.wrote).toBe(false);
+    expect(result.report.entries).toContainEqual(expect.objectContaining({ category: "UNSUPPORTED", path: "vars.ApiKey" }));
+    expect(existsSync(join(root, "xapi.worker.json"))).toBe(false);
+  });
+
   test('imports a prebuilt native Container application and its Durable Object link', () => {
     const root = workspace();
     writeFileSync(join(root, 'package.json'), '{}');

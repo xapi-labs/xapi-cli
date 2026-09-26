@@ -31,7 +31,9 @@ import {
 } from "./workers-project.ts";
 
 const MAX_WRANGLER_BYTES = 512 * 1024;
-const BINDING_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+// Resource names preserve case; Secret names retain their existing contract.
+const BINDING_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const CLASS_NAME = /^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/;
 
 export type WranglerCompatibilityCategory =
@@ -308,7 +310,7 @@ function bindingName(
       entries,
       "UNSUPPORTED",
       path,
-      "Binding name must match ^[A-Z][A-Z0-9_]{0,63}$ before xAPI can manage it",
+      "Binding name must match ^[A-Za-z][A-Za-z0-9_]{0,63}$ before xAPI can manage it",
       { environment },
     );
     return undefined;
@@ -723,7 +725,7 @@ function secretNames(
   }
   const accepted: string[] = [];
   for (const name of [...candidates].sort()) {
-    if (!BINDING_NAME.test(name)) {
+    if (!SECRET_NAME.test(name)) {
       compatibilityEntry(
         entries,
         "UNSUPPORTED",

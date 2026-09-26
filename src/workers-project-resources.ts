@@ -129,10 +129,10 @@ function steps(environments: EnvironmentName[]): string[] {
 }
 
 function bindingName(value: string | undefined): string {
-  if (!value || !/^[A-Z][A-Z0-9_]{0,63}$/.test(value)) {
+  if (!value || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value)) {
     throw new WorkerProjectConfigError(
       "worker_project_resource_binding_invalid",
-      "Binding name must start with A-Z and contain only A-Z, 0-9, and underscore",
+      "Binding name must start with A-Z or a-z and contain only letters, 0-9, and underscore",
     );
   }
   return value;

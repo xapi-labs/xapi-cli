@@ -34,8 +34,8 @@ export const workerManagedResourceSchema = z
     bindingName: z
       .string()
       .regex(
-        /^[A-Z][A-Z0-9_]{0,63}$/,
-        "must start with A-Z and contain only A-Z, 0-9, and underscore",
+        /^[A-Za-z][A-Za-z0-9_]{0,63}$/,
+        "must start with A-Z or a-z and contain only letters, 0-9, and underscore",
       ),
     className: z
       .string()
@@ -134,8 +134,8 @@ const staticAssetsSchema = z
     binding: z
       .string()
       .regex(
-        /^[A-Z][A-Z0-9_]{0,63}$/,
-        "must start with A-Z and contain only A-Z, 0-9, and underscore",
+        /^[A-Za-z][A-Za-z0-9_]{0,63}$/,
+        "must start with A-Z or a-z and contain only letters, 0-9, and underscore",
       )
       .optional(),
     htmlHandling: z

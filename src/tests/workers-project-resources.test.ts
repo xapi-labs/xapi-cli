@@ -35,6 +35,16 @@ function linkedProject(): string {
 }
 
 describe("project resource declarations", () => {
+  test("edits mixed-case bindings by exact identity without renaming uppercase resources", () => {
+    const root = project();
+    for (const name of ["Chat", "CHAT", "chat"]) {
+      addProjectResource({ cwd: root, environments: ["preview"], resource: { type: "durable_object", bindingName: name, className: "Room" } });
+    }
+    removeProjectResource({ cwd: root, environments: ["preview"], bindingName: "Chat" });
+    expect(loadWorkerProject(root).config.environments.preview.resources.map(r => r.bindingName)).toEqual(["CHAT", "chat"]);
+    expect(() => addProjectResource({ cwd: root, environments: ["preview"], resource: { type: "kv_namespace", bindingName: "chat" } })).toThrow("already declares");
+  });
+
   test("adds one declaration to both environments and is idempotent", () => {
     const root = project();
     const first = addProjectResource({

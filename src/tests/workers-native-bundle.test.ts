@@ -65,10 +65,10 @@ test('preserves observability in artifact identity and rejects unmapped settings
  await expect(loadWorkerArtifactInput(bundle([{...metadata,content:JSON.stringify({...JSON.parse(metadata.content),observability:{enabled:true,unknown:true}})},entry]))).rejects.toThrow('mapping');
 });
 
-test('accepts Wrangler package diagnostics and the declared static assets binding', async () => {
+test.each(['ASSETS', 'Assets', 'assets', 'constructor', 'prototype', 'toString', 'hasOwnProperty'])('accepts Wrangler package diagnostics and the declared static assets binding', async (bindingName) => {
  const path = bundle([{...metadata, content:JSON.stringify({
    ...JSON.parse(metadata.content),
-   bindings:[{name:'ASSETS',type:'assets'}],
+   bindings:[{name:bindingName,type:'assets'}],
    package_dependencies:[{name:'wrangler',packageJsonVersion:'^4.135.0',installedVersion:'4.135.0'}],
  })},entry]);
  const assets = join(dirname(path), 'public');
@@ -76,7 +76,7 @@ test('accepts Wrangler package diagnostics and the declared static assets bindin
  writeFileSync(join(assets, 'index.html'), '<h1>Jev Trader</h1>');
  const a = await loadWorkerArtifactInput(path, undefined, {
    directory: assets,
-   binding: 'ASSETS',
+   binding: bindingName,
  });
  validateNativeDeploymentMetadata(a,{compatibilityDate:'2026-09-10',compatibilityFlags:['nodejs_compat']},[]);
  expect(JSON.stringify(a.upload)).not.toContain('package_dependencies');
@@ -114,14 +114,15 @@ test('requires native Container classes to match the explicit xAPI deployment in
  await expect(loadWorkerArtifactInput(bundle([native,entry]), undefined, undefined, [])).rejects.toThrow('Container classes differ');
 });
 
-test('maps local native Durable Object bindings by binding and class, not a foreign namespace', async () => {
- const binding = {name:'API_CONTAINER', type:'durable_object_namespace', class_name:'ApiContainer'};
+test.each(['API_CONTAINER', 'Chat', 'chat', 'constructor', 'prototype', 'toString', 'hasOwnProperty'])('maps local native Durable Object bindings by binding and class, not a foreign namespace', async (bindingName) => {
+ const binding = {name:bindingName, type:'durable_object_namespace', class_name:'ApiContainer'};
  const native = {...metadata, content:JSON.stringify({...JSON.parse(metadata.content), bindings:[binding]})};
  const artifact = await loadWorkerArtifactInput(bundle([native,entry]));
  const settings = {compatibilityDate:'2026-09-10',compatibilityFlags:['nodejs_compat']};
- validateNativeDeploymentMetadata(artifact,settings,[{type:'durable_object',bindingName:'API_CONTAINER',className:'ApiContainer'}]);
- expect(() => validateNativeDeploymentMetadata(artifact,settings,[{type:'durable_object',bindingName:'API_CONTAINER',className:'WrongClass'}])).toThrow('API_CONTAINER');
- expect(() => validateNativeDeploymentMetadata(artifact,settings,[])).toThrow('API_CONTAINER');
+ validateNativeDeploymentMetadata(artifact,settings,[{type:'durable_object',bindingName,className:'ApiContainer'}]);
+ expect(() => validateNativeDeploymentMetadata(artifact,settings,[{type:'durable_object',bindingName,className:'WrongClass'}])).toThrow(bindingName);
+ expect(() => validateNativeDeploymentMetadata(artifact,settings,[])).toThrow(bindingName);
+ expect(() => validateNativeDeploymentMetadata(artifact,settings,[{type:'durable_object',bindingName:bindingName + '_OTHER',className:'ApiContainer'}])).toThrow(bindingName);
  for (const foreign of [{script_name:'another-worker'}, {namespace_id:'another-namespace'}, {environment:'production'}]) {
   await expect(loadWorkerArtifactInput(bundle([{...native,content:JSON.stringify({...JSON.parse(native.content), bindings:[{...binding,...foreign}]})},entry]))).rejects.toThrow('mapping');
  }

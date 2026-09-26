@@ -10,6 +10,8 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 import {
+  workerManagedResourceSchema,
+  workerProjectConfigSchema,
   WORKER_PROJECT_SCHEMA_URL,
   findWorkerProjectConfig,
   loadWorkerProject,
@@ -350,4 +352,29 @@ describe("Worker project configuration", () => {
       );
     }
   });
+});
+
+// The published schema and runtime admission must describe the same resource names.
+test("resource and assets schemas preserve native case while keeping Secret names unchanged", () => {
+  const schema = JSON.parse(readFileSync(new URL("../../schemas/worker-project.v1.schema.json", import.meta.url), "utf8"));
+  const resourcePattern = new RegExp(schema.$defs.resource.properties.bindingName.pattern);
+  const assetsPattern = new RegExp(schema.properties.assets.properties.binding.pattern);
+  for (const name of ["Chat", "CHAT", "chat", "constructor", "prototype", "toString", "hasOwnProperty", "Room_2", "a".repeat(64)]) {
+    expect(workerManagedResourceSchema.parse({ type: "durable_object", bindingName: name, className: "Chat" }).bindingName).toBe(name);
+    expect(workerProjectConfigSchema.shape.assets.parse({ directory: "public", binding: name })?.binding).toBe(name);
+    expect(resourcePattern.test(name)).toBe(true);
+    expect(assetsPattern.test(name)).toBe(true);
+  }
+  for (const name of ["", "2Chat", "Chat-room", "Chat room", "../Chat", "Chat/room", "Chat\0", "éChat", "a".repeat(65), "__XAPI_INTERNAL", "$Chat"]) {
+    expect(workerManagedResourceSchema.safeParse({ type: "kv_namespace", bindingName: name }).success).toBe(false);
+    expect(workerProjectConfigSchema.shape.assets.safeParse({ directory: "public", binding: name }).success).toBe(false);
+    expect(resourcePattern.test(name)).toBe(false);
+    expect(assetsPattern.test(name)).toBe(false);
+  }
+  const env = workerProjectConfigSchema.shape.environments.shape.preview;
+  expect(env.safeParse({ dailyBudgetUsd: 0.25, secrets: ["ApiKey"] }).success).toBe(false);
+  expect(env.parse({ dailyBudgetUsd: 0.25, secrets: ["API_KEY"] }).secrets).toEqual(["API_KEY"]);
+  expect(env.safeParse({ dailyBudgetUsd: 0.25, resources: [
+    { type: "kv_namespace", bindingName: "Chat" }, { type: "kv_namespace", bindingName: "Chat" },
+  ] }).success).toBe(false);
 });

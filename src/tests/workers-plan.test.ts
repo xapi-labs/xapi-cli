@@ -76,6 +76,40 @@ function unexpected(name: string): () => Promise<never> {
 }
 
 describe("workers plan", () => {
+  test.each(["Chat", "constructor", "prototype", "toString", "hasOwnProperty"].flatMap(name =>
+    [true, false].map(exists => ({ name, exists }))))("plans exact binding identities without inherited-object collisions: %p", async ({ name, exists }) => {
+    const root = project({ linked: true, bundle: "export default {fetch(){return new Response('ok')}}" });
+    const path = join(root, "xapi.worker.json");
+    const config = JSON.parse(readFileSync(path, "utf8"));
+    config.environments.preview.resources = [
+      { type: "durable_object", bindingName: name, className: "Chat" },
+      { type: "kv_namespace", bindingName: "CHAT" },
+    ];
+    config.environments.preview.secrets = [];
+    writeFileSync(path, JSON.stringify(config));
+    const plan = await createWorkerPlan({ cwd: root, environment: "preview",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test" },
+      client: {
+        listWorkers: unexpected("listWorkers"),
+        getWorker: async () => ({ id: workerId, slug: "plan-agent",
+          environments: [{ id: "preview", name: "PREVIEW", dailyBudgetUsd: 0.25 }], artifacts: [], deployments: [] }),
+        getWorkerVariableState: async () => ({ environment: "preview", activeDeploymentId: null, exists: false, variables: [] }),
+        listWorkerResources: async () => [
+          ...(exists ? [{ id: "existing-chat", bindingName: name, type: "DURABLE_OBJECT", status: "ACTIVE", config: { className: "Chat" } }] : []),
+          { id: "existing-uppercase", bindingName: "CHAT", type: "KV_NAMESPACE", status: "ACTIVE" },
+        ],
+        listWorkerSecrets: async () => [],
+      },
+    });
+    expect(plan.canApply).toBe(true);
+    const resources = plan.actions.filter(a => a.kind === "resource");
+    expect(resources).toHaveLength(2);
+    expect(resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ operation: exists ? "NO_CHANGE" : "CREATE", key: name }),
+      expect.objectContaining({ operation: "NO_CHANGE", key: "CHAT" }),
+    ]));
+  });
+
   test("explains public vars and explicit binding replacement without values or a drift lock", async () => {
     const root = project({ linked: true, bundle: "export default {fetch(){return new Response('ok')}}" });
     writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify({ name: "plan-agent", keep_vars: true,
