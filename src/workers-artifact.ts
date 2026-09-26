@@ -26,6 +26,7 @@ type UnknownRecord = Record<string, unknown>;
 
 export type WorkerModuleContentType =
   | "application/javascript+module"
+  | "application/source-map"
   | "application/wasm"
   | "text/plain"
   | "application/octet-stream";
@@ -119,13 +120,83 @@ export function normalizeNativeWorkerOptions(input: {
   return result;
 }
 
+export interface WorkerObservability {
+  enabled?: boolean;
+  head_sampling_rate?: number;
+  logs?: {
+    enabled?: boolean;
+    head_sampling_rate?: number;
+    invocation_logs?: boolean;
+    persist?: boolean;
+  };
+  traces?: {
+    enabled?: boolean;
+    head_sampling_rate?: number;
+    persist?: boolean;
+  };
+}
+
+/** Only script-local telemetry settings; account destinations need tenant mapping. */
+export function normalizeWorkerObservability(
+  value: unknown,
+): WorkerObservability | undefined {
+  if (value === undefined) return undefined;
+  function normalize(
+    input: unknown,
+    path: string,
+    keys: string[],
+  ): UnknownRecord {
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new WorkerArtifactError(`${path} must be an object`);
+    }
+    const record = input as UnknownRecord;
+    for (const key of Object.keys(record)) {
+      if (!keys.includes(key)) {
+        throw new WorkerArtifactError(`${path}.${key} needs explicit platform mapping`);
+      }
+    }
+    const output: UnknownRecord = {};
+    for (const key of keys) {
+      if (record[key] === undefined) continue;
+      const item = record[key];
+      if (key === "logs" || key === "traces") {
+        output[key] = normalize(item, `${path}.${key}`, [
+          "enabled",
+          "head_sampling_rate",
+          ...(key === "logs" ? ["invocation_logs"] : []),
+          "persist",
+        ]);
+      } else if (key === "head_sampling_rate") {
+        if (
+          typeof item !== "number" ||
+          !Number.isFinite(item) ||
+          item < 0 ||
+          item > 1
+        ) {
+          throw new WorkerArtifactError(`${path}.${key} must be a number between 0 and 1`);
+        }
+        output[key] = item;
+      } else {
+        if (typeof item !== "boolean") {
+          throw new WorkerArtifactError(`${path}.${key} must be a boolean`);
+        }
+        output[key] = item;
+      }
+    }
+    return output;
+  }
+  return normalize(value, "observability", [
+    "enabled", "head_sampling_rate", "logs", "traces",
+  ]) as WorkerObservability;
+}
+
 export interface WorkerArtifactBundle {
   version: 1;
   mainModule: string;
   modules: WorkerArtifactBundleModule[];
   cacheOptions?: WorkerCacheOptions;
   versionMetadata?: WorkerVersionMetadata;
-  observability?: { enabled: boolean };
+  observability?: WorkerObservability;
   assets?: WorkerArtifactAssets;
   containers?: WorkerContainerInput[];
   vars?: Record<string, unknown>;
@@ -270,6 +341,7 @@ function moduleContentType(path: string): WorkerModuleContentType | undefined {
   if (extension === ".js" || extension === ".mjs") {
     return "application/javascript+module";
   }
+  if (extension === ".map") return "application/source-map";
   if (extension === ".wasm") return "application/wasm";
   if (extension === ".txt") return "text/plain";
   if (extension === ".bin") return "application/octet-stream";
@@ -345,6 +417,9 @@ function assertArtifactContentLimit(bundle: WorkerArtifactBundle): void {
       (total, asset) => total + Buffer.from(asset.content, "base64").length,
       0,
     ) || 0;
+  if (moduleBytes > MAX_BUNDLE_CONTENT_BYTES) {
+    throw new WorkerArtifactError("Worker modules exceed Cloudflare’s 64 MiB uncompressed limit");
+  }
   if (moduleBytes + assetBytes > MAX_XAPI_ARTIFACT_CONTENT_BYTES) {
     throw new WorkerArtifactError(
       "Worker modules and static assets exceed the xAPI project limit of 100 MiB",
@@ -446,7 +521,7 @@ function loadSingleModuleWithAssets(path: string, staticAssets: WorkerStaticAsse
   return { kind: "bundle", contentSha256: sha256(storedBytes), sizeBytes: storedBytes.length, upload: { bundle } };
 }
 
-function collectBundleFiles(root: string): Array<{
+function collectBundleFiles(root: string, uploadSourceMaps = false): Array<{
   path: string;
   bytes: Buffer;
   contentType: WorkerModuleContentType;
@@ -481,10 +556,12 @@ function collectBundleFiles(root: string): Array<{
           `Worker module path is invalid: ${relativePath}`,
         );
       }
+      // Outdir maps are private upload attachments only when explicitly selected.
+      if (posix.extname(relativePath).toLowerCase() === ".map" && !uploadSourceMaps) continue;
       const contentType = moduleContentType(relativePath);
       if (!contentType) {
         throw new WorkerArtifactError(
-          `Worker output contains an unsupported module file: ${relativePath}. Code bundles support .js, .mjs, .wasm, .txt, and .bin; publish website assets through the static-assets workflow.`,
+          `Worker output contains an unsupported module file: ${relativePath}. Code bundles support .js, .mjs, .wasm, .txt, .bin, and explicitly enabled .map attachments; publish website assets through the static-assets workflow.`,
         );
       }
       moduleBytes += info.size;
@@ -496,9 +573,9 @@ function collectBundleFiles(root: string): Array<{
   return files.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-function loadModuleBundle(root: string, main: string | undefined, staticAssets?: WorkerStaticAssetsInput): LoadedWorkerArtifact {
+function loadModuleBundle(root: string, main: string | undefined, staticAssets?: WorkerStaticAssetsInput, uploadSourceMaps = false): LoadedWorkerArtifact {
   const mainModule = normalizeMainModule(main);
-  const files = collectBundleFiles(root);
+  const files = collectBundleFiles(root, uploadSourceMaps);
   if (!files.length) throw new WorkerArtifactError("Worker output directory is empty");
   const totalBytes = files.reduce((sum, file) => sum + file.bytes.length, 0);
   if (totalBytes > MAX_BUNDLE_CONTENT_BYTES) {
@@ -578,6 +655,7 @@ export function loadWorkerArtifact(
   outputPath: string,
   mainModule?: string,
   staticAssets?: WorkerStaticAssetsInput,
+  uploadSourceMaps = false,
 ): LoadedWorkerArtifact {
   if (!existsSync(outputPath)) {
     throw new WorkerArtifactError(`Worker build output does not exist: ${outputPath}`);
@@ -592,11 +670,26 @@ export function loadWorkerArtifact(
         "build.main (or --main) is only valid when the Worker build output is a directory",
       );
     }
-    return staticAssets
+    const loaded = staticAssets
       ? loadSingleModuleWithAssets(outputPath, staticAssets)
       : loadSingleModule(outputPath);
+    const mapPath = `${outputPath}.map`;
+    if (!uploadSourceMaps || !existsSync(mapPath)) return loaded;
+    const info = lstatSync(mapPath);
+    if (!info.isFile() || info.isSymbolicLink()) throw new WorkerArtifactError("Source map must be a regular file");
+    if (info.size > MAX_BUNDLE_CONTENT_BYTES) throw new WorkerArtifactError("Source map exceeds Worker module capacity");
+    const bundle: WorkerArtifactBundle = "bundle" in loaded.upload ? loaded.upload.bundle : {
+      version: 1, mainModule: posix.basename(outputPath), modules: [{
+        path: posix.basename(outputPath), content: loaded.upload.moduleCode,
+        encoding: "utf8", contentType: "application/javascript+module",
+      }],
+    };
+    bundle.modules.push({ path: posix.basename(mapPath), content: readFileSync(mapPath).toString("base64"), encoding: "base64", contentType: "application/source-map" });
+    assertArtifactContentLimit(bundle);
+    const bytes = storedBundleBytes(bundle);
+    return { kind: "bundle", contentSha256: sha256(bytes), sizeBytes: bytes.length, upload: { bundle } };
   }
-  if (info.isDirectory()) return loadModuleBundle(outputPath, mainModule, staticAssets);
+  if (info.isDirectory()) return loadModuleBundle(outputPath, mainModule, staticAssets, uploadSourceMaps);
   throw new WorkerArtifactError("Worker build output is not a file or directory");
 }
 
@@ -606,8 +699,9 @@ export async function loadWorkerArtifactInput(
   mainModule?: string,
   staticAssets?: WorkerStaticAssetsInput,
   containers?: WorkerContainerInput[],
+  uploadSourceMaps?: boolean,
 ): Promise<LoadedWorkerArtifact> {
-  if (!outputPath.endsWith(".bundle")) return attachContainers(loadWorkerArtifact(outputPath, mainModule, staticAssets), containers);
+  if (!outputPath.endsWith(".bundle")) return attachContainers(loadWorkerArtifact(outputPath, mainModule, staticAssets, uploadSourceMaps), containers);
   if (mainModule) throw new WorkerArtifactError("Wrangler bundles contain their own main_module; omit --main/build.main");
   if (!existsSync(outputPath) || !lstatSync(outputPath).isFile() || lstatSync(outputPath).isSymbolicLink()) {
     throw new WorkerArtifactError("Wrangler bundle must be a regular file");
@@ -729,14 +823,12 @@ export async function loadWorkerArtifactInput(
     .filter(binding => binding.type === "plain_text" || binding.type === "json")
     .map(binding => [String(binding.name), binding.type === "plain_text" ? binding.text : binding.json])));
   if (metadata.compatibility_flags !== undefined && (!Array.isArray(metadata.compatibility_flags) || metadata.compatibility_flags.some(flag => typeof flag !== "string"))) throw new WorkerArtifactError("Invalid native compatibility flags");
-  const observation = metadata.observability as UnknownRecord | undefined;
-  if (observation !== undefined && (!observation || typeof observation !== "object" || Array.isArray(observation) || typeof observation.enabled !== "boolean" || Object.keys(observation).some(key => key !== "enabled"))) throw new WorkerArtifactError("Native observability config needs explicit mapping");
-  const observability = observation ? {enabled: observation.enabled as boolean} : undefined;
+  const observability = normalizeWorkerObservability(metadata.observability);
   const main = normalizeMainModule(typeof metadata.main_module === "string" ? metadata.main_module : undefined);
   const modules: WorkerArtifactBundleModule[] = [];
   const seen = new Set<string>();
   let moduleBytes = 0;
-  const types = new Set<WorkerModuleContentType>(["application/javascript+module", "application/wasm", "text/plain", "application/octet-stream"]);
+  const types = new Set<WorkerModuleContentType>(["application/javascript+module", "application/source-map", "application/wasm", "text/plain", "application/octet-stream"]);
   for (const [name, value] of entries) {
     if (name === "metadata") continue;
     if (typeof value === "string" || !SAFE_MODULE_PATH.test(name) || seen.has(name) || value.name !== name) throw new WorkerArtifactError(`Invalid or duplicate native module: ${name}`);
@@ -756,6 +848,9 @@ export async function loadWorkerArtifactInput(
     modules.push({ path: name, content: content.toString(utf8 ? "utf8" : "base64"), encoding: utf8 ? "utf8" : "base64", contentType });
   }
   if (!modules.some(module => module.path === main && module.contentType === "application/javascript+module")) throw new WorkerArtifactError("Native main_module is missing or not ESM");
+  if (uploadSourceMaps === false && modules.some(module => module.contentType === "application/source-map")) {
+    throw new WorkerArtifactError("Wrangler bundle contains source maps but upload_source_maps is disabled; rebuild before publishing");
+  }
   modules.sort((a,b) => a.path.localeCompare(b.path));
   const assets = staticAssets ? collectAssetFiles(staticAssets) : undefined;
   const nativeContainers = metadata.containers;
@@ -840,7 +935,7 @@ function storedBundleBytes(bundle: WorkerArtifactBundle): Buffer {
   return Buffer.from(
     JSON.stringify({
       ...normalizeNativeWorkerOptions(bundle),
-      ...(bundle.observability ? { observability: bundle.observability } : {}),
+      ...(bundle.observability ? { observability: normalizeWorkerObservability(bundle.observability) } : {}),
       ...(bundle.containers?.length ? { containers: bundle.containers } : {}),
       ...(normalizeWorkerVars(bundle.vars)
         ? { vars: normalizeWorkerVars(bundle.vars) }
@@ -973,13 +1068,20 @@ export function normalizeWorkerVars(value: unknown): Record<string, unknown> | u
 
 /** Attach declared native options; reject stale native build metadata. */
 export function withNativeWorkerOptions(artifact: LoadedWorkerArtifact, options: {
-  cacheOptions?: unknown; versionMetadata?: unknown;
+  cacheOptions?: unknown; versionMetadata?: unknown; observability?: unknown;
 }): LoadedWorkerArtifact {
-  const expected = normalizeNativeWorkerOptions(options);
+  const expected = {
+    ...normalizeNativeWorkerOptions(options),
+    ...(options.observability !== undefined ? { observability: normalizeWorkerObservability(options.observability) } : {}),
+  };
   if (artifact.nativeMetadata) {
-    const actual = 'bundle' in artifact.upload ? normalizeNativeWorkerOptions(artifact.upload.bundle) : {};
+    const actual = 'bundle' in artifact.upload ? {
+      ...normalizeNativeWorkerOptions(artifact.upload.bundle),
+      ...(artifact.upload.bundle.observability !== undefined
+        ? { observability: normalizeWorkerObservability(artifact.upload.bundle.observability) } : {}),
+    } : {};
     if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-      throw new WorkerArtifactError('Wrangler bundle cache/version metadata differs from the selected environment; rebuild before publishing');
+      throw new WorkerArtifactError('Wrangler bundle cache/version metadata/observability differs from the selected environment; rebuild before publishing');
     }
     return artifact;
   }

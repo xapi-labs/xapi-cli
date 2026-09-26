@@ -1,0 +1,27 @@
+------formdata-undici-067103487635
+Content-Disposition: form-data; name="metadata"
+
+{"main_module":"index.js","bindings":[{"name":"PUBLIC_LABEL","type":"plain_text","text":"root"},{"name":"JSON_VALUE","type":"json","json":{"answer":42}}],"compatibility_date":"2026-09-01","compatibility_flags":[],"observability":{"logs":{"enabled":true,"destinations":["fixture-not-a-real-destination"]},"traces":{"enabled":true,"destinations":["fixture-not-a-real-destination"]}}}
+------formdata-undici-067103487635
+Content-Disposition: form-data; name="index.js"; filename="index.js"
+Content-Type: application/javascript+module
+
+var __defProp = Object.defineProperty;
+var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
+
+// src/index.ts
+function label(env) {
+  return `fixture:${env.PUBLIC_LABEL}`;
+}
+__name(label, "label");
+var index_default = { async fetch(request, env) {
+  if (new URL(request.url).pathname === "/throw") throw new Error("native-map-fixture");
+  console.log(label(env));
+  return Response.json({ label: label(env), config: env.JSON_VALUE });
+} };
+export {
+  index_default as default
+};
+//# sourceMappingURL=index.js.map
+
+------formdata-undici-067103487635--

@@ -112,6 +112,7 @@ export async function loadWorkerProjectBundle(
     "build.output",
   );
   try {
+    const settings = readWranglerDeploymentSettings(project, environment);
     const built = await loadWorkerArtifactInput(
       path,
       project.config.build.main,
@@ -126,8 +127,8 @@ export async function loadWorkerProjectBundle(
           }
         : undefined,
       project.config.containers,
+      settings.uploadSourceMaps,
     );
-    const settings = readWranglerDeploymentSettings(project, environment);
     const bundle = withWorkerVars(
       withNativeWorkerOptions(built, settings),
       readWranglerPublicVars(project, environment),

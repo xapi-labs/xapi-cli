@@ -277,6 +277,25 @@ export function formatWorkerPlan(plan: WorkerDeploymentPlan): string {
     ...(planned.length ? planned.map(actionRow) : ["  No changes required."]),
   ];
 
+  const configuration = record(
+    plan.actions.find(action => action.kind === "artifact")?.desired?.configuration,
+  );
+  if (Object.keys(configuration).length) {
+    lines.push("", "Worker configuration");
+    for (const key of ["cache", "version_metadata", "observability"] as const) {
+      if (configuration[key] !== undefined) {
+        lines.push(metadataRow(key, JSON.stringify(configuration[key])));
+      }
+    }
+    if (Array.isArray(configuration.sourceMaps)) {
+      lines.push(metadataRow(
+        "Source maps",
+        configuration.sourceMaps.length
+          ? `${configuration.sourceMaps.length} private upload attachment(s)`
+          : "None",
+      ));
+    }
+  }
   if (manual.length) {
     lines.push("", "Manual review", ...manual.map(actionRow));
   }

@@ -1,0 +1,2 @@
+# Multipart CRLF and part bytes are protocol evidence; never normalize as text.
+*.bundle binary

@@ -2,6 +2,8 @@ import { validNativeCron } from './workers-cron.ts';
 import { createHash } from 'node:crypto';
 import {
   normalizeNativeWorkerOptions,
+  normalizeWorkerObservability,
+  type WorkerObservability,
   type WorkerCacheOptions,
   type WorkerVersionMetadata,
 } from "./workers-artifact.ts";
@@ -92,6 +94,8 @@ export interface WranglerDeploymentSettings {
   compatibilityFlags: string[];
   cacheOptions?: WorkerCacheOptions;
   versionMetadata?: WorkerVersionMetadata;
+  observability?: WorkerObservability;
+  uploadSourceMaps?: boolean;
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -114,6 +118,8 @@ const SUPPORTED_TOP_LEVEL = new Set([
   "assets",
   "cache",
   "version_metadata",
+  "observability",
+  "upload_source_maps",
 ]);
 const MANAGED_TOP_LEVEL = new Set([
   "kv_namespaces",
@@ -136,7 +142,6 @@ const IGNORED_TOP_LEVEL = new Set([
   "route",
   "routes",
   "dev",
-  "observability",
   "placement",
   "minify",
   "no_bundle",
@@ -149,7 +154,6 @@ const IGNORED_TOP_LEVEL = new Set([
   "keep_vars",
   "send_metrics",
   "logpush",
-  "upload_source_maps",
   "legacy_assets",
   "site",
   "limits",
@@ -1035,12 +1039,14 @@ export function importWranglerProject(
         cacheOptions: config.cache,
         versionMetadata: config.version_metadata,
       });
+      normalizeWranglerObservability(config.observability);
+      validateUploadSourceMaps(config.upload_source_maps);
     } catch (error) {
       nativeOptionsValid = false;
       compatibilityEntry(
         entries,
         "UNSUPPORTED",
-        `${prefix}cache/version_metadata`,
+        `${prefix}cache/version_metadata/observability/upload_source_maps`,
         error instanceof Error ? error.message : "Invalid native options",
         { environment },
       );
@@ -1051,6 +1057,8 @@ export function importWranglerProject(
       environment,
       status: nativeOptionsValid ? "SUPPORTED" : "REQUIRES_MAPPING",
       configuration: {
+        ...(config.observability !== undefined ? { observability: config.observability } : {}),
+        ...(config.upload_source_maps !== undefined ? { upload_source_maps: config.upload_source_maps } : {}),
         ...(config.cache !== undefined ? { cache: config.cache } : {}),
         ...(config.version_metadata !== undefined
           ? { version_metadata: config.version_metadata }
@@ -1319,6 +1327,33 @@ export function importWranglerProject(
   };
 }
 
+function normalizeWranglerObservability(
+  value: unknown,
+): WorkerObservability | undefined {
+  const result = normalizeWorkerObservability(value);
+  // Wrangler configuration requires an explicit switch; native API metadata
+  // is a different contract and is validated independently by the Artifact.
+  if (
+    result !== undefined &&
+    result.enabled === undefined &&
+    result.logs?.enabled === undefined &&
+    result.traces?.enabled === undefined
+  ) {
+    throw new WorkerProjectConfigError(
+      "wrangler_invalid_observability",
+      "observability requires enabled, logs.enabled, or traces.enabled (true or false)",
+    );
+  }
+  return result;
+}
+
+function validateUploadSourceMaps(value: unknown): boolean | undefined {
+  if (value !== undefined && typeof value !== "boolean") {
+    throw new WorkerProjectConfigError("wrangler_invalid_upload_source_maps", "upload_source_maps must be a boolean");
+  }
+  return value as boolean | undefined;
+}
+
 export function readWranglerDeploymentSettings(
   project: LoadedWorkerProject,
   environment: "preview" | "production",
@@ -1354,6 +1389,9 @@ export function readWranglerDeploymentSettings(
   return {
     ...(date ? { compatibilityDate: date } : {}),
     compatibilityFlags: [...new Set((rawFlags || []) as string[])].sort(),
+    ...(selected.observability !== undefined ? { observability: normalizeWranglerObservability(selected.observability) } : {}),
+    ...(selected.upload_source_maps !== undefined
+      ? { uploadSourceMaps: validateUploadSourceMaps(selected.upload_source_maps) } : {}),
     ...normalizeNativeWorkerOptions({
       cacheOptions: selected.cache,
       versionMetadata: selected.version_metadata,

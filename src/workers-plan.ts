@@ -438,6 +438,7 @@ function compareSecrets(
 async function localArtifact(project: LoadedWorkerProject, environment: "preview" | "production"): Promise<{
   sha256?: string;
   sizeBytes?: number;
+  configuration?: Record<string, unknown>;
   blocked?: string;
 }> {
   const path = resolveWorkerProjectPath(
@@ -451,6 +452,19 @@ async function localArtifact(project: LoadedWorkerProject, environment: "preview
     return {
       sha256: artifact.contentSha256,
       sizeBytes: artifact.sizeBytes,
+      ...("bundle" in artifact.upload ? {
+        configuration: {
+          ...(artifact.upload.bundle.cacheOptions
+            ? { cache: artifact.upload.bundle.cacheOptions } : {}),
+          ...(artifact.upload.bundle.versionMetadata
+            ? { version_metadata: artifact.upload.bundle.versionMetadata } : {}),
+          ...(artifact.upload.bundle.observability
+            ? { observability: artifact.upload.bundle.observability } : {}),
+          sourceMaps: artifact.upload.bundle.modules
+            .filter(module => module.contentType === "application/source-map")
+            .map(module => module.path),
+        },
+      } : {}),
     };
   } catch (error) {
     if (error instanceof WorkerArtifactError || error instanceof WorkerProjectBuildError) {
@@ -529,7 +543,11 @@ async function artifactAndDeployment(
       "artifact",
       local.sha256!,
       "An immutable remote Artifact already matches the local bundle",
-      { sha256: local.sha256, sizeBytes: local.sizeBytes },
+      {
+        sha256: local.sha256,
+        sizeBytes: local.sizeBytes,
+        ...(local.configuration ? { configuration: local.configuration } : {}),
+      },
       { artifactId },
     );
   } else {
@@ -544,7 +562,11 @@ async function artifactAndDeployment(
       {
         output: project.config.build.output,
         ...(local.sha256
-          ? { sha256: local.sha256, sizeBytes: local.sizeBytes }
+          ? {
+              sha256: local.sha256,
+              sizeBytes: local.sizeBytes,
+              ...(local.configuration ? { configuration: local.configuration } : {}),
+            }
           : {}),
       },
     );

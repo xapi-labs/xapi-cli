@@ -158,3 +158,14 @@ describe("Worker plan terminal output", () => {
     expect(useHumanWorkerPlanOutput({ stdoutIsTTY: false })).toBe(false);
   });
 });
+
+test("plan explains telemetry false/zero and private map count without source contents", () => {
+  const rendered = formatWorkerPlan({ ...plan, actions: [{
+    operation: "CREATE", kind: "artifact", key: "bundle", message: "Upload bundle",
+    desired: { configuration: { observability: { logs: { enabled: true, head_sampling_rate: 0, persist: false } }, sourceMaps: ["index.js.map"] } },
+  }] });
+  expect(rendered).toContain('"head_sampling_rate":0');
+  expect(rendered).toContain('"persist":false');
+  expect(rendered).toContain("1 private upload attachment(s)");
+  expect(rendered).not.toContain("sourcesContent");
+});

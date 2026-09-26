@@ -171,10 +171,28 @@ For explicit artifact operations: `workers upload <worker-id> --file dist/worker
 `cache.enabled`, `cache.cross_version_cache` and `version_metadata.binding` are
 preserved through the Artifact and native upload. These require a backend version
 containing the native-options changes; an older deployment is not evidence of
-support. A stale `.bundle` whose cache/version settings disagree with the selected
+support. A stale `.bundle` whose cache/version/observability settings disagree with the selected
 Wrangler environment must be rebuilt. Cache settings apply to the user Worker,
 not to the xAPI dispatcher. Required Secret names in `secrets.required` are
 imported; set their values through the Secrets API, never inside the Artifact.
+
+The native-options release also preserves script-local `observability` settings:
+`enabled`, `head_sampling_rate`, `logs` (including `invocation_logs` and `persist`),
+and `traces`. Explicit `false` and sampling rate `0` remain meaningful. Account
+export `destinations` need tenant-aware mapping and are rejected before upload;
+do not remove them just to claim a complete deployment. User telemetry settings
+do not disable the platform billing Tail.
+
+Use Wrangler's `--dry-run --outfile dist/worker.bundle` output for native source
+maps. xAPI preserves `application/source-map` parts exactly; an outdir map can
+have different source paths, so do not replace the map inside the bundle. For a
+plain module/directory build, `upload_source_maps: true` includes the adjacent
+`<module>.map` or directory `.map` files as private upload attachments; omitting
+it excludes those files from that build. Explicit `false` rejects a stale native
+bundle that still contains map attachments. Keep private maps out of your public
+assets directory: files explicitly placed there are website assets. The plan
+shows telemetry settings and the private attachment count. Verify actual CF
+logging/stack remapping after release; local upload validation proves neither.
 
 The import report includes `BEFORE_CODE` (D1 migrations), `CODE` (Worker
 configuration), and `AFTER_CODE` (Queue consumers and Cron). Current push/promote
