@@ -30,7 +30,6 @@ This is an informational reminder, not a separate approval gate. Use the user's 
 - **How much did it cost?** Read [billing.md](references/billing.md) before answering, collecting, or reconciling consumption.
 - **Pause/recover/delete/refund:** read [lifecycle.md](references/lifecycle.md) before lifecycle mutations.
 - **Buy or bind an xdomain domain:** read [domains.md](references/domains.md). Use the combined CLI command; do not manually create a CNAME to the Dispatcher or expose Cloudflare zone IDs.
-- **Recover a domain-conflict quarantine (administrator only):** read [domain-conflict-recovery.md](references/domain-conflict-recovery.md). This is a backend recovery operation, not a customer deployment command.
 
 ## Evidence and completion
 

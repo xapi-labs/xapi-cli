@@ -25,13 +25,6 @@ const domainGuide = readFileSync(
   new URL('../../skills/xapi-workers/references/domains.md', import.meta.url),
   'utf8',
 );
-const domainConflictRecovery = readFileSync(
-  new URL(
-    '../../skills/xapi-workers/references/domain-conflict-recovery.md',
-    import.meta.url,
-  ),
-  'utf8',
-);
 
 describe('bundled xAPI Workers skill guide', () => {
   it('routes hosted Worker tasks to the progressively loaded guide', () => {
@@ -51,19 +44,6 @@ describe('bundled xAPI Workers skill guide', () => {
     expect(domainGuide).toContain('non-refundable');
     expect(domainGuide).toContain('Never invent missing contact fields');
     expect(domainGuide).not.toContain('wrangler deploy');
-  });
-
-  it('documents the administrator-only domain conflict recovery contract', () => {
-    expect(dedicatedSkill).toContain(
-      '[domain-conflict-recovery.md](references/domain-conflict-recovery.md)',
-    );
-    expect(domainConflictRecovery).toContain(
-      'POST /api/admin/workers/domain-conflict-recovery',
-    );
-    expect(domainConflictRecovery).toContain('100117');
-    expect(domainConflictRecovery).toContain('platform administrator');
-    expect(domainConflictRecovery).toContain('fails closed');
-    expect(domainConflictRecovery).toContain('does not detach or');
   });
 
   it('prefers project deployment and covers import, CI, recovery, and rollback boundaries', () => {
