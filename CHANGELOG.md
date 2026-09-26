@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.24](https://github.com/xapi-labs/xapi-cli/compare/v0.1.23...v0.1.24) (2026-09-26)
+
+
+### Features
+
+* **skill:** enable native Workers project deployment and setup ([#40](https://github.com/xapi-labs/xapi-cli/issues/40)) ([100024f](https://github.com/xapi-labs/xapi-cli/commit/100024f6cc76ca5a00bc6b9eccf0e87dfec3152b))
+
+
+### Documentation
+
+* **skill:** document Workers domain conflict recovery ([#36](https://github.com/xapi-labs/xapi-cli/issues/36)) ([ac26d51](https://github.com/xapi-labs/xapi-cli/commit/ac26d51de6ab9a9e187a668b5d45182508c62228))
+
 ## [0.1.23](https://github.com/xapi-labs/xapi-cli/compare/v0.1.22...v0.1.23) (2026-09-21)
 
 
