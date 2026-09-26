@@ -44,13 +44,15 @@ application package directory:
 
 ```sh
 xapi workers init . --framework vite
-# Install the added build tools with the application's declared package manager.
+# Install the application's existing dependencies using the returned nextSteps.
 xapi workers plan --env preview
 ```
 
-Keep the application's existing build script and lockfile as the baseline.
-Initialization adds deployment scripts and development dependencies; inspect
-the resulting package/lockfile diff and rebuild before publishing. A dependency
+Static initialization leaves the application's package manifest, build script,
+and lockfile unchanged. It creates a dependency-free ESM Worker adapter and uses
+the existing application build; no extra deployment packages are needed for
+this adapter. Follow the returned package-manager command, preserving an
+existing lockfile. A dependency
 resolution failure is a local build problem, not proof that Workers cannot run
 the application. Do not upgrade unrelated application dependencies to hide it.
 

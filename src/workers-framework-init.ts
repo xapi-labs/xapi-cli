@@ -48,13 +48,6 @@ export interface InitExistingFrameworkResult {
   nextSteps: string[];
 }
 
-const XAPI_SCRIPTS = {
-  "xapi:worker:build":
-    "esbuild xapi-worker/index.ts --bundle --format=esm --platform=neutral --target=es2022 --outfile=.xapi/worker/index.mjs",
-  "xapi:worker:dev":
-    "wrangler dev --config wrangler.jsonc --persist-to .wrangler/state",
-} as const;
-
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -151,40 +144,56 @@ function detectFramework(
 function managerCommands(
   name: "npm" | "pnpm" | "yarn" | "bun",
   corepack: boolean,
+  locked = false,
+  modernYarn = false,
 ): { command: string; install: string } {
   const command = corepack && (name === "pnpm" || name === "yarn")
     ? `corepack ${name}`
     : name;
-  return { command, install: `${command} install` };
+  const install = !locked ? "install" : name === "npm" ? "ci"
+    : name === "yarn" && modernYarn ? "install --immutable"
+    : "install --frozen-lockfile";
+  return { command, install: `${command} ${install}` };
 }
 
 function packageManager(rootDir: string): { command: string; install: string } {
+  type Manager = "npm" | "pnpm" | "yarn" | "bun";
+  let selected: { name: Manager; corepack: boolean; major?: number } | undefined;
+  const lockfiles: Record<Manager, string[]> = {
+    pnpm: ["pnpm-lock.yaml"],
+    yarn: ["yarn.lock"],
+    bun: ["bun.lock", "bun.lockb"],
+    npm: ["npm-shrinkwrap.json", "package-lock.json"],
+  };
   let cursor = rootDir;
   while (true) {
     const packagePath = join(cursor, "package.json");
-    if (existsSync(packagePath) && lstatSync(packagePath).isFile()) {
+    if (!selected && existsSync(packagePath) && lstatSync(packagePath).isFile()) {
       const declared = readPackage(packagePath).packageManager;
-      const name = typeof declared === "string"
-        ? declared.match(/^(npm|pnpm|yarn|bun)@/)?.[1]
+      const match = typeof declared === "string"
+        ? declared.match(/^(npm|pnpm|yarn|bun)@(\d+)?/)
         : undefined;
-      if (name) {
-        return managerCommands(
-          name as "npm" | "pnpm" | "yarn" | "bun",
-          name === "pnpm" || name === "yarn",
-        );
+      if (match) {
+        const name = match[1] as Manager;
+        selected = {
+          name,
+          corepack: name === "pnpm" || name === "yarn",
+          major: match[2] ? Number(match[2]) : undefined,
+        };
       }
     }
-    if (existsSync(join(cursor, "pnpm-lock.yaml")))
-      return managerCommands("pnpm", false);
-    if (existsSync(join(cursor, "yarn.lock")))
-      return managerCommands("yarn", false);
-    if (
-      existsSync(join(cursor, "bun.lock")) ||
-      existsSync(join(cursor, "bun.lockb"))
-    )
-      return managerCommands("bun", false);
-    if (existsSync(join(cursor, "package-lock.json")))
-      return managerCommands("npm", false);
+    // A package may declare its manager while sharing a lock at the workspace
+    // root. Keep looking for that lock before choosing a mutable install.
+    const candidates = selected ? [selected.name] : Object.keys(lockfiles) as Manager[];
+    for (const name of candidates) {
+      const lock = lockfiles[name].map(file => join(cursor, file))
+        .find(path => existsSync(path) && lstatSync(path).isFile());
+      if (lock) {
+        const modernYarn = name === "yarn" && (selected?.major !== undefined
+          ? selected.major >= 2 : /^__metadata:/m.test(readFileSync(lock, "utf8")));
+        return managerCommands(name, selected?.corepack || false, true, modernYarn);
+      }
+    }
 
     // Existing applications are often initialized from a workspace package.
     // Include the repository root itself, then stop so an unrelated lockfile
@@ -194,7 +203,7 @@ function packageManager(rootDir: string): { command: string; install: string } {
     if (parent === cursor || basename(cursor) === "node_modules") break;
     cursor = parent;
   }
-  return managerCommands("npm", false);
+  return selected ? managerCommands(selected.name, selected.corepack) : managerCommands("npm", false);
 }
 
 function outputDirectory(framework: ExistingFramework): string {
@@ -241,7 +250,7 @@ export function initExistingFrameworkProject(
   const packagePath = join(options.rootDir, "package.json");
   const configPath = join(options.rootDir, "xapi.worker.json");
   const wranglerPath = join(options.rootDir, "wrangler.jsonc");
-  const workerPath = join(options.rootDir, "xapi-worker/index.ts");
+  const workerPath = join(options.rootDir, "xapi-worker/index.mjs");
   assertNotSymlink(packagePath);
   assertNotSymlink(join(options.rootDir, "xapi-worker"));
   assertAvailable(configPath);
@@ -252,6 +261,8 @@ export function initExistingFrameworkProject(
     );
   }
   assertAvailable(workerPath);
+  // Do not mix a new entrypoint with an existing adapter from an older init.
+  assertAvailable(join(options.rootDir, "xapi-worker/index.ts"));
   const pkg = readPackage(packagePath);
   const framework = detectFramework(
     options.rootDir,
@@ -259,40 +270,13 @@ export function initExistingFrameworkProject(
     options.framework,
   );
   const manager = packageManager(options.rootDir);
-  const scripts = { ...object(pkg.scripts) } as Record<string, string>;
+  const scripts = object(pkg.scripts);
   if (typeof scripts.build !== "string" || !scripts.build.trim()) {
     throw new WorkerProjectConfigError(
       "worker_init_missing_build_script",
       "Existing framework package.json must define a non-empty build script",
     );
   }
-  for (const [name, command] of Object.entries(XAPI_SCRIPTS)) {
-    if (scripts[name] && scripts[name] !== command) {
-      throw new WorkerProjectConfigError(
-        "worker_init_package_script_conflict",
-        `package.json script ${name} already exists with a different command`,
-      );
-    }
-    scripts[name] = command;
-  }
-  const xapiBuild = `${manager.command} run build && ${manager.command} run xapi:worker:build`;
-  if (scripts["xapi:build"] && scripts["xapi:build"] !== xapiBuild) {
-    throw new WorkerProjectConfigError(
-      "worker_init_package_script_conflict",
-      "package.json script xapi:build already exists with a different command",
-    );
-  }
-  scripts["xapi:build"] = xapiBuild;
-  const devDependencies = {
-    ...object(pkg.devDependencies),
-    esbuild: (object(pkg.devDependencies).esbuild as string | undefined) || "^0.25.0",
-    wrangler: (object(pkg.devDependencies).wrangler as string | undefined) || "^4.0.0",
-  };
-  const nextPackage = {
-    ...pkg,
-    scripts,
-    devDependencies,
-  };
   const assetsDirectory = outputDirectory(framework);
   const nextStatic = framework === "next-static";
   const configCandidate: WorkerProjectConfig = {
@@ -306,8 +290,8 @@ export function initExistingFrameworkProject(
     },
     wrangler: "wrangler.jsonc",
     build: {
-      command: `${manager.command} run xapi:build`,
-      output: ".xapi/worker/index.mjs",
+      command: `${manager.command} run build`,
+      output: "xapi-worker/index.mjs",
     },
     assets: {
       directory: assetsDirectory,
@@ -347,9 +331,8 @@ export function initExistingFrameworkProject(
     );
   }
   const wrangler = {
-    $schema: "node_modules/wrangler/config-schema.json",
     name: options.slug,
-    main: "xapi-worker/index.ts",
+    main: "xapi-worker/index.mjs",
     compatibility_date: options.compatibilityDate,
     assets: {
       directory: `./${assetsDirectory}`,
@@ -363,10 +346,9 @@ export function initExistingFrameworkProject(
       run_worker_first: ["/api/*", "/health"],
     },
   };
-  const worker = `export interface Env {\n  ASSETS: { fetch(request: Request): Promise<Response> };\n}\n\nexport default {\n  async fetch(request: Request, _env: Env): Promise<Response> {\n    const url = new URL(request.url);\n    if (url.pathname === "/health" || url.pathname === "/api/health") {\n      return Response.json({ ok: true });\n    }\n    return Response.json({ error: "not_found" }, { status: 404 });\n  },\n};\n`;
+  const worker = `export default {\n  async fetch(request, _env) {\n    const url = new URL(request.url);\n    if (url.pathname === "/health" || url.pathname === "/api/health") {\n      return Response.json({ ok: true });\n    }\n    return Response.json({ error: "not_found" }, { status: 404 });\n  },\n};\n`;
   const gitignore = appendGitignore(options.rootDir);
 
-  writeFileSync(packagePath, `${JSON.stringify(nextPackage, null, 2)}\n`, "utf8");
   writeFileSync(join(options.rootDir, ".gitignore"), gitignore, "utf8");
   writeFileSync(wranglerPath, `${JSON.stringify(wrangler, null, 2)}\n`, "utf8");
   writeFileSync(configPath, `${JSON.stringify(parsed.data, null, 2)}\n`, "utf8");
@@ -376,16 +358,15 @@ export function initExistingFrameworkProject(
   return {
     framework,
     files: [
-      "package.json",
       ".gitignore",
       "wrangler.jsonc",
       "xapi.worker.json",
-      "xapi-worker/index.ts",
+      "xapi-worker/index.mjs",
     ],
     configPath,
     nextSteps: [
       manager.install,
-      `${manager.command} run xapi:build`,
+      `${manager.command} run build`,
       "xapi workers plan --env preview",
       "xapi workers push --env preview",
     ],

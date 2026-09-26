@@ -11,9 +11,11 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { spawnSync } from "node:child_process";
 import ts from "typescript";
 import { initWorkerProject } from "../workers-init.ts";
 import { loadWorkerProject } from "../workers-project.ts";
+import { loadWorkerProjectBundle, runWorkerProjectBuild } from "../workers-project-build.ts";
 import { listWorkerTemplates, loadWorkerTemplate } from "../workers-templates.ts";
 
 const roots: string[] = [];
@@ -208,6 +210,7 @@ describe("workers init", () => {
       }),
     );
     writeFileSync(join(target, "app-marker.txt"), "preserved");
+    const originalPackage = readFileSync(join(target, "package.json"));
     const result = initWorkerProject({
       cwd,
       target: "existing-vite",
@@ -216,19 +219,15 @@ describe("workers init", () => {
     expect(result.mode).toBe("existing");
     expect(result.framework).toBe("react-vite");
     expect(readFileSync(join(target, "app-marker.txt"), "utf8")).toBe("preserved");
-    const pkg = JSON.parse(readFileSync(join(target, "package.json"), "utf8"));
-    expect(pkg.scripts.dev).toBe("vite");
-    expect(pkg.scripts.build).toBe("vite build");
-    expect(pkg.scripts.test).toBe("vitest");
-    expect(pkg.scripts["xapi:build"]).toBe(
-      "npm run build && npm run xapi:worker:build",
-    );
-    expect(pkg.scripts["xapi:worker:dev"]).toContain("wrangler dev");
+    expect(readFileSync(join(target, "package.json"))).toEqual(originalPackage);
+    expect(result.files).not.toContain("package.json");
     const project = loadWorkerProject(target);
     expect(project.config.assets?.directory).toBe("dist");
     expect(project.config.assets?.runWorkerFirst).toEqual(["/api/*", "/health"]);
-    expect(project.config.build.output).toBe(".xapi/worker/index.mjs");
-    expect(existsSync(join(target, "xapi-worker/index.ts"))).toBe(true);
+    expect(project.config.build).toMatchObject({ command: "npm run build", output: "xapi-worker/index.mjs" });
+    expect(result.nextSteps.slice(0, 2)).toEqual(["npm install", "npm run build"]);
+    expect(existsSync(join(target, "xapi-worker/index.mjs"))).toBe(true);
+    expect(existsSync(join(target, "xapi-worker/index.ts"))).toBe(false);
   });
 
   test("writes APAC data defaults and Smart Placement into both environments", () => {
@@ -249,6 +248,104 @@ describe("workers init", () => {
       placementMode: "smart",
     });
   });
+
+  for (const [declared, lock, install, command, lockContent] of [
+    ["pnpm@9.15.0", "pnpm-lock.yaml", "corepack pnpm install --frozen-lockfile", "corepack pnpm"],
+    ["npm@10.8.0", "package-lock.json", "npm ci", "npm"],
+    [undefined, "npm-shrinkwrap.json", "npm ci", "npm"],
+    ["yarn@1.22.22", "yarn.lock", "corepack yarn install --frozen-lockfile", "corepack yarn"],
+    ["yarn@4.5.0", "yarn.lock", "corepack yarn install --immutable", "corepack yarn"],
+    [undefined, "yarn.lock", "yarn install --immutable", "yarn", "__metadata:\n  version: 8\n"],
+    [undefined, "yarn.lock", "yarn install --frozen-lockfile", "yarn", "# yarn lockfile v1\n"],
+    ["bun@1.3.0", "bun.lock", "bun install --frozen-lockfile", "bun"],
+    [undefined, "bun.lockb", "bun install --frozen-lockfile", "bun"],
+    ["pnpm@9.15.0", undefined, "corepack pnpm install", "corepack pnpm"],
+    ["yarn@4.5.0", undefined, "corepack yarn install", "corepack yarn"],
+    ["bun@1.3.0", undefined, "bun install", "bun"],
+    [undefined, undefined, "npm install", "npm"],
+  ] as const) {
+    test(`preserves original dependencies and lock bytes (${declared || "inferred"}, ${lock || "no lock"})`, () => {
+      const cwd = workspace();
+      mkdirSync(join(cwd, ".git"));
+      const original = JSON.stringify({
+        name: "it-tools", packageManager: declared,
+        scripts: { build: "vue-tsc --noEmit && vite build", "xapi:build": "echo existing user script" },
+        dependencies: { vue: "latest", "@vueuse/core": "latest" },
+        devDependencies: { vite: "latest" },
+      }, null, "\t") + "\n";
+      writeFileSync(join(cwd, "package.json"), original);
+      const locked = Buffer.from(lockContent || "original locked resolution 12\r\n");
+      if (lock) writeFileSync(join(cwd, lock), locked);
+      const result = initWorkerProject({ cwd, target: ".", slug: "it-tools" });
+      expect(result.framework).toBe("vue-vite");
+      expect(readFileSync(join(cwd, "package.json"), "utf8")).toBe(original);
+      if (lock) expect(readFileSync(join(cwd, lock))).toEqual(locked);
+      expect(result.nextSteps.slice(0, 2)).toEqual([install, `${command} run build`]);
+      expect(result.files).toEqual([".gitignore", "wrangler.jsonc", "xapi.worker.json", "xapi-worker/index.mjs"]);
+      expect(existsSync(join(cwd, "node_modules"))).toBe(false);
+    });
+  }
+
+  test("runs and uploads the generated ESM using only the original application build", async () => {
+    const cwd = workspace();
+    mkdirSync(join(cwd, ".git"));
+    const original = '{"name":"static-app","type":"commonjs","scripts":{"build":"node build.cjs"},"dependencies":{"vue":"latest","vite":"latest"}}\n';
+    writeFileSync(join(cwd, "package.json"), original);
+    writeFileSync(join(cwd, "build.cjs"), 'const fs = require("node:fs"); fs.mkdirSync("dist", { recursive: true }); fs.writeFileSync("dist/index.html", "<h1>Original app</h1>");');
+    initWorkerProject({ cwd, target: ".", slug: "static-app" });
+    const project = loadWorkerProject(cwd);
+    const wrangler = JSON.parse(readFileSync(join(cwd, "wrangler.jsonc"), "utf8"));
+    expect(wrangler.main).toBe(project.config.build.output);
+    expect(project.config.assets).toMatchObject({ notFoundHandling: "single-page-application", runWorkerFirst: ["/api/*", "/health"] });
+    // Use Node, not Bun's implicit TS loader, to prove this is executable ESM
+    // even inside a CommonJS project with no installed tools or dependencies.
+    const runtime = spawnSync("node", ["--input-type=module", "-e", `
+      import assert from 'node:assert/strict';
+      import worker from './xapi-worker/index.mjs';
+      for (const path of ['/health', '/api/health']) {
+        const response = await worker.fetch(new Request('https://example.test' + path), {});
+        assert.equal(response.status, 200);
+        assert.deepEqual(await response.json(), { ok: true });
+      }
+      for (const path of ['/api/missing', '/missing', '/']) {
+        const response = await worker.fetch(new Request('https://example.test' + path), {});
+        assert.equal(response.status, 404);
+        assert.deepEqual(await response.json(), { error: 'not_found' });
+      }
+    `], { cwd, encoding: "utf8" });
+    expect(runtime.stderr).toBe("");
+    expect(runtime.status).toBe(0);
+    await runWorkerProjectBuild(project.config.build.command, cwd);
+    const artifact = await loadWorkerProjectBundle(project, "preview");
+    if (!("bundle" in artifact.upload)) throw new Error("Expected assets bundle");
+    expect(artifact.upload.bundle.modules).toHaveLength(1);
+    expect(artifact.upload.bundle.modules[0]!.content).toBe(readFileSync(join(cwd, wrangler.main), "utf8"));
+    expect(artifact.upload.bundle.assets?.files.map(file => file.path)).toEqual(["/index.html"]);
+    expect(readFileSync(join(cwd, "package.json"), "utf8")).toBe(original);
+    expect(existsSync(join(cwd, "node_modules"))).toBe(false);
+  });
+
+  for (const conflict of ["xapi-worker/index.mjs", "xapi-worker/index.ts", "wrangler.jsonc", "xapi.worker.json", "symlink-worker", "symlink-gitignore"]) {
+    test(`preflights existing static files before writing (${conflict})`, () => {
+      const cwd = workspace();
+      const original = '{"scripts":{"build":"vite build"},"dependencies":{"vite":"latest"}}';
+      writeFileSync(join(cwd, "package.json"), original);
+      const outside = workspace();
+      if (conflict === "symlink-worker") symlinkSync(outside, join(cwd, "xapi-worker"));
+      else if (conflict === "symlink-gitignore") {
+        writeFileSync(join(outside, "ignore"), "original\n");
+        symlinkSync(join(outside, "ignore"), join(cwd, ".gitignore"));
+      } else {
+        if (conflict.startsWith("xapi-worker/")) mkdirSync(join(cwd, "xapi-worker"));
+        writeFileSync(join(cwd, conflict), "original\n");
+      }
+      expect(() => initWorkerProject({ cwd, target: ".", slug: "static-app" })).toThrow();
+      expect(readFileSync(join(cwd, "package.json"), "utf8")).toBe(original);
+      if (conflict === "symlink-gitignore") expect(readFileSync(join(outside, "ignore"), "utf8")).toBe("original\n");
+      else expect(existsSync(join(cwd, ".gitignore"))).toBe(false);
+      if (!conflict.startsWith("symlink-")) expect(readFileSync(join(cwd, conflict), "utf8")).toBe("original\n");
+    });
+  }
 
   test("uses the repository package manager when adopting a workspace package", () => {
     const cwd = workspace();
@@ -276,16 +373,12 @@ describe("workers init", () => {
     );
 
     const result = initWorkerProject({ cwd, target: "apps/web" });
-    const pkg = JSON.parse(readFileSync(join(target, "package.json"), "utf8"));
-    expect(pkg.scripts["xapi:build"]).toBe(
-      "corepack yarn run build && corepack yarn run xapi:worker:build",
-    );
     expect(loadWorkerProject(target).config.build.command).toBe(
-      "corepack yarn run xapi:build",
+      "corepack yarn run build",
     );
     expect(result.nextSteps.slice(0, 2)).toEqual([
-      "corepack yarn install",
-      "corepack yarn run xapi:build",
+      "corepack yarn install --frozen-lockfile",
+      "corepack yarn run build",
     ]);
   });
 
@@ -307,11 +400,33 @@ describe("workers init", () => {
     );
 
     const result = initWorkerProject({ cwd, target: "apps/web" });
-    const pkg = JSON.parse(readFileSync(join(target, "package.json"), "utf8"));
-    expect(pkg.scripts["xapi:build"]).toBe(
-      "pnpm run build && pnpm run xapi:worker:build",
-    );
-    expect(result.nextSteps[0]).toBe("pnpm install");
+    expect(loadWorkerProject(target).config.build.command).toBe("pnpm run build");
+    expect(result.nextSteps[0]).toBe("pnpm install --frozen-lockfile");
+  });
+
+  test("finds an ancestor lock even when the child declares its package manager", () => {
+    const cwd = workspace();
+    mkdirSync(join(cwd, ".git"));
+    const locked = "lockfileVersion: '9.0'\n# original workspace lock\n";
+    writeFileSync(join(cwd, "pnpm-lock.yaml"), locked);
+    const target = join(cwd, "apps/web");
+    mkdirSync(target, { recursive: true });
+    const original = '{"packageManager":"pnpm@9.15.0","scripts":{"build":"vite build"},"dependencies":{"vite":"latest"}}';
+    writeFileSync(join(target, "package.json"), original);
+    const result = initWorkerProject({ cwd, target: "apps/web" });
+    expect(result.nextSteps[0]).toBe("corepack pnpm install --frozen-lockfile");
+    expect(readFileSync(join(target, "package.json"), "utf8")).toBe(original);
+    expect(readFileSync(join(cwd, "pnpm-lock.yaml"), "utf8")).toBe(locked);
+  });
+
+  test("does not use an unrelated lock outside the repository", () => {
+    const cwd = workspace();
+    writeFileSync(join(cwd, "pnpm-lock.yaml"), "unrelated lock\n");
+    const target = join(cwd, "separate-repo");
+    mkdirSync(join(target, ".git"), { recursive: true });
+    writeFileSync(join(target, "package.json"), '{"scripts":{"build":"vite build"},"dependencies":{"vite":"latest"}}');
+    const result = initWorkerProject({ cwd, target: "separate-repo" });
+    expect(result.nextSteps.slice(0, 2)).toEqual(["npm install", "npm run build"]);
   });
 
   test("adopts a statically exported Next project and rejects SSR without mutation", () => {
