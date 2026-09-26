@@ -69,6 +69,67 @@ export type WorkerCacheOptions = {
 };
 export type WorkerVersionMetadata = { binding: string };
 
+export type WorkerVariableType = "plain_text" | "json";
+export interface WorkerVariableOptions {
+  vars?: Record<string, unknown>;
+  keepBindings?: WorkerVariableType[];
+  varTypes?: Record<string, WorkerVariableType>;
+}
+
+/** Canonical public variable intent; defaults stay absent for stable legacy hashes. */
+export function normalizeWorkerVariableOptions(input: {
+  vars?: unknown;
+  keepBindings?: unknown;
+  varTypes?: unknown;
+}): WorkerVariableOptions {
+  const vars = normalizeWorkerVars(input.vars);
+  const result: WorkerVariableOptions = vars ? { vars } : {};
+  if (input.keepBindings !== undefined) {
+    if (!Array.isArray(input.keepBindings) || input.keepBindings.some(
+      (type) => type !== "plain_text" && type !== "json",
+    )) {
+      throw new WorkerArtifactError("Worker keepBindings must contain only plain_text or json");
+    }
+    const keepBindings = (["plain_text", "json"] as const).filter(
+      (type) => (input.keepBindings as unknown[]).includes(type),
+    );
+    if (keepBindings.length) result.keepBindings = keepBindings;
+  }
+  if (input.varTypes !== undefined) {
+    if (!input.varTypes || typeof input.varTypes !== "object" || Array.isArray(input.varTypes)) {
+      throw new WorkerArtifactError("Worker varTypes must be an object");
+    }
+    const exceptions: Array<[string, WorkerVariableType]> = [];
+    for (const [name, type] of Object.entries(input.varTypes).sort(([a], [b]) => a.localeCompare(b))) {
+      if (!vars || !Object.hasOwn(vars, name)) {
+        throw new WorkerArtifactError(`Worker varTypes key must exist in vars: ${name}`);
+      }
+      if (type !== "plain_text" && type !== "json") {
+        throw new WorkerArtifactError(`Invalid Worker variable type: ${name}`);
+      }
+      if (type === "plain_text" && typeof vars[name] !== "string") {
+        throw new WorkerArtifactError(`Worker plain_text variable must be a string: ${name}`);
+      }
+      if (type === "json" && typeof vars[name] === "string") exceptions.push([name, type]);
+    }
+    if (exceptions.length) result.varTypes = Object.fromEntries(exceptions);
+  }
+  return result;
+}
+
+function normalizeNativeKeepBindings(value: unknown): WorkerVariableType[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some(type =>
+    !["plain_text", "json", "secret_text", "secret_key"].includes(type),
+  )) {
+    throw new WorkerArtifactError("Native keep_bindings needs explicit target mapping; only public variable retention is supported");
+  }
+  // xAPI Secrets are managed independently from artifact public variables.
+  return normalizeWorkerVariableOptions({
+    keepBindings: value.filter(type => type === "plain_text" || type === "json"),
+  }).keepBindings;
+}
+
 export function normalizeNativeWorkerOptions(input: {
   cacheOptions?: unknown;
   versionMetadata?: unknown;
@@ -190,7 +251,7 @@ export function normalizeWorkerObservability(
   ]) as WorkerObservability;
 }
 
-export interface WorkerArtifactBundle {
+export interface WorkerArtifactBundle extends WorkerVariableOptions {
   version: 1;
   mainModule: string;
   modules: WorkerArtifactBundleModule[];
@@ -748,6 +809,7 @@ export async function loadWorkerArtifactInput(
     "package_dependencies",
     "containers",
     "cache_options",
+    "keep_bindings",
   ]);
   const unknown = Object.keys(metadata).filter(key => !known.has(key));
   if (unknown.length) throw new WorkerArtifactError(`Native metadata needs explicit platform mapping: ${unknown.join(", ")}`);
@@ -819,9 +881,16 @@ export async function loadWorkerArtifactInput(
       ? { versionMetadata: { binding: versions[0].name } }
       : {}),
   });
-  const vars = normalizeWorkerVars(Object.fromEntries(nativeBindings
-    .filter(binding => binding.type === "plain_text" || binding.type === "json")
-    .map(binding => [String(binding.name), binding.type === "plain_text" ? binding.text : binding.json])));
+  const variableBindings = nativeBindings.filter(
+    binding => binding.type === "plain_text" || binding.type === "json",
+  );
+  const variableOptions = normalizeWorkerVariableOptions({
+    vars: Object.fromEntries(variableBindings.map(binding => [
+      String(binding.name), binding.type === "plain_text" ? binding.text : binding.json,
+    ])),
+    varTypes: Object.fromEntries(variableBindings.map(binding => [String(binding.name), binding.type])),
+    keepBindings: normalizeNativeKeepBindings(metadata.keep_bindings),
+  });
   if (metadata.compatibility_flags !== undefined && (!Array.isArray(metadata.compatibility_flags) || metadata.compatibility_flags.some(flag => typeof flag !== "string"))) throw new WorkerArtifactError("Invalid native compatibility flags");
   const observability = normalizeWorkerObservability(metadata.observability);
   const main = normalizeMainModule(typeof metadata.main_module === "string" ? metadata.main_module : undefined);
@@ -876,7 +945,7 @@ export async function loadWorkerArtifactInput(
     mainModule: main,
     modules,
     ...nativeOptions,
-    ...(vars ? { vars } : {}),
+    ...variableOptions,
     ...(observability ? { observability } : {}),
     ...(assets ? { assets } : {}),
     ...(containers?.length ? { containers } : {}),
@@ -913,6 +982,7 @@ function attachContainers(
 }
 
 function storedBundleBytes(bundle: WorkerArtifactBundle): Buffer {
+  const { vars, ...variableOptions } = normalizeWorkerVariableOptions(bundle);
   const modules = [...bundle.modules]
     .sort((a, b) => a.path.localeCompare(b.path))
     .map((module) => ({
@@ -935,11 +1005,10 @@ function storedBundleBytes(bundle: WorkerArtifactBundle): Buffer {
   return Buffer.from(
     JSON.stringify({
       ...normalizeNativeWorkerOptions(bundle),
+      ...variableOptions,
       ...(bundle.observability ? { observability: normalizeWorkerObservability(bundle.observability) } : {}),
       ...(bundle.containers?.length ? { containers: bundle.containers } : {}),
-      ...(normalizeWorkerVars(bundle.vars)
-        ? { vars: normalizeWorkerVars(bundle.vars) }
-        : {}),
+      ...(vars ? { vars } : {}),
       version: 1,
       mainModule: bundle.mainModule,
       modules,
@@ -1068,20 +1137,22 @@ export function normalizeWorkerVars(value: unknown): Record<string, unknown> | u
 
 /** Attach declared native options; reject stale native build metadata. */
 export function withNativeWorkerOptions(artifact: LoadedWorkerArtifact, options: {
-  cacheOptions?: unknown; versionMetadata?: unknown; observability?: unknown;
+  cacheOptions?: unknown; versionMetadata?: unknown; keepBindings?: unknown; observability?: unknown;
 }): LoadedWorkerArtifact {
   const expected = {
     ...normalizeNativeWorkerOptions(options),
+    ...normalizeWorkerVariableOptions({ keepBindings: options.keepBindings }),
     ...(options.observability !== undefined ? { observability: normalizeWorkerObservability(options.observability) } : {}),
   };
   if (artifact.nativeMetadata) {
     const actual = 'bundle' in artifact.upload ? {
       ...normalizeNativeWorkerOptions(artifact.upload.bundle),
+      ...normalizeWorkerVariableOptions({ keepBindings: artifact.upload.bundle.keepBindings }),
       ...(artifact.upload.bundle.observability !== undefined
         ? { observability: normalizeWorkerObservability(artifact.upload.bundle.observability) } : {}),
     } : {};
     if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-      throw new WorkerArtifactError('Wrangler bundle cache/version metadata/observability differs from the selected environment; rebuild before publishing');
+      throw new WorkerArtifactError('Wrangler bundle cache/version metadata/variable retention/observability differs from the selected environment; rebuild before publishing');
     }
     return artifact;
   }
@@ -1100,7 +1171,8 @@ export function withNativeWorkerOptions(artifact: LoadedWorkerArtifact, options:
 export function withWorkerVars(artifact: LoadedWorkerArtifact, value: unknown): LoadedWorkerArtifact {
   const vars = normalizeWorkerVars(value);
   if (artifact.nativeMetadata) {
-    const actual = 'bundle' in artifact.upload ? normalizeWorkerVars(artifact.upload.bundle.vars) : undefined;
+    const actual = 'bundle' in artifact.upload
+      ? normalizeWorkerVariableOptions(artifact.upload.bundle).vars : undefined;
     if (JSON.stringify(actual) !== JSON.stringify(vars)) {
       throw new WorkerArtifactError('Wrangler bundle vars differ from the selected environment; rebuild before publishing');
     }

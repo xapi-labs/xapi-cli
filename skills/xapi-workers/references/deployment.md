@@ -69,7 +69,7 @@ xapi workers get <worker-id> --format json
 xapi workers logs <worker-id> --env preview --since 10m
 ```
 
-If provisioning requires an accepted retention quote, follow lifecycle.md and pass its exact `--retention-price-version VERSION`; do not invent a version. Configure public vars and credentials with [secrets.md](secrets.md), including its interactive bootstrap and non-interactive first-project setup; xAPI never needs a code deployment to retain or replay their values. Never report a blocked preflight as successful deployment.
+If provisioning requires an accepted retention quote, follow lifecycle.md and pass its exact `--retention-price-version VERSION`; do not invent a version. Configure public vars and credentials with [secrets.md](secrets.md), including its interactive bootstrap and non-interactive first-project setup. Public vars take effect with the Artifact deployment; Secret writes and retention are independent. Never report a blocked preflight as successful deployment.
 
 Use the Node and package-manager version required by the application before `plan` or `push`; the CLI runs the configured build command unchanged. If the project declares `engines.node`, activate a compatible runtime first. A build-runtime failure is an application build failure and must occur before any deployment write; rerun the same push only after correcting the local runtime.
 
@@ -104,6 +104,68 @@ or placeholder Cloudflare resource ID merely to make the local bundle pass.
 For a package inside a pnpm, Yarn, or Bun workspace, run `init` from that
 package directory. The CLI uses the nearest lockfile up to the repository root
 and keeps the generated build command on the repository's package manager.
+
+## Public variable decisions
+
+Public `vars` and their binding types belong to the immutable Artifact. Review
+`plan.variables` in JSON or the **Public variables** section in human output:
+
+| Decision | Effect |
+| --- | --- |
+| `SET` | Apply the Artifact's declared value, including when a binding already has the same type. Values are not compared. |
+| `RETAIN` | Keep an omitted live public binding because its current native type is retained. |
+| `REMOVE` | Remove an omitted live public binding whose type is not retained. |
+| `REPLACE` | Replace a public binding with another declared public type or an explicit resource/asset/version/Secret binding. |
+
+Default deployment replaces public variables: omit a live `plain_text` or `json`
+binding and it is removed. Set **top-level** Wrangler `keep_vars: true` to keep
+omitted bindings of both types. `false` or absence emits no public retention.
+Wrangler ignores `env.<name>.keep_vars`; the importer reports that warning and
+the root setting is never overridden. Named environments do not inherit root
+`vars`; declare their public values explicitly and build for the same environment.
+An explicitly declared variable still sets its Artifact value when retention is
+on, and an explicit binding of another kind takes precedence over retention.
+
+Native `keep_bindings` preserves per-type intent: `["json"]` retains omitted JSON
+bindings but removes omitted plaintext bindings; `["plain_text"]` does the
+reverse. The Artifact stores only those public types in canonical
+`keepBindings` order (`plain_text`, then `json`), with duplicates removed and an
+empty list omitted. `secret_text` and `secret_key` normalize out because Secrets
+are independently managed and always kept across code deployment. Other native
+resource retention types require explicit target mapping and are rejected before
+upload; there is no wildcard `all` mapping. Secret values still use the separate
+Secrets workflow; retaining public vars never reads or replays credentials.
+
+String vars default to `plain_text`, other JSON values to `json`. Native JSON
+bindings whose values happen to be strings remain `json` via the Artifact's
+`varTypes` exceptions. Default type annotations are omitted so existing Artifact
+hashes stay unchanged. Rebuild stale native output when values or retention
+settings disagree with the selected Wrangler configuration.
+
+For linked targets, plan reads the target Cloudflare script's live public binding
+names/types through xAPI. It never reads or displays their values. These are
+management reads only; they add no reads to application requests. Promotion
+reads the selected immutable preview Artifact's variable declaration and compares
+it with the live production target. Do not substitute local preview output or
+local production `vars`, or rebuild to infer the selected Artifact's intent.
+Retention preserves the target environment's own omitted values, not preview's.
+
+Deploy the matching backend **before upgrading the CLI**. Both authenticated
+read endpoints and backend `keepBindings`/`varTypes` support are required:
+
+- `GET /api/v1/workers/:id/environments/:environment/variables` — live target
+  public names/types and deployment identity, without values.
+- `GET /api/v1/workers/:id/artifacts/:artifactId/variable-configuration` — the
+  selected immutable Artifact's public names/types, retention and binding names,
+  without values.
+
+A missing endpoint, failed read, malformed response, or mismatched Artifact or
+deployment identity stops preflight. Report the exact failure and backend
+upgrade requirement where applicable; never silently substitute an empty set or
+infer remote state from local files. An absent `variables` field in an older plan
+is unavailable metadata, not evidence of no variables. Local tests and Wrangler
+dry-runs do not prove that Cloudflare has applied this behavior; report cloud
+verification only after a real deployment and appropriate runtime checks.
 
 ## Native Containers
 

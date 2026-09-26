@@ -574,6 +574,36 @@ The project workflow works without Git. `xapi.worker.json` may be committed,
 but Secret values must stay in environment variables or the encrypted Secret
 store. `push` never silently deletes extra stateful resources or Secrets.
 
+Public variables travel with the immutable Artifact. By default, deployment
+replaces public vars: omitted `plain_text` and `json` bindings are removed.
+Top-level Wrangler `keep_vars: true` retains omitted bindings of both types;
+`false` or absence uses replacement. `env.<name>.keep_vars` is ignored with an
+import warning and never overrides the root setting. Named environments have
+their own `vars`, without inheriting root vars. Native `keep_bindings` preserves
+the exact public types requested, so retaining only `json` does not retain
+`plain_text`. A native JSON-string binding stays `json`. Secrets are independent
+and always kept across code deployment, regardless of public-variable retention.
+
+`workers plan` shows public-variable `SET`, `RETAIN`, `REMOVE`, and `REPLACE`
+decisions using live target Cloudflare binding names/types, never values. These
+reads happen during management, not application requests. `SET` applies the
+Artifact value; it does not claim that the old value differs. Promotion derives
+variable intent from the selected immutable preview Artifact and compares it
+with production; local preview files and local production `vars` do not rewrite
+that Artifact.
+
+**Roll out the matching backend before upgrading the CLI.** It must support
+`keepBindings`/`varTypes` and these authenticated reads:
+
+- `GET /api/v1/workers/:id/environments/:environment/variables`
+- `GET /api/v1/workers/:id/artifacts/:artifactId/variable-configuration`
+
+Missing endpoints, failed reads, and malformed responses stop preflight; they
+must never be treated as an empty variable set. Local tests and dry-run bundles
+do not establish cloud verification. See the
+[deployment reference](skills/xapi-workers/references/deployment.md#public-variable-decisions)
+for retention and review details.
+
 For project-managed resources, `xapi.worker.json` is the Git-tracked desired
 state and xAPI is live state. `plan` always fetches live state; the CLI keeps no
 third cached copy.

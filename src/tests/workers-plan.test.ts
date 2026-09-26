@@ -76,6 +76,56 @@ function unexpected(name: string): () => Promise<never> {
 }
 
 describe("workers plan", () => {
+  test("explains public vars and explicit binding replacement without values or a drift lock", async () => {
+    const root = project({ linked: true, bundle: "export default {fetch(){return new Response('ok')}}" });
+    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify({ name: "plan-agent", keep_vars: true,
+      version_metadata: { binding: "VERSION" }, env: { preview: { vars: { SET: "private-marker", CHANGE: 42 } } } }));
+    const client = {
+      listWorkers: unexpected("listWorkers"),
+      getWorker: async () => ({ id: workerId, slug: "plan-agent",
+        environments: [{ id: "preview", name: "PREVIEW", dailyBudgetUsd: 0.25, activeDeploymentId: "live" }], artifacts: [], deployments: [] }),
+      getWorkerVariableState: async () => ({ environment: "preview", activeDeploymentId: "live", exists: true,
+        variables: ["KEEP", "CHANGE", "STATE", "MODEL_KEY", "VERSION"].map(name => ({ name, type: "plain_text" })) }),
+      listWorkerResources: async () => [{ bindingName: "STATE", type: "KV_NAMESPACE", status: "ACTIVE" }],
+      listWorkerSecrets: async () => [{ bindingName: "MODEL_KEY", version: 1 }],
+    };
+    const options = { cwd: root, environment: "preview" as const, clientOptions: { apiHost: "localhost:3003", apiKey: "test" }, client };
+    const plan = await createWorkerPlan(options);
+    expect(plan.canApply).toBe(true);
+    expect(plan.variables?.map(({ name, decision }) => ({ name, decision }))).toEqual([
+      { name: "CHANGE", decision: "REPLACE" }, { name: "KEEP", decision: "RETAIN" },
+      { name: "MODEL_KEY", decision: "REPLACE" }, { name: "SET", decision: "SET" },
+      { name: "STATE", decision: "REPLACE" }, { name: "VERSION", decision: "REPLACE" },
+    ]);
+    expect(JSON.stringify(plan)).not.toContain("private-marker");
+    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify({ name: "plan-agent" }));
+    const removal = await createWorkerPlan(options);
+    expect(removal.variables).toContainEqual(expect.objectContaining({ name: "KEEP", decision: "REMOVE" }));
+    expect(removal.canApply).toBe(true);
+    client.listWorkerSecrets = async () => [];
+    expect((await createWorkerPlan(options)).canApply).toBe(false);
+    client.listWorkerResources = async () => [{ bindingName: "STATE", type: "D1_DATABASE", status: "ACTIVE" }];
+    expect((await createWorkerPlan(options)).canApply).toBe(false);
+  });
+
+  test("propagates variable read errors and rejects a different active deployment", async () => {
+    const root = project({ linked: true });
+    const failure = new Error("native variable read failed");
+    const client = {
+      listWorkers: unexpected("listWorkers"),
+      getWorker: async () => ({ id: workerId, slug: "plan-agent",
+        environments: [{ id: "preview", name: "PREVIEW", dailyBudgetUsd: 0.25, activeDeploymentId: "live" }] }),
+      listWorkerResources: async () => [], listWorkerSecrets: async () => [],
+      getWorkerVariableState: async (): Promise<unknown> => { throw failure; },
+    };
+    const options = { cwd: root, environment: "preview" as const, clientOptions: { apiHost: "localhost:3003", apiKey: "test" }, client };
+    await expect(createWorkerPlan(options)).rejects.toBe(failure);
+    client.getWorkerVariableState = async () => ({ environment: "preview", activeDeploymentId: "newer", exists: true, variables: [] });
+    await expect(createWorkerPlan(options)).rejects.toThrow("deployment changed");
+    client.getWorkerVariableState = async () => ({ environment: "preview", activeDeploymentId: "live", exists: false, variables: [] });
+    await expect(createWorkerPlan(options)).rejects.toThrow("state is missing");
+  });
+
   test("shows native environment placement drift before deployment", async () => {
     const root = project({ linked: true });
     const path = join(root, "xapi.worker.json");
@@ -90,6 +140,7 @@ describe("workers plan", () => {
       environment: "preview",
       clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
       client: {
+        getWorkerVariableState: async () => ({ environment: "preview", activeDeploymentId: null, exists: false, variables: [] }),
         listWorkers: unexpected("listWorkers"),
         getWorker: async () => ({
           id: workerId,
@@ -122,6 +173,7 @@ describe("workers plan", () => {
       environment: "preview",
       clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
       client: {
+        getWorkerVariableState: async () => ({ environment: "preview", activeDeploymentId: null, exists: false, variables: [] }),
         listWorkers: async () => {
           events.push("read-live-state");
           return [];
@@ -157,9 +209,10 @@ describe("workers plan", () => {
     const root = project({ linked: true, bundle });
     const resources = [{ id: "resource", bindingName: "STATE", type: "KV_NAMESPACE", status: "ACTIVE", providerResourceId: "first" }];
     const secrets = [{ bindingName: "MODEL_KEY", version: 1 }];
-    const environment = { id: "env-preview", name: "PREVIEW", dailyBudgetUsd: 0.25, activeDeploymentId: "live" };
+    const environment = { id: "env-preview", name: "PREVIEW", dailyBudgetUsd: 0.25, activeDeploymentId: "live", bindings: [{ name: "ENV_CONFIG", type: "json", json: "private-marker" }] };
     const prefix = deploymentPrefix(workerId, "preview", "artifact", {}, environment, resources, secrets);
     const client = {
+      getWorkerVariableState: async () => ({ environment: "preview", activeDeploymentId: "live", exists: true, variables: [{ name: "EXTERNAL_VAR", type: "plain_text" }] }),
       listWorkers: unexpected("listWorkers"),
       listWorkerResources: async () => resources,
       listWorkerSecrets: async () => secrets,
@@ -169,6 +222,10 @@ describe("workers plan", () => {
     };
     const run = async () => (await createWorkerPlan({ cwd: root, environment: "preview", clientOptions: { apiHost: "localhost:3148", apiKey: "test" }, client })).actions.find(a => a.kind === "deployment")?.operation;
     expect(await run()).toBe("NO_CHANGE");
+    const noOp = await createWorkerPlan({ cwd: root, environment: "preview", clientOptions: { apiHost: "localhost:3148", apiKey: "test" }, client });
+    expect(noOp.variables).toContainEqual(expect.objectContaining({ name: "EXTERNAL_VAR", decision: "REMOVE", message: expect.stringContaining("If deployment occurs") }));
+    expect(noOp.variables).toContainEqual(expect.objectContaining({ name: "ENV_CONFIG", decision: "SET", type: "json", message: expect.stringContaining("If deployment occurs") }));
+    expect(JSON.stringify(noOp)).not.toContain("private-marker");
     resources[0].providerResourceId = "replacement";
     expect(await run()).toBe("CREATE");
     resources[0].providerResourceId = "first";
@@ -188,6 +245,7 @@ describe("workers plan", () => {
     ];
     writeFileSync(join(root, "xapi.worker.json"), JSON.stringify(config));
     const client = {
+      getWorkerVariableState: async () => ({ environment: "preview", activeDeploymentId: null, exists: false, variables: [] }),
       listWorkers: unexpected("listWorkers"),
       getWorker: async () => ({
         id: workerId,
@@ -241,6 +299,7 @@ describe("workers plan", () => {
     ];
     writeFileSync(join(root, "xapi.worker.json"), JSON.stringify(config));
     const client = {
+      getWorkerVariableState: async () => ({ environment: "preview", activeDeploymentId: null, exists: false, variables: [] }),
       listWorkers: unexpected("listWorkers"),
       getWorker: async () => ({
         id: workerId,
@@ -290,6 +349,7 @@ describe("workers plan", () => {
     const root = project();
     rmSync(join(root, "wrangler.jsonc"));
     const client = {
+      getWorkerVariableState: async () => ({ environment: "preview", activeDeploymentId: null, exists: false, variables: [] }),
       listWorkers: unexpected("listWorkers"),
       getWorker: unexpected("getWorker"),
       listWorkerResources: unexpected("listWorkerResources"),
@@ -312,6 +372,7 @@ describe("workers plan", () => {
     const root = project();
     const calls: string[] = [];
     const client = {
+      getWorkerVariableState: unexpected("getWorkerVariableState"),
       listWorkers: async () => {
         calls.push("listWorkers");
         return [];
@@ -357,6 +418,7 @@ describe("workers plan", () => {
     const sha256 = createHash("sha256").update(bundle).digest("hex");
     const root = project({ linked: true, bundle });
     const client = {
+      getWorkerVariableState: async () => ({ environment: "preview", activeDeploymentId: null, exists: false, variables: [] }),
       listWorkers: unexpected("listWorkers"),
       getWorker: async () => ({
         id: workerId,
@@ -467,6 +529,7 @@ describe("workers plan", () => {
           deployments: [],
         });
       }
+      if (url.endsWith("/variables")) return Response.json({ environment: "preview", activeDeploymentId: null, exists: false, variables: [] });
       if (url.endsWith("/resources")) {
         return Response.json([
           { bindingName: "STATE", type: "KV_NAMESPACE", status: "ACTIVE" },
@@ -483,13 +546,14 @@ describe("workers plan", () => {
       clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
     });
     expect(plan.canApply).toBe(true);
-    expect(methods).toEqual(["GET", "GET", "GET", "GET"]);
+    expect(methods).toEqual(["GET", "GET", "GET", "GET", "GET"]);
   });
 
   test("propagates a safe hidden-instance 404 and performs no fallback lookup", async () => {
     const root = project({ linked: true });
     const calls: string[] = [];
     const client = {
+      getWorkerVariableState: async () => ({ environment: "preview", activeDeploymentId: null, exists: false, variables: [] }),
       listWorkers: unexpected("listWorkers"),
       getWorker: async () => {
         calls.push("getWorker");
@@ -527,6 +591,7 @@ describe("workers plan", () => {
       environment: "preview",
       clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
       client: {
+        getWorkerVariableState: async () => ({ environment: "preview", activeDeploymentId: null, exists: false, variables: [] }),
         listWorkers: unexpected("listWorkers"),
         getWorker: async () => ({
           id: workerId,

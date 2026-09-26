@@ -140,6 +140,24 @@ it does not read `.env` or `.dev.vars`. Variable names must not collide with
 resource, asset or Secret bindings. Ordinary deployment rollback restores the
 public vars stored in the selected artifact as well as its code.
 
+Public variables use replacement by default: omitted plaintext/JSON bindings are
+removed. Top-level `keep_vars: true` retains omitted bindings of both types;
+`false` or absence does not. `env.<name>.keep_vars` is ignored with an import
+warning and cannot override the root. Native `keep_bindings` retains only the
+specified public types, and native JSON-string bindings stay `json`. Secrets are
+independent and always kept across code deployment.
+
+Plan shows `SET`, `RETAIN`, `REMOVE`, and `REPLACE` using live target Cloudflare
+names/types without reading values, only during management. Promotion uses the
+selected immutable Artifact's declarations against production, never local
+preview output or local production vars. Deploy the matching backend before
+upgrading the CLI: both `/api/v1/workers/:id/environments/:environment/variables`
+and `/api/v1/workers/:id/artifacts/:artifactId/variable-configuration` GET reads
+are required. Read failures stop preflight; never substitute empty variable state.
+See [public variable decisions](../../xapi-workers/references/deployment.md#public-variable-decisions)
+for the full retention and rollout contract. Local checks do not prove cloud
+verification.
+
 The project workflow does not require Git. Git repository, branch, and commit
 are optional provenance, not authentication and not a deployment prerequisite.
 It runs the configured build, creates the remote Worker when `workerId` is

@@ -17,9 +17,17 @@ empty credential environment. Multipart boundaries may vary; compare part bytes
 and the canonical xAPI Artifact hash instead of the whole multipart body.
 
 `observability-maps` is derived from a full-options case with `keep_vars` removed,
-so it isolates this milestone. Variable retention remains a separate contract.
+so it isolates the observability/source-map contract.
 `xapi-artifact.json` is produced by `loadWorkerArtifactInput` and includes expected
 hash/size for cross-repository backend JSON and streamed-upload regression tests.
+
+`full-options` preserves the original root `keep_vars: true` capture. Its canonical
+CLI Artifact is 2348 bytes with SHA256
+`107df2f3c4cd9a32d2e65bf438c3b245fd90f4e3d2386ec292ce1a7e3389335c`.
+The backend's `wrangler-full-options-cli-artifact.json` records the exact CLI
+bytes and a supplementary case adding a native JSON-string binding; tests check
+encoding, streaming, manifest storage and hydration against that capture. The
+supplementary case is synthetic metadata, not a second live Cloudflare result.
 
 The uploaded map has 819 bytes and SHA256
 `ce272e4bc27548a6c05e4bc1fbbd8d7b6b34b94d9f4d899a5d056b6a1b13ef89`.

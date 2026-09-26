@@ -157,6 +157,12 @@ function fakePlatform(
   const client: PushClient = {
     listWorkers: async () => (state.worker ? [snapshot()] : []),
     getWorker: async () => snapshot(),
+    getWorkerVariableState: async (_options, _id, environment) => ({
+      environment,
+      activeDeploymentId: state.deployments.find(item => item.status === "ACTIVE")?.id || null,
+      exists: state.deployments.some(item => item.status === "ACTIVE"),
+      variables: [],
+    }),
     createWorker: async () => {
       calls.createWorker += 1;
       state.worker = {

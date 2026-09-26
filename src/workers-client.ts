@@ -3,6 +3,7 @@ import type {
   WorkerArtifactBundle,
   WorkerArtifactUploadRequest,
 } from "./workers-artifact.ts";
+import { normalizeWorkerVariableOptions } from "./workers-artifact.ts";
 import { scheme } from "./config.ts";
 
 export interface WorkersClientOptions {
@@ -78,6 +79,20 @@ export function createWorker(
     headers: headers(options, true),
     body: JSON.stringify(input),
   });
+}
+
+export function getWorkerVariableState(options: WorkersClientOptions, id: string, environment: string) {
+  return request<unknown>(
+    url(options, `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/variables`),
+    { headers: headers(options) }, 30_000, 2,
+  );
+}
+
+export function getWorkerArtifactVariableConfiguration(options: WorkersClientOptions, id: string, artifactId: string) {
+  return request<unknown>(
+    url(options, `/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(artifactId)}/variable-configuration`),
+    { headers: headers(options) }, 30_000, 2,
+  );
 }
 
 export function deployWorker(
@@ -162,11 +177,11 @@ export async function uploadWorkerArtifact(
       ...(input.bundle.versionMetadata
         ? { versionMetadata: input.bundle.versionMetadata }
         : {}),
+      ...normalizeWorkerVariableOptions(input.bundle),
       modules: input.bundle.modules.map(addFile),
       ...(input.bundle.containers?.length
         ? { containers: input.bundle.containers }
         : {}),
-      ...(input.bundle.vars ? { vars: input.bundle.vars } : {}),
       ...(input.bundle.observability
         ? { observability: input.bundle.observability }
         : {}),

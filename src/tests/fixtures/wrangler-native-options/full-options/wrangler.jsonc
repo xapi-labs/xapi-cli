@@ -1,0 +1,29 @@
+{
+  "name": "native-options-fixture",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "send_metrics": false,
+  "vars": {
+    "PUBLIC_LABEL": "root",
+    "JSON_VALUE": {
+      "answer": 42
+    }
+  },
+  "keep_vars": true,
+  "upload_source_maps": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.25,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": false,
+      "head_sampling_rate": 0,
+      "persist": false
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1,
+      "persist": false
+    }
+  }
+}

@@ -126,6 +126,19 @@ function actionRow(action: WorkerPlanAction): string {
   return `  ${marker} ${KIND_LABEL[action.kind].padEnd(12)}${actionName(action).padEnd(24)}${actionDetail(action)}`;
 }
 
+function variableRows(variable: NonNullable<WorkerDeploymentPlan["variables"]>[number]): string[] {
+  const target = variable.type || (variable.decision === "REMOVE"
+    ? "removed"
+    : variable.decision === "REPLACE" ? "explicit binding" : undefined);
+  const types = variable.currentType && target && variable.currentType !== target
+    ? `${variable.currentType} → ${target}`
+    : target || variable.currentType;
+  return [
+    `  ${variable.decision.padEnd(8)} ${variable.name}${types ? ` · ${types}` : ""}`,
+    `    ${variable.message}`,
+  ];
+}
+
 function metadataRow(label: string, value: string): string {
   return `  ${label.padEnd(13)}${value}`;
 }
@@ -295,6 +308,14 @@ export function formatWorkerPlan(plan: WorkerDeploymentPlan): string {
           : "None",
       ));
     }
+  }
+  if (plan.variables !== undefined) {
+    lines.push("", "Public variables",
+      "  Values are not displayed or compared. Secrets are managed independently and kept.",
+      ...(plan.variables.length
+        ? plan.variables.flatMap(variableRows)
+        : ["  No public variable decisions."]),
+    );
   }
   if (manual.length) {
     lines.push("", "Manual review", ...manual.map(actionRow));

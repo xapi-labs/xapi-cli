@@ -1,3 +1,4 @@
+import { planWorkerVariables, readWorkerVariableState, workerVariableDeclaration, workerArtifactBindingNames, type WorkerVariableDecision, type WorkerVariableDeclaration, type WorkerVariableMetadata } from "./workers-variable-plan.ts";
 import { nativeDeploymentPlan, publicNativeDeploymentPlan, type NativeDeploymentPlan } from './workers-native-deployment.ts';
 import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import type {
@@ -7,7 +8,7 @@ import type {
 import * as workersClient from "./workers-client.ts";
 import { WorkerArtifactError } from "./workers-artifact.ts";
 import { deploymentPrefix, currentMatchingDeployment } from "./workers-deployment-state.ts";
-import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
+import { readWranglerDeploymentSettings, readWranglerPublicVars } from "./workers-wrangler-import.ts";
 import {
   type LoadedWorkerProject,
   type WorkerProjectConfig,
@@ -52,6 +53,7 @@ export interface WorkerPlanAction {
 
 export interface WorkerDeploymentPlan {
   schemaVersion: 1;
+  variables?: WorkerVariableDecision[];
   nativeSteps?: { migrations: Array<{ bindingName: string; table: string; name: string; sha256: string }>; consumers: unknown[]; crons: string[] };
   project: {
     rootDir: string;
@@ -86,6 +88,7 @@ export interface WorkerDeploymentPlan {
 }
 
 export interface PlanClient {
+  getWorkerVariableState(options: WorkersClientOptions, id: string, environment: "preview" | "production"): Promise<unknown>;
   listWorkers(options: WorkersClientOptions): Promise<unknown>;
   getWorker(options: WorkersClientOptions, id: string): Promise<unknown>;
   listWorkerResources(
@@ -439,6 +442,7 @@ async function localArtifact(project: LoadedWorkerProject, environment: "preview
   sha256?: string;
   sizeBytes?: number;
   configuration?: Record<string, unknown>;
+  variables?: WorkerVariableDeclaration;
   blocked?: string;
 }> {
   const path = resolveWorkerProjectPath(
@@ -446,12 +450,22 @@ async function localArtifact(project: LoadedWorkerProject, environment: "preview
     project.config.build.output,
     "build.output",
   );
-  if (!existsSync(path)) return {};
+  if (!existsSync(path)) {
+    const settings = readWranglerDeploymentSettings(project, environment);
+    return { variables: workerVariableDeclaration({
+      vars: readWranglerPublicVars(project, environment) as Record<string, unknown> | undefined,
+      keepBindings: settings.keepBindings,
+    }, workerArtifactBindingNames({ assets: project.config.assets, versionMetadata: settings.versionMetadata })) };
+  }
   try {
     const artifact = await loadWorkerProjectBundle(project, environment);
     return {
       sha256: artifact.contentSha256,
       sizeBytes: artifact.sizeBytes,
+      variables: "bundle" in artifact.upload
+        ? workerVariableDeclaration(artifact.upload.bundle,
+            workerArtifactBindingNames(artifact.upload.bundle))
+        : workerVariableDeclaration({}),
       ...("bundle" in artifact.upload ? {
         configuration: {
           ...(artifact.upload.bundle.cacheOptions
@@ -510,8 +524,8 @@ async function artifactAndDeployment(
   resources: UnknownRecord[],
   secrets: UnknownRecord[],
   environmentName: "preview" | "production",
+  local: Awaited<ReturnType<typeof localArtifact>>,
 ): Promise<void> {
-  const local = await localArtifact(project, environmentName);
   if (local.blocked) {
     add(
       actions,
@@ -705,6 +719,7 @@ export async function createWorkerPlan(
   let remoteEnvironmentState: UnknownRecord | undefined;
   let remoteResources: UnknownRecord[] = [];
   let remoteSecrets: UnknownRecord[] = [];
+  let remoteVariables: WorkerVariableMetadata[] = [];
   let prerequisiteBlocked = false;
 
   if (project.config.workerId) {
@@ -714,7 +729,7 @@ export async function createWorkerPlan(
       await api.getWorker(options.clientOptions, project.config.workerId),
     );
     remoteEnvironmentState = remoteEnvironment(remote, options.environment);
-    [remoteResources, remoteSecrets] = await Promise.all([
+    [remoteResources, remoteSecrets, remoteVariables] = await Promise.all([
       api
         .listWorkerResources(
           options.clientOptions,
@@ -729,6 +744,8 @@ export async function createWorkerPlan(
           options.environment,
         )
         .then((value) => list(value, "Secret metadata")),
+      api.getWorkerVariableState(options.clientOptions, project.config.workerId, options.environment)
+        .then(value => readWorkerVariableState(value, options.environment, string(remoteEnvironmentState?.activeDeploymentId) || null)),
     ]);
     if (remote.id !== project.config.workerId) {
       throw new WorkerProjectConfigError(
@@ -882,6 +899,12 @@ export async function createWorkerPlan(
       });
     }
   }
+  const local = await localArtifact(project, options.environment);
+  const variables = local.variables ? planWorkerVariables(local.variables, remoteVariables, [
+    ...desired.resources.map(resource => resource.bindingName),
+    ...desired.secrets,
+    ...remoteSecrets.map(secret => string(secret.bindingName)!),
+  ], remoteEnvironmentState?.bindings) : undefined;
   await artifactAndDeployment(
     actions,
     project,
@@ -892,6 +915,7 @@ export async function createWorkerPlan(
     remoteResources,
     remoteSecrets,
     options.environment,
+    local,
   );
 
   let priceResponse: unknown;
@@ -919,6 +943,7 @@ export async function createWorkerPlan(
   const summary = planSummary(actions);
   return {
     schemaVersion: 1,
+    ...(variables ? { variables } : {}),
     nativeSteps: publicNativeDeploymentPlan(native),
     project: {
       rootDir: project.rootDir,

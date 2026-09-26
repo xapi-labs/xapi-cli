@@ -1,3 +1,4 @@
+import { planWorkerVariables, readWorkerVariableState, readWorkerArtifactVariableConfiguration, type WorkerVariableDecision } from "./workers-variable-plan.ts";
 import { remoteWorkerResourceState, resourceReadyForDeployment } from "./workers-resource-state.ts";
 import { nativeDeploymentPlan, publicNativeDeploymentPlan, applyNativeDeploymentPhase, NativeDeploymentError, type NativeDeploymentClient, type NativeDeploymentPlan } from './workers-native-deployment.ts';
 import { createInterface } from "node:readline/promises";
@@ -18,6 +19,8 @@ import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
 type UnknownRecord = Record<string, unknown>;
 
 export interface PromotionClient extends DeploymentClient, ManagedResourceClient, NativeDeploymentClient {
+  getWorkerVariableState(options: WorkersClientOptions, id: string, environment: "preview" | "production"): Promise<unknown>;
+  getWorkerArtifactVariableConfiguration(options: WorkersClientOptions, id: string, artifactId: string): Promise<unknown>;
   listWorkerResources(
     options: WorkersClientOptions,
     id: string,
@@ -46,6 +49,7 @@ export interface WorkerPromotionCheck {
 
 export interface WorkerPromotionPlan {
   schemaVersion: 1;
+  variables?: WorkerVariableDecision[];
   workerId: string;
   to: "production";
   previewDeployment: { id: string; artifactId: string; deployedAt?: string };
@@ -404,13 +408,17 @@ export async function createWorkerPromotionPlan(
       "ACTIVE preview deployment is missing immutable Artifact metadata",
     );
   }
-  const [resources, secrets] = await Promise.all([
+  const [resources, secrets, currentVariables, declaration] = await Promise.all([
     api
       .listWorkerResources(options.clientOptions, workerId, "production")
       .then((value) => records(value, "production resources")),
     api
       .listWorkerSecrets(options.clientOptions, workerId, "production")
       .then((value) => records(value, "production Secret metadata")),
+    api.getWorkerVariableState(options.clientOptions, workerId, "production")
+      .then(value => readWorkerVariableState(value, "production", text(production.activeDeploymentId) || null)),
+    api.getWorkerArtifactVariableConfiguration(options.clientOptions, workerId, artifactId)
+      .then(value => readWorkerArtifactVariableConfiguration(value, artifactId, contentSha256)),
   ]);
   const checked = productionChecks(
     workerId,
@@ -424,6 +432,11 @@ export async function createWorkerPromotionPlan(
   checked.dataRisk.push("Remote D1 migrations run before code; Queue/Cron configuration runs after code. Completed database changes are not rolled back on code/configuration failure.");
   const plan: WorkerPromotionPlan = {
     schemaVersion: 1,
+    variables: planWorkerVariables(declaration, currentVariables, [
+      ...project.config.environments.production.resources.map(resource => resource.bindingName),
+      ...project.config.environments.production.secrets,
+      ...secrets.map(secret => text(secret.bindingName)!),
+    ], production.bindings),
     workerId,
     to: "production",
     previewDeployment: {

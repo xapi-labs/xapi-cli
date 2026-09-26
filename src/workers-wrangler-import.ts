@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   normalizeNativeWorkerOptions,
   normalizeWorkerObservability,
+  type WorkerVariableType,
   type WorkerObservability,
   type WorkerCacheOptions,
   type WorkerVersionMetadata,
@@ -94,6 +95,7 @@ export interface WranglerDeploymentSettings {
   compatibilityFlags: string[];
   cacheOptions?: WorkerCacheOptions;
   versionMetadata?: WorkerVersionMetadata;
+  keepBindings?: WorkerVariableType[];
   observability?: WorkerObservability;
   uploadSourceMaps?: boolean;
 }
@@ -120,6 +122,7 @@ const SUPPORTED_TOP_LEVEL = new Set([
   "version_metadata",
   "observability",
   "upload_source_maps",
+  "keep_vars",
 ]);
 const MANAGED_TOP_LEVEL = new Set([
   "kv_namespaces",
@@ -151,7 +154,6 @@ const IGNORED_TOP_LEVEL = new Set([
   "rules",
   "build",
   "usage_model",
-  "keep_vars",
   "send_metrics",
   "logpush",
   "legacy_assets",
@@ -752,6 +754,9 @@ function selectedConfig(
   if (!environmentConfig) return { config: root, prefix: "" };
   const merged: UnknownRecord = { ...root, ...environmentConfig };
   delete merged.env;
+  // Wrangler only honors keep_vars at the top level, never under env.
+  if (root.keep_vars === undefined) delete merged.keep_vars;
+  else merged.keep_vars = root.keep_vars;
   // Wrangler vars are non-inheritable for named environments.
   if (!("vars" in environmentConfig)) delete merged.vars;
   return { config: merged, prefix: `env.${environment}.` };
@@ -812,7 +817,11 @@ function inspectTopLevel(
     const environment = record(environments?.[name]);
     for (const key of Object.keys(environment || {}).sort()) {
       const path = `env.${name}.${key}`;
-      if (SUPPORTED_TOP_LEVEL.has(key)) {
+      if (key === "keep_vars") {
+        compatibilityEntry(entries, "IGNORED", path,
+          "Warning: Wrangler ignores env.keep_vars; only top-level keep_vars controls public variable retention and cannot be overridden by an environment",
+          { environment: name });
+      } else if (SUPPORTED_TOP_LEVEL.has(key)) {
         compatibilityEntry(
           entries,
           "SUPPORTED",
@@ -1041,12 +1050,13 @@ export function importWranglerProject(
       });
       normalizeWranglerObservability(config.observability);
       validateUploadSourceMaps(config.upload_source_maps);
+      wranglerVariableRetention(wrangler.keep_vars);
     } catch (error) {
       nativeOptionsValid = false;
       compatibilityEntry(
         entries,
         "UNSUPPORTED",
-        `${prefix}cache/version_metadata/observability/upload_source_maps`,
+        `${prefix}cache/version_metadata/observability/upload_source_maps/keep_vars`,
         error instanceof Error ? error.message : "Invalid native options",
         { environment },
       );
@@ -1057,6 +1067,7 @@ export function importWranglerProject(
       environment,
       status: nativeOptionsValid ? "SUPPORTED" : "REQUIRES_MAPPING",
       configuration: {
+        ...(wrangler.keep_vars === true ? { keep_vars: true } : {}),
         ...(config.observability !== undefined ? { observability: config.observability } : {}),
         ...(config.upload_source_maps !== undefined ? { upload_source_maps: config.upload_source_maps } : {}),
         ...(config.cache !== undefined ? { cache: config.cache } : {}),
@@ -1354,6 +1365,13 @@ function validateUploadSourceMaps(value: unknown): boolean | undefined {
   return value as boolean | undefined;
 }
 
+function wranglerVariableRetention(value: unknown): { keepBindings?: WorkerVariableType[] } {
+  if (value !== undefined && typeof value !== "boolean") {
+    throw new WorkerProjectConfigError("wrangler_invalid_keep_vars", "Top-level keep_vars must be a boolean");
+  }
+  return value === true ? { keepBindings: ["plain_text", "json"] } : {};
+}
+
 export function readWranglerDeploymentSettings(
   project: LoadedWorkerProject,
   environment: "preview" | "production",
@@ -1389,6 +1407,7 @@ export function readWranglerDeploymentSettings(
   return {
     ...(date ? { compatibilityDate: date } : {}),
     compatibilityFlags: [...new Set((rawFlags || []) as string[])].sort(),
+    ...wranglerVariableRetention(config.keep_vars),
     ...(selected.observability !== undefined ? { observability: normalizeWranglerObservability(selected.observability) } : {}),
     ...(selected.upload_source_maps !== undefined
       ? { uploadSourceMaps: validateUploadSourceMaps(selected.upload_source_maps) } : {}),

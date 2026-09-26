@@ -7,6 +7,8 @@ import {
   deployWorker,
   putWorkerSecret,
   listWorkers,
+  getWorkerVariableState,
+  getWorkerArtifactVariableConfiguration,
   runWorkerScheduleNow,
   listWorkerDomains,
   createWorkerDomainChallenge,
@@ -33,6 +35,22 @@ let fetchSpy: ReturnType<typeof spyOn> | undefined;
 afterEach(() => fetchSpy?.mockRestore());
 
 describe("workers client", () => {
+  it("reads target variable state and immutable declarations through scoped endpoints", async () => {
+    fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async () => new Response("{}", {
+      status: 200, headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch) as any;
+    await getWorkerVariableState(options, "worker/1", "production");
+    await getWorkerArtifactVariableConfiguration(options, "worker/1", "artifact/1");
+    expect(fetchSpy.mock.calls.map((call: any[]) => call[0])).toEqual([
+      "https://test.xapi.to/api/v1/workers/worker%2F1/environments/production/variables",
+      "https://test.xapi.to/api/v1/workers/worker%2F1/artifacts/artifact%2F1/variable-configuration",
+    ]);
+    for (const [, init] of fetchSpy.mock.calls as any[]) {
+      expect(init.headers["XAPI-KEY"]).toBe(options.apiKey);
+      expect(init.redirect).toBe("manual");
+      expect(init.body).toBeUndefined();
+    }
+  });
   it("applies secret mutations without retrying or exposing values in the URL", async () => {
     fetchSpy = spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({status:"ACTIVE"}),{status:200,headers:{"content-type":"application/json"}})) as any;
     await applyWorkerSecrets(options,"worker/1","preview",[{name:"MODEL_KEY",value:"private-value"},{name:"OLD_KEY",delete:true}]);
