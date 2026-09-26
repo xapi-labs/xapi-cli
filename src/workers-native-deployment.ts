@@ -177,6 +177,12 @@ export interface NativeDeploymentClient {
     resourceId: string,
     input: Record<string, unknown>,
   ): Promise<unknown>;
+  disableWorkerQueueConsumer?(
+    options: WorkersClientOptions,
+    id: string,
+    environment: string,
+    resourceId: string,
+  ): Promise<unknown>;
   listWorkerSchedules?(
     options: WorkersClientOptions,
     id: string,
@@ -209,7 +215,7 @@ export async function applyNativeDeploymentPhase(
   const receipts: unknown[] = [];
   try {
     const resources =
-      plan.migrations.length || plan.consumers.length
+      phase === "AFTER_CODE" || plan.migrations.length
         ? rows(await api.listWorkerResources(options, workerId, environment))
         : [];
     const resourceId = (binding: string, type: string) => {
@@ -244,6 +250,22 @@ export async function applyNativeDeploymentPhase(
         receipts.push(result);
       }
       return receipts;
+    }
+    const desiredBindings = new Set(plan.consumers.map(item => item.bindingName));
+    for (const resource of resources) {
+      if (
+        resource.type !== "QUEUE" || resource.status !== "ACTIVE" ||
+        !resource.config?.nativeConsumerHash ||
+        desiredBindings.has(resource.bindingName)
+      ) continue;
+      if (!api.disableWorkerQueueConsumer)
+        throw new Error("Client does not support stopping removed Queue consumers");
+      const result: any = await api.disableWorkerQueueConsumer(
+        options, workerId, environment, resource.id,
+      );
+      if (!["DISABLED", "UNCHANGED"].includes(result?.status))
+        throw new Error(`Queue consumer disable receipt missing: ${resource.bindingName}`);
+      receipts.push({ bindingName: resource.bindingName, ...result });
     }
     for (const consumer of plan.consumers) {
       if (!api.configureWorkerQueueConsumer)

@@ -333,6 +333,13 @@ are currently supported, with CF weekdays 1=Sunday through 7=Saturday. Named fie
 L/W/# and singleton steps are rejected before deployment. Do not delete unsupported
 settings or use --accept-partial to claim full compatibility.
 
+On a later push or promotion, removing a Wrangler Queue consumer declaration
+stops only that environment's previously CLI-configured consumer. The Queue
+resource and its stored messages remain; independent/manual consumers are left
+alone. Re-adding the declaration configures a consumer again. Check the returned
+consumer receipt before treating the deployment as complete. Queue storage may
+continue to incur charges while no consumer is attached.
+
 These are platform mappings over the existing metered Dispatcher path, not direct
 namespace native trigger registrations. Scheduler waiting is currently at most
 120 seconds; existing Dispatcher CPU/subrequest limits still apply. Configuration

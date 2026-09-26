@@ -783,3 +783,10 @@ export function configureWorkerQueueConsumer(options: WorkersClientOptions, id: 
     method: 'PUT', headers: headers(options, true), body: JSON.stringify(input),
   });
 }
+
+export function disableWorkerQueueConsumer(options: WorkersClientOptions, id: string, environment: string,
+  resourceId: string) {
+  return request<unknown>(url(options, `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/resources/${encodeURIComponent(resourceId)}/queue-consumer`), {
+    method: 'DELETE', headers: headers(options),
+  });
+}

@@ -218,6 +218,42 @@ test("an explicit empty Cron list disables only CLI-managed schedules in this en
   ]);
 });
 
+test("removed native Queue consumer is disabled once; the Queue and manual consumers remain", async () => {
+  const calls: string[] = [];
+  const remote = [
+    { id: "old", type: "QUEUE", bindingName: "OLD", status: "ACTIVE", config: { nativeConsumerHash: "hash" } },
+    { id: "manual", type: "QUEUE", bindingName: "MANUAL", status: "ACTIVE", config: {} },
+    { id: "current", type: "QUEUE", bindingName: "JOBS", status: "ACTIVE", config: { nativeConsumerHash: "hash2" } },
+  ];
+  const api = {
+    async listWorkerResources() { return remote; },
+    async disableWorkerQueueConsumer(_o: any, _w: any, env: string, id: string) {
+      expect(env).toBe("preview");
+      calls.push(`disable:${id}`);
+      remote.find(row => row.id === id)!.config = {} as any;
+      return { status: "DISABLED" };
+    },
+    async configureWorkerQueueConsumer(_o: any, _w: any, _env: any, id: string) {
+      calls.push(`configure:${id}`);
+      return { status: "UNCHANGED" };
+    },
+  };
+  const desired = { migrations: [], consumers: [plan.consumers[0]], crons: [], cronsConfigured: false };
+  await applyNativeDeploymentPhase(api, options, "worker", "preview", desired, "AFTER_CODE");
+  await applyNativeDeploymentPhase(api, options, "worker", "preview", desired, "AFTER_CODE");
+  expect(calls).toEqual(["disable:old", "configure:current", "configure:current"]);
+  expect(remote.find(row => row.id === "manual")?.config).toEqual({});
+});
+
+test("removing all consumer declarations reconciles a previously managed consumer", async () => {
+  const disabled: string[] = [];
+  await applyNativeDeploymentPhase({
+    async listWorkerResources() { return [{ id: "old", type: "QUEUE", bindingName: "OLD", status: "ACTIVE", config: { nativeConsumerHash: "hash" } }]; },
+    async disableWorkerQueueConsumer(_o, _w, _e, id) { disabled.push(id); return { status: "DISABLED" }; },
+  }, options, "worker", "preview", { migrations: [], consumers: [], crons: [], cronsConfigured: false }, "AFTER_CODE");
+  expect(disabled).toEqual(["old"]);
+});
+
 import { validNativeCron } from "../workers-native-deployment.ts";
 test("validates CF numeric Cron ranges before any remote deployment phase", () => {
   for (const cron of ["*/5 * * * *", "0 12 * * 1", "0 0 1-31/2 * 7"])
