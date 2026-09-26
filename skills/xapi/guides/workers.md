@@ -342,11 +342,12 @@ command is artifact-only; use the project `push` workflow for coordinated
 compatibility, resource, secret and asset handling.
 
 Project publishing uses one authenticated multipart Artifact request, then xAPI
-stores an immutable content-addressed manifest. Limits are 200 modules / 10 MiB
-decoded module content, 10,000 assets / 25 MiB per asset, and 100 MiB total
+stores an immutable content-addressed manifest. Limits are 64 MiB of uncompressed
+Worker modules, 100,000 assets / 25 MiB per asset, and 100 MiB total
 decoded project content. These are xAPI limits, not a statement of CF's full
 native capacity. If exceeded, report the unsupported deployment; never split a
 project into unrelated deployments or edit framework output to work around it.
+There is no 200-module cutoff.
 
 A `PATH_FALLBACK` URL is not a root-hosted Web application URL. Do not rewrite
 application routes or configure GitHub callbacks against an invented host.
@@ -363,8 +364,11 @@ xapi workers promote --to production
 Production promotion first reads the complete production state. Missing
 declared resources appear as `CREATE` and are created only after every budget,
 Secret, compatibility, and extra-resource check passes and the user confirms.
-Any blocked or undeclared production resource stops the command before all
-writes. Use `--retention-price-version <accepted-version>` when a new resource
+Blocked or incompatible declared production resources stop the command before
+writes. A production resource omitted from the JSON is shown in the plan and
+unbound by promotion, but its physical data and storage charges remain. Review
+that effect before confirming; physical deletion is a separate action. Use
+`--retention-price-version <accepted-version>` when a new resource
 requires an accepted freeze quote. Promotion then activates the exact preview
 Artifact and verifies health before reporting success. To restore code:
 
@@ -442,8 +446,8 @@ export default {
 };
 ```
 
-Build locally or in CI. A single bundled UTF-8 ES module must be at most 1 MiB
-and include its runtime dependencies:
+Build locally or in CI. A single bundled UTF-8 ES module must include its runtime
+dependencies; above the legacy 1 MiB text limit, the CLI uses the bundle channel:
 
 ```bash
 npm run build
@@ -453,8 +457,8 @@ npx xapi-to workers upload <worker-id> \
 ```
 
 For code splitting, upload the output directory and name its entrypoint. The
-directory may contain at most 200 supported modules and 10 MiB of decoded
-module content. All modules are sent together in one xAPI Artifact request:
+directory may contain up to 64 MiB of uncompressed Worker modules; there is no
+200-module cutoff. All modules are sent together in one xAPI Artifact request:
 
 ```bash
 npx xapi-to workers upload <worker-id> \
@@ -482,7 +486,7 @@ Artifact and the platform completes Cloudflare's native static-assets upload:
 ```
 
 Wrangler imports preserve supported `assets` settings. xAPI accepts up to
-10,000 assets, 25 MiB per asset, and 100 MiB of decoded project content in one
+100,000 assets, 25 MiB per asset, and 100 MiB of decoded project content in one
 multipart Artifact request. Asset content stays separate from Worker modules
 and is never silently dropped. The backend stores content-addressed blobs and
 reassembles the exact immutable bundle for Cloudflare's native asset upload.
