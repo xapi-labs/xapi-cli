@@ -199,6 +199,9 @@ describe("workers rollback", () => {
     expect(result.plan.codeOnly).toBe(true);
     expect(result.plan.dataAndSecretsRolledBack).toBe(false);
     expect(result.plan.warning).toContain("D1, R2, KV");
+    expect(result.plan.warning).toContain("required Secret names");
+    expect(result.plan.warning).toContain("not restored from a historical value snapshot");
+    expect(result.plan.warning).toContain("Secret values keep their current state");
     expect(result.deployment.artifactId).toBe("artifact-previous");
     expect(platform.calls.rollback).toBe(1);
     expect(platform.rollbackInputs[0].idempotencyKey).toMatch(

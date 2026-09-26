@@ -204,7 +204,7 @@ xapi workers rollback --env production --to previous
 xapi workers rollback --env production --deployment <deployment-id>
 ```
 
-Rollback restores code and compatibility settings, not data, schema, Secret values, schedules, or Queue/Workflow state. Preview and production each have their own current deployment; an old deployment reference is not proof an environment is still serving.
+Rollback re-deploys the selected Artifact and its release compatibility settings and required Secret **names**. It does not restore data, schema, resource bindings, Secret **values**, schedules, or Queue/Workflow state. Explicit public vars come from the target Artifact; omitted public vars follow that Artifact's retention types against the current environment, not a snapshot of historical values. A missing Secret required by the target Workflow must be set through the independent Secret workflow; do not borrow requirements from the latest release or replay old values. Preview and production each have their own current deployment; an old deployment reference is not proof an environment is still serving.
 
 ## CI runner
 

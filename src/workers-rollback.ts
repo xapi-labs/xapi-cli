@@ -251,7 +251,7 @@ export async function createWorkerRollbackPlan(
     codeOnly: true,
     dataAndSecretsRolledBack: false,
     warning:
-      "Only Worker code is rolled back. D1, R2, KV, Durable Objects, Queues, Workflows, configuration, and Secrets keep their current state.",
+      "Re-deploy the selected Artifact's code, public variable declarations and retention rules, and its release compatibility settings and required Secret names. D1, R2, KV, Durable Objects, Queues, Workflows, resource bindings, schedules and Secret values keep their current state. Omitted public variables follow the target Artifact's retention rules; they are not restored from a historical value snapshot.",
     requiresConfirmation: options.environment === "production",
   };
   return { plan, worker };
