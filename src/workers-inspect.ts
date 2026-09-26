@@ -31,6 +31,7 @@ export interface WorkerInspection {
   worker: UnknownRecord;
   environment: UnknownRecord;
   deployment?: UnknownRecord;
+  latestDeployment?: UnknownRecord;
   artifact?: UnknownRecord;
   resources: { status: "AVAILABLE" | "UNKNOWN"; items: UnknownRecord[] };
   secrets: { status: "AVAILABLE" | "UNKNOWN"; items: UnknownRecord[] };
@@ -168,6 +169,7 @@ export async function inspectWorker(options: {
         text(item.environmentId) === environmentId &&
         text(item.status)?.toUpperCase() === "ACTIVE",
     );
+  const latestDeployment = deployments.find(item => text(item.environmentId) === environmentId);
   const artifact = items(worker.artifacts).find(
     (item) => text(item.id) === text(deployment?.artifactId),
   );
@@ -215,6 +217,12 @@ export async function inspectWorker(options: {
       ? `Active deployment ${text(deployment.id) || "is present"}`
       : "No active deployment was found",
   });
+  const outcome = record(latestDeployment?.outcome);
+  if (outcome && text(outcome.execution) !== "COMPLETED") {
+    diagnostics.push({ status: "WARN", check: "latest_deployment_outcome",
+      message: `Latest execution: ${text(outcome.execution) || "UNKNOWN"}; provider effects: ${text(outcome.providerEffect) || "UNCONFIRMED"}. Execution failure does not imply rollback.`,
+    });
+  }
   for (const [check, result] of [
     ["resources", resources],
     ["secrets", secrets],
@@ -282,6 +290,8 @@ export async function inspectWorker(options: {
           ]),
         }
       : {}),
+    ...(latestDeployment ? { latestDeployment: selectedFields(latestDeployment,
+      ["id", "status", "errorCode", "errorMessage", "outcome"]) } : {}),
     resources,
     secrets,
     domains,

@@ -28,6 +28,89 @@ function workspace(): string {
 }
 
 describe("Wrangler project import", () => {
+  test("imports the official durable-chat Chat binding and initial SQLite migration unchanged", () => {
+    const root = workspace();
+    // cloudflare/templates@a0bb6ef9a990a5ec4afecab50edf56c69676b031,
+    // durable-chat-template/wrangler.json (native config; no dependency build required).
+    const native = {
+      compatibility_date: "2025-10-08", main: "src/server/index.ts", name: "durable-chat-template",
+      migrations: [{ new_sqlite_classes: ["Chat"], tag: "v1" }],
+      assets: { directory: "./public", binding: "ASSETS", not_found_handling: "single-page-application" },
+      build: { command: "esbuild src/client/index.tsx --bundle --splitting --format=esm --platform=browser --outdir=public/dist" },
+      durable_objects: { bindings: [{ class_name: "Chat", name: "Chat" }] },
+      observability: { enabled: true }, upload_source_maps: true,
+    };
+    const path = join(root, "wrangler.json");
+    const original = JSON.stringify(native);
+    writeFileSync(path, original);
+    const result = importWranglerProject({ cwd: root, wranglerPath: path,
+      buildCommand: "npx wrangler deploy --dry-run --outfile dist/worker.bundle",
+      buildOutput: "dist/worker.bundle", previewDailyBudgetUsd: 0.25, productionDailyBudgetUsd: 0.25 });
+    expect(result.wrote).toBe(true);
+    expect(result.report.compatible).toBe(true);
+    expect(result.report.entries.filter(entry => entry.category === "UNSUPPORTED")).toEqual([]);
+    expect(result.report.entries.filter(entry => entry.category === "MANAGED" && entry.path === "migrations")).toHaveLength(2);
+    const config = loadWorkerProject(root).config;
+    for (const env of ["preview", "production"] as const) {
+      expect(config.environments[env].resources).toEqual([{ type: "durable_object", bindingName: "Chat", className: "Chat" }]);
+    }
+    expect(config.assets?.binding).toBe("ASSETS");
+    expect(readFileSync(path, "utf8")).toBe(original);
+  });
+
+  test("keeps mixed-case Secrets unsupported when importing resource bindings", () => {
+    const root = workspace();
+    writeFileSync(join(root, "wrangler.json"), JSON.stringify({ name: "chat", main: "index.ts",
+      durable_objects: { bindings: [{ name: "Chat", class_name: "Chat" }] }, secrets: ["ApiKey"] }));
+    const result = importWranglerProject({ cwd: root, wranglerPath: "wrangler.json" });
+    expect(result.wrote).toBe(false);
+    expect(result.report.entries).toContainEqual(expect.objectContaining({ category: "UNSUPPORTED", path: "vars.ApiKey" }));
+    expect(existsSync(join(root, "xapi.worker.json"))).toBe(false);
+  });
+
+  test('imports a prebuilt native Container application and its Durable Object link', () => {
+    const root = workspace();
+    writeFileSync(join(root, 'package.json'), '{}');
+    writeFileSync(join(root, 'wrangler.jsonc'), JSON.stringify({
+      name: 'container-worker',
+      main: 'src/index.ts',
+      compatibility_date: '2026-09-21',
+      durable_objects: {
+        bindings: [{ name: 'TRADER', class_name: 'TraderContainer' }],
+      },
+      containers: [{
+        name: 'trader',
+        class_name: 'TraderContainer',
+        image: 'docker.io/example/trader:v1',
+        instance_type: 'lite',
+        max_instances: 3,
+        constraints: { regions: ['APAC'] },
+      }],
+    }, null, 2));
+    const result = importWranglerProject({ cwd: root, wranglerPath: 'wrangler.jsonc' });
+    expect(result.wrote).toBe(true);
+    expect(result.report.entries).toContainEqual(expect.objectContaining({
+      category: 'MANAGED', path: 'containers[0]',
+    }));
+    expect(loadWorkerProject(root).config.containers).toEqual([expect.objectContaining({
+      name: 'trader', className: 'TraderContainer', instanceType: 'lite', maxInstances: 3,
+    })]);
+  });
+
+  test('does not silently import a local Dockerfile as a remotely deployable image', () => {
+    const root = workspace();
+    writeFileSync(join(root, 'wrangler.jsonc'), JSON.stringify({
+      name: 'container-worker', main: 'src/index.ts',
+      durable_objects: { bindings: [{ name: 'APP', class_name: 'AppContainer' }] },
+      containers: [{ name: 'app', class_name: 'AppContainer', image: './Dockerfile' }],
+    }));
+    const result = importWranglerProject({ cwd: root, wranglerPath: 'wrangler.jsonc' });
+    expect(result.wrote).toBe(false);
+    expect(result.report.entries).toContainEqual(expect.objectContaining({
+      category: 'UNSUPPORTED', path: 'containers[0]',
+    }));
+  });
+
   test("reports every JSONC compatibility decision and blocks unsupported input", () => {
     const root = workspace();
     const path = join(root, "wrangler.jsonc");
@@ -76,7 +159,7 @@ describe("Wrangler project import", () => {
     );
     expect(blocked.report.entries).toContainEqual(
       expect.objectContaining({
-        category: "UNSUPPORTED",
+        category: "SUPPORTED",
         path: "vars.MODEL_KEY",
         bindingName: "MODEL_KEY",
       }),
@@ -134,22 +217,10 @@ binding = "DB"
 database_id = "old-d1-id"
 `;
     writeFileSync(path, original);
-    const blocked = importWranglerProject({
-      cwd: root,
-      wranglerPath: "wrangler.toml",
-    });
-    expect(blocked.wrote).toBe(false);
-    expect(blocked.report.entries).toContainEqual(
-      expect.objectContaining({
-        category: "UNSUPPORTED",
-        path: "env.preview.vars.MODEL_KEY",
-      }),
-    );
-    const result = importWranglerProject({
-      cwd: root,
-      wranglerPath: "wrangler.toml",
-      acceptPartial: true,
-    });
+    const result = importWranglerProject({ cwd: root, wranglerPath: "wrangler.toml" });
+    expect(result.report.entries).toContainEqual(expect.objectContaining({
+      category: "SUPPORTED", path: "env.preview.vars.MODEL_KEY",
+    }));
     expect(result.wrote).toBe(true);
     expect(result.report.format).toBe("toml");
     const project = loadWorkerProject(root);
@@ -168,6 +239,75 @@ database_id = "old-d1-id"
     expect(generated).not.toContain("old-d1-id");
     expect(generated).not.toContain("never-copy-this");
     expect(readFileSync(path, "utf8")).toBe(original);
+  });
+
+  test("maps initial SQLite Durable Object migrations to xAPI managed exports", () => {
+    const root = workspace();
+    const path = join(root, "wrangler.toml");
+    writeFileSync(
+      path,
+      `name = "collaborative-canvas"
+main = "worker/worker.ts"
+compatibility_date = "2026-09-21"
+preview_urls = true
+
+[durable_objects]
+bindings = [{ name = "ROOM", class_name = "Room" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
+`,
+    );
+
+    const result = importWranglerProject({ cwd: root, wranglerPath: path });
+
+    expect(result.wrote).toBe(true);
+    expect(result.report.compatible).toBe(true);
+    expect(result.report.entries).toContainEqual(
+      expect.objectContaining({ category: "IGNORED", path: "preview_urls" }),
+    );
+    expect(
+      result.report.entries.filter(
+        (entry) => entry.category === "MANAGED" && entry.path === "migrations",
+      ),
+    ).toHaveLength(2);
+    expect(
+      loadWorkerProject(root).config.environments.preview.resources,
+    ).toEqual([
+      { type: "durable_object", bindingName: "ROOM", className: "Room" },
+    ]);
+  });
+
+  test("blocks Durable Object migrations that managed exports cannot preserve", () => {
+    const root = workspace();
+    const path = join(root, "wrangler.jsonc");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        name: "unsafe-migration",
+        main: "worker.ts",
+        durable_objects: {
+          bindings: [{ name: "ROOM", class_name: "RoomV2" }],
+        },
+        migrations: [
+          {
+            tag: "v2",
+            renamed_classes: [{ from: "Room", to: "RoomV2" }],
+          },
+        ],
+      }),
+    );
+
+    const result = importWranglerProject({ cwd: root, wranglerPath: path });
+
+    expect(result.wrote).toBe(false);
+    expect(result.report.entries).toContainEqual(
+      expect.objectContaining({
+        category: "UNSUPPORTED",
+        path: "migrations[0]",
+      }),
+    );
   });
 
   test("requires force to replace only an existing xAPI project config", () => {
@@ -289,15 +429,9 @@ database_id = "old-d1-id"
       }),
     );
 
-    const blocked = importWranglerProject({ cwd: root, wranglerPath: path });
-    expect(blocked.wrote).toBe(false);
-    expect(JSON.stringify(blocked.report)).not.toContain("public-visible-value");
-
-    importWranglerProject({
-      cwd: root,
-      wranglerPath: path,
-      acceptPartial: true,
-    });
+    const result = importWranglerProject({ cwd: root, wranglerPath: path });
+    expect(result.wrote).toBe(true);
+    expect(JSON.stringify(result.report)).not.toContain("public-visible-value");
     const project = loadWorkerProject(root);
     expect(project.config.environments.preview.secrets).toEqual([
       "PRIVATE_TOKEN",
@@ -348,4 +482,96 @@ database_id = "old-d1-id"
       output: "dist-worker/worker.js",
     });
   });
+});
+
+test("imports native metadata/cache and modern required secrets without values", () => {
+  const root = workspace();
+  writeFileSync(
+    join(root, "wrangler.jsonc"),
+    JSON.stringify({
+      name: "native-options",
+      main: "src/index.ts",
+      cache: { enabled: true },
+      version_metadata: { binding: "CF_VERSION_METADATA" },
+      secrets: { required: ["AUTH_SECRET"] },
+    }),
+  );
+  const result = importWranglerProject({
+    cwd: root,
+    wranglerPath: "wrangler.jsonc",
+  });
+  expect(result.wrote).toBe(true);
+  expect(result.report.entries).toContainEqual(
+    expect.objectContaining({ category: "SUPPORTED", path: "cache" }),
+  );
+  expect(result.report.entries).toContainEqual(
+    expect.objectContaining({
+      category: "SUPPORTED",
+      path: "version_metadata",
+    }),
+  );
+  expect(result.config?.environments.preview.secrets).toEqual(["AUTH_SECRET"]);
+});
+
+test("reports ordered remote migrations and explicit platform event mappings", () => {
+  const root = workspace();
+  writeFileSync(
+    join(root, "wrangler.jsonc"),
+    JSON.stringify({
+      name: "event-worker",
+      main: "src/index.ts",
+      triggers: { crons: ["0 * * * *"] },
+      d1_databases: [{ binding: "DB", migrations_dir: "migrations" }],
+      queues: {
+        producers: [{ binding: "JOBS", queue: "jobs" }],
+        consumers: [{ queue: "jobs", max_batch_size: 1, max_retries: 5 }],
+      },
+    }),
+  );
+  const result = importWranglerProject({
+    cwd: root,
+    wranglerPath: "wrangler.jsonc",
+  });
+  expect(result.wrote).toBe(true);
+  const phases = result.report.deploymentPlan.filter(
+    (step) => step.environment === "preview",
+  );
+  expect(phases.map((step) => step.kind)).toEqual([
+    "D1_MIGRATIONS",
+    "WORKER",
+    "QUEUE_CONSUMER",
+    "CRON",
+  ]);
+  expect(phases[0]).toMatchObject({
+    bindingName: "DB",
+    configuration: { directory: "migrations", table: "d1_migrations" },
+  });
+  expect(phases[2]).toMatchObject({
+    bindingName: "JOBS",
+    status: "SUPPORTED",
+    configuration: { max_batch_size: 1, max_retries: 5 },
+  });
+  for (const path of [
+    "triggers.crons",
+    "d1_databases[0].migrations",
+    "queues.consumers",
+  ]) {
+    expect(result.report.entries).toContainEqual(
+      expect.objectContaining({ category: "MANAGED", path }),
+    );
+  }
+});
+
+test('imports native Workflow class and rejects external script declarations instead of discarding ownership', () => {
+  const root = workspace();
+  const config = {name:'workflow-project',main:'src/index.js',compatibility_date:'2026-09-01',
+    workflows:[{name:'upstream-flow',binding:'PIPELINE',class_name:'Pipeline'}]};
+  writeFileSync(join(root,'wrangler.jsonc'),JSON.stringify(config));
+  expect(importWranglerProject({cwd:root,wranglerPath:'wrangler.jsonc'}).wrote).toBe(true);
+  expect(loadWorkerProject(root).config.environments.preview.resources).toContainEqual({type:'workflow',bindingName:'PIPELINE',className:'Pipeline'});
+  rmSync(join(root,'xapi.worker.json'));
+  writeFileSync(join(root,'wrangler.jsonc'),JSON.stringify({...config,workflows:[{...config.workflows[0],script_name:'foreign'}]}));
+  const result=importWranglerProject({cwd:root,wranglerPath:'wrangler.jsonc'});
+  expect(result.wrote).toBe(false);
+  expect(result.report.entries).toContainEqual(expect.objectContaining({category:'UNSUPPORTED',path:'workflows[0].script_name'}));
 });

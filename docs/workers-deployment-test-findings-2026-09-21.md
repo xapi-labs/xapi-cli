@@ -77,9 +77,10 @@ has completed its normal dev → staging → main promotion:
 - structured runtime error classes that distinguish Worker, xAPI gateway,
   provider, authentication, and response-schema failures.
 
-Until plain-text bindings exist, the importer fails closed on non-empty
-Wrangler `vars`. `--accept-partial` records an explicit user decision but still
-does not copy their values.
+At the time of this report, non-empty Wrangler `vars` were rejected. The
+2026-09-23 workers-refactor follow-up adds public string/JSON vars to immutable
+artifacts and the native upload path. See the bundled Workers guide for the
+current workflow; public configuration is never converted into Secrets.
 
 ## Items confirmed outside platform scope
 

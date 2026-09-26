@@ -1,5 +1,9 @@
-import { request } from "./client.ts";
-import type { WorkerArtifactUploadRequest } from "./workers-artifact.ts";
+import { HttpError, request } from "./client.ts";
+import type {
+  WorkerArtifactBundle,
+  WorkerArtifactUploadRequest,
+} from "./workers-artifact.ts";
+import { normalizeWorkerVariableOptions } from "./workers-artifact.ts";
 import { scheme } from "./config.ts";
 
 export interface WorkersClientOptions {
@@ -77,6 +81,20 @@ export function createWorker(
   });
 }
 
+export function getWorkerVariableState(options: WorkersClientOptions, id: string, environment: string) {
+  return request<unknown>(
+    url(options, `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/variables`),
+    { headers: headers(options) }, 30_000, 2,
+  );
+}
+
+export function getWorkerArtifactVariableConfiguration(options: WorkersClientOptions, id: string, artifactId: string) {
+  return request<unknown>(
+    url(options, `/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(artifactId)}/variable-configuration`),
+    { headers: headers(options) }, 30_000, 2,
+  );
+}
+
 export function deployWorker(
   options: WorkersClientOptions,
   id: string,
@@ -124,11 +142,103 @@ export function listWorkerArtifacts(options: WorkersClientOptions, id: string) {
   );
 }
 
-export function uploadWorkerArtifact(
+// Older backends persist the complete base64-wrapped request as one object.
+// Keep fallback below the observed legacy retrieval ceiling; current backends
+// use multipart blobs and do not have this compatibility limit.
+const LEGACY_BUNDLE_REQUEST_LIMIT_BYTES = 5 * 1024 * 1024;
+
+export async function uploadWorkerArtifact(
   options: WorkersClientOptions,
   id: string,
   input: WorkerArtifactUploadRequest,
 ) {
+  if ("bundle" in input) {
+    const form = new FormData();
+    const files: Blob[] = [];
+    const addFile = (
+      entry:
+        | WorkerArtifactBundle["modules"][number]
+        | NonNullable<WorkerArtifactBundle["assets"]>["files"][number],
+    ) => {
+      const bytes = entry.encoding === "base64"
+        ? Buffer.from(entry.content, "base64")
+        : Buffer.from(entry.content, "utf8");
+      const fileIndex = files.length;
+      files.push(new Blob([bytes], { type: entry.contentType }));
+      return { fileIndex, path: entry.path, contentType: entry.contentType };
+    };
+    const manifest = {
+      version: 2,
+      idempotencyKey: input.idempotencyKey,
+      mainModule: input.bundle.mainModule,
+      ...(input.bundle.cacheOptions
+        ? { cacheOptions: input.bundle.cacheOptions }
+        : {}),
+      ...(input.bundle.versionMetadata
+        ? { versionMetadata: input.bundle.versionMetadata }
+        : {}),
+      ...normalizeWorkerVariableOptions(input.bundle),
+      modules: input.bundle.modules.map(addFile),
+      ...(input.bundle.containers?.length
+        ? { containers: input.bundle.containers }
+        : {}),
+      ...(input.bundle.observability
+        ? { observability: input.bundle.observability }
+        : {}),
+      ...(input.bundle.assets
+        ? {
+            assets: {
+              files: input.bundle.assets.files.map(addFile),
+              ...(input.bundle.assets.binding
+                ? { binding: input.bundle.assets.binding }
+                : {}),
+              ...(input.bundle.assets.config
+                ? { config: input.bundle.assets.config }
+                : {}),
+            },
+          }
+        : {}),
+    };
+    form.append("manifest", JSON.stringify(manifest));
+    files.forEach((file, index) =>
+      form.append("files", file, `file-${index}`),
+    );
+    try {
+      return await request<unknown>(
+        url(options, `/${encodeURIComponent(id)}/artifacts/bundle`),
+        {
+          method: "POST",
+          // fetch supplies the multipart boundary. Setting Content-Type here
+          // would make the body unparsable.
+          headers: headers(options),
+          body: form,
+        },
+        300_000,
+      );
+    } catch (error) {
+      // A rolling backend may not expose multipart ingress yet. Preserve
+      // compatibility with the previous JSON bundle endpoint only while its
+      // encoded request fits the legacy storage/retrieval path.
+      if (!(error instanceof HttpError) || error.status !== 404) throw error;
+      const legacyBody = JSON.stringify(input);
+      const requestBytes = Buffer.byteLength(legacyBody, "utf8");
+      if (requestBytes > LEGACY_BUNDLE_REQUEST_LIMIT_BYTES) {
+        throw new Error(
+          `The xAPI backend does not expose multipart Artifact upload and this encoded bundle (${requestBytes} bytes) exceeds the legacy 5 MiB compatibility channel; upgrade the xAPI backend before deploying this project`,
+          {cause: error},
+        );
+      }
+      return request<unknown>(
+        url(options, `/${encodeURIComponent(id)}/artifacts`),
+        {
+          method: "POST",
+          headers: headers(options, true),
+          body: legacyBody,
+        },
+        180_000,
+      );
+    }
+  }
   return request<unknown>(
     url(options, `/${encodeURIComponent(id)}/artifacts`),
     {
@@ -137,6 +247,22 @@ export function uploadWorkerArtifact(
       body: JSON.stringify(input),
     },
     60_000,
+  );
+}
+
+export function updateWorkerEnvironment(
+  options: WorkersClientOptions,
+  id: string,
+  environment: string,
+  input: {
+    dailyBudgetUsd?: number;
+    defaultResourceLocation?: "wnam" | "enam" | "weur" | "eeur" | "apac" | "oc";
+    placementMode?: "off" | "smart";
+  },
+) {
+  return request<unknown>(
+    url(options, `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}`),
+    { method: "PATCH", headers: headers(options, true), body: JSON.stringify(input) },
   );
 }
 
@@ -195,17 +321,7 @@ export function updateWorkerBudget(
   environment: string,
   dailyBudgetUsd: number,
 ) {
-  return request<unknown>(
-    url(
-      options,
-      `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}`,
-    ),
-    {
-      method: "PATCH",
-      headers: headers(options, true),
-      body: JSON.stringify({ dailyBudgetUsd }),
-    },
-  );
+  return updateWorkerEnvironment(options, id, environment, { dailyBudgetUsd });
 }
 
 export function deleteWorker(options: WorkersClientOptions, id: string) {
@@ -653,4 +769,24 @@ export function deleteWorkerSecret(
     { method: "DELETE", headers: headers(options) },
     60_000,
   );
+}
+
+export function applyWorkerD1Migration(options: WorkersClientOptions, id: string, environment: string,
+  resourceId: string, input: Record<string, unknown>) {
+  return request<unknown>(url(options, `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/resources/${encodeURIComponent(resourceId)}/d1/migrations`), {
+    method: 'POST', headers: headers(options, true), body: JSON.stringify(input),
+  });
+}
+export function configureWorkerQueueConsumer(options: WorkersClientOptions, id: string, environment: string,
+  resourceId: string, input: Record<string, unknown>) {
+  return request<unknown>(url(options, `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/resources/${encodeURIComponent(resourceId)}/queue-consumer`), {
+    method: 'PUT', headers: headers(options, true), body: JSON.stringify(input),
+  });
+}
+
+export function disableWorkerQueueConsumer(options: WorkersClientOptions, id: string, environment: string,
+  resourceId: string) {
+  return request<unknown>(url(options, `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/resources/${encodeURIComponent(resourceId)}/queue-consumer`), {
+    method: 'DELETE', headers: headers(options),
+  });
 }

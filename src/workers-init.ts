@@ -36,6 +36,8 @@ export interface InitWorkerProjectOptions {
   slug?: string;
   previewDailyBudgetUsd?: number;
   productionDailyBudgetUsd?: number;
+  defaultResourceLocation?: "wnam" | "enam" | "weur" | "eeur" | "apac" | "oc";
+  placementMode?: "off" | "smart";
   force?: boolean;
   compatibilityDate?: string;
   framework?: string;
@@ -132,6 +134,8 @@ function projectFiles(
   previewDailyBudgetUsd: number,
   productionDailyBudgetUsd: number,
   compatibilityDate: string,
+  defaultResourceLocation?: "wnam" | "enam" | "weur" | "eeur" | "apac" | "oc",
+  placementMode?: "off" | "smart",
 ): Record<string, string> {
   const config: WorkerProjectConfig = {
     $schema: WORKER_PROJECT_SCHEMA_URL,
@@ -147,12 +151,16 @@ function projectFiles(
     environments: {
       preview: {
         dailyBudgetUsd: previewDailyBudgetUsd,
+        ...(defaultResourceLocation ? { defaultResourceLocation } : {}),
+        ...(placementMode ? { placementMode } : {}),
         healthCheck: "/health",
         resources: template.defaultResources,
         secrets: template.defaultSecrets,
       },
       production: {
         dailyBudgetUsd: productionDailyBudgetUsd,
+        ...(defaultResourceLocation ? { defaultResourceLocation } : {}),
+        ...(placementMode ? { placementMode } : {}),
         healthCheck: "/health",
         resources: template.defaultResources,
         secrets: template.defaultSecrets,
@@ -274,6 +282,8 @@ export function initWorkerProject(
           compatibilityDate,
           previewDailyBudgetUsd,
           productionDailyBudgetUsd,
+          defaultResourceLocation: options.defaultResourceLocation,
+          placementMode: options.placementMode,
           framework: options.framework,
         });
         return {
@@ -302,6 +312,8 @@ export function initWorkerProject(
     previewDailyBudgetUsd,
     productionDailyBudgetUsd,
     compatibilityDate,
+    options.defaultResourceLocation,
+    options.placementMode,
   );
   const managedFiles = [...COMMON_MANAGED_FILES, ...template.files.map((file) => file.target)];
 

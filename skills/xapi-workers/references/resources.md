@@ -2,7 +2,7 @@
 
 Run `workers capabilities` and `workers resources list <worker-id> --env preview --format json`. Permissions, availability, and price configuration are independent: provisioned alone does not mean priced or exercised.
 
-Keep resource declarations driven by application behavior. R2, D1, KV, Durable Objects, Queues, and Workflows are independent bindings; none must be added or deleted just because another resource is used. When the goal is to verify every platform resource, use a separate disposable acceptance Worker so those checks cannot change a real application's storage or lifecycle.
+Keep resource declarations driven by application behavior. R2, D1, KV, Durable Objects, Queues, Workflows, and Container Applications are independent bindings and resources; none must be added or deleted just because another resource is used. A Container Application is the one exception to the generic create command: it is deployment-owned and must reference a Durable Object class in the same Worker. When the goal is to verify every platform resource, use a separate disposable acceptance Worker so those checks cannot change a real application's storage or lifecycle.
 
 Prefer declarations plus plan/push. For granular provisioning:
 
@@ -12,8 +12,12 @@ xapi workers resources create <worker-id> --env preview --type d1 --binding DB
 xapi workers resources create <worker-id> --env preview --type r2 --binding FILES
 xapi workers resources create <worker-id> --env preview --type do --binding COORDINATOR --class-name Coordinator
 xapi workers resources create <worker-id> --env preview --type queue --binding JOBS
-xapi workers resources create <worker-id> --env preview --type workflow --binding PIPELINE
+xapi workers resources create <worker-id> --env preview --type workflow --binding PIPELINE --class-name Pipeline
 ```
+
+Do not run `resources create` for a Container. Declare it in Wrangler and `xapi.worker.json`, then deploy. After deployment, `resources list` exposes a read-only `CONTAINER_APPLICATION` record containing the physical application ID, image, instance type, maximum instances, placement, and rollout receipt. Its binding-like `CONTAINER_<hash>` key is an internal stable identity, not a Worker `env` binding.
+
+Exercise a Container through the application route that causes its controlling Durable Object to start or contact an instance. Verify the business response, Container status, DO coordination state, and four Container usage dimensions separately. Do not conclude that an image runs merely because the application resource exists.
 
 Supply the explicitly accepted retention price version when required. Redeploy after binding changes. Use `env.<BINDING>`; no provider API/S3 credentials belong in application code. Initialize D1 schema through the application's migration mechanism; creation doesn't create tables.
 
@@ -27,7 +31,11 @@ Supply the explicitly accepted retention price version when required. Redeploy a
 | Workflow | Start and poll the instance to terminal state | Instance ID, final status and durable result |
 | Schedule | Trigger an immediate run and inspect run history | Schedule/run ID and resulting business change |
 
-Queue uses a managed consumer that routes an envelope to the same Worker environment:
+For a native Workflow, declare `workflows: [{ binding: "PIPELINE", name: "pipeline", class_name: "Pipeline" }]` in Wrangler, export `Pipeline extends WorkflowEntrypoint` from your Worker, and import the configuration with `workers init --from-wrangler`. The xAPI resource declaration must retain `type: "workflow"`, `bindingName: "PIPELINE"`, and `className: "Pipeline"`. The original physical workflow name is remapped to this environment's managed resource. A declaration can be prepared before its first code deployment; it is not yet a completed running Workflow. A binding to another script is not silently imported as a local class.
+
+Start it through `env.PIPELINE.create({ params: { taskId } })`, then poll `env.PIPELINE.get(id).status()` through an authenticated application endpoint and verify its durable output. The same Worker holds the application's bindings and Secret values. A normal new deployment is allowed while an instance waits; Cloudflare owns how the running instance resumes. Do not promise that every step stays on the original application version, and do not add a deployment block for active instances.
+
+For imported native Queue consumers, the managed adapter invokes `queue(batch, env, ctx)` and returns ack/retry decisions to Cloudflare. For an existing compatibility Workflow created without a class declaration, the HTTP adapter instead routes the following envelope to the same Worker environment; do not mistake that route for a native handler:
 
 ```js
 await env.JOBS.send({ path: "/tasks/report", method: "POST", body: { taskId } });

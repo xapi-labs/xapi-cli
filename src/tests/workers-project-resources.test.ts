@@ -35,6 +35,16 @@ function linkedProject(): string {
 }
 
 describe("project resource declarations", () => {
+  test("edits mixed-case bindings by exact identity without renaming uppercase resources", () => {
+    const root = project();
+    for (const name of ["Chat", "CHAT", "chat"]) {
+      addProjectResource({ cwd: root, environments: ["preview"], resource: { type: "durable_object", bindingName: name, className: "Room" } });
+    }
+    removeProjectResource({ cwd: root, environments: ["preview"], bindingName: "Chat" });
+    expect(loadWorkerProject(root).config.environments.preview.resources.map(r => r.bindingName)).toEqual(["CHAT", "chat"]);
+    expect(() => addProjectResource({ cwd: root, environments: ["preview"], resource: { type: "kv_namespace", bindingName: "chat" } })).toThrow("already declares");
+  });
+
   test("adds one declaration to both environments and is idempotent", () => {
     const root = project();
     const first = addProjectResource({
@@ -111,7 +121,7 @@ describe("project resource declarations", () => {
     expect(result.nextSteps).toContain(
       "Delete its data after backup: xapi workers resources destroy --env preview --binding FILES --yes",
     );
-    expect(result.nextSteps).not.toContain("xapi workers push --env preview");
+    expect(result.nextSteps).toContain("xapi workers push --env preview");
     const config = loadWorkerProject(root).config;
     expect(config.environments.preview.resources).toEqual([]);
     expect(config.environments.production.resources).toEqual([]);
@@ -348,6 +358,54 @@ describe("project resource declarations", () => {
       }),
     ).rejects.toThrow("differs between xapi.worker.json and the live resource");
     expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  test("three-way pull preserves local removal while adopting remote-only changes", async () => {
+    const root = linkedProject();
+    const remote = [
+      { bindingName: "FILES", type: "R2_BUCKET", status: "ACTIVE" },
+      { bindingName: "DB", type: "D1_DATABASE", status: "ACTIVE", config: { readReplication: { mode: "disabled" } } },
+    ];
+    const pull = () => pullProjectResources({ cwd: root, environments: ["preview"], clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" }, client: { listWorkerResources: async () => remote } });
+    await pull();
+    removeProjectResource({ cwd: root, environments: ["preview"], bindingName: "FILES" });
+    remote[1].config!.readReplication.mode = "auto";
+    const updated = await pull();
+    expect(updated.environments[0].updated).toEqual(["DB"]);
+    expect(loadWorkerProject(root).config.environments.preview.resources).toEqual([
+      { type: "d1_database", bindingName: "DB", readReplication: "auto" },
+    ]);
+    expect((await pull()).changed).toBe(false);
+    // Confirmed remote destruction updates the local declaration, not another resource.
+    remote.pop();
+    expect((await pull()).environments[0].removed).toEqual(["DB"]);
+    expect(loadWorkerProject(root).config.environments.preview.resources).toEqual([]);
+  });
+
+  test("three-way conflicts preserve the file and previous baseline", async () => {
+    const root = linkedProject();
+    const remote = [{ bindingName: "DB", type: "D1_DATABASE", status: "ACTIVE", config: { requestedLocation: "apac" } }];
+    const pull = () => pullProjectResources({ cwd: root, environments: ["preview"], clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" }, client: { listWorkerResources: async () => remote } });
+    await pull();
+    updateProjectResource({ cwd: root, environments: ["preview"], resource: { bindingName: "DB", type: "d1_database", location: "weur" } });
+    remote[0].config.requestedLocation = "enam";
+    const before = readFileSync(join(root, "xapi.worker.json"), "utf8");
+    await expect(pull()).rejects.toThrow("changed both locally and remotely");
+    expect(readFileSync(join(root, "xapi.worker.json"), "utf8")).toBe(before);
+    remote[0].config.requestedLocation = "apac";
+    expect((await pull()).changed).toBe(false);
+    expect(loadWorkerProject(root).config.environments.preview.resources[0].location).toBe("weur");
+  });
+
+  test("pull never overwrites a JSON edit made while fetching remote state", async () => {
+    const root = linkedProject();
+    await expect(pullProjectResources({ cwd: root, environments: ["preview"], clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" }, client: {
+      listWorkerResources: async () => {
+        addProjectResource({ cwd: root, environments: ["preview"], resource: { bindingName: "LOCAL", type: "kv_namespace" } });
+        return [{ bindingName: "REMOTE", type: "R2_BUCKET", status: "ACTIVE" }];
+      },
+    } })).rejects.toThrow("JSON changed during pull");
+    expect(loadWorkerProject(root).config.environments.preview.resources.map(r => r.bindingName)).toEqual(["LOCAL"]);
   });
 
   test("does not import incomplete or unhealthy remote state", async () => {

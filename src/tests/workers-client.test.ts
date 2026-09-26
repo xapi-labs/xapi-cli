@@ -7,6 +7,8 @@ import {
   deployWorker,
   putWorkerSecret,
   listWorkers,
+  getWorkerVariableState,
+  getWorkerArtifactVariableConfiguration,
   runWorkerScheduleNow,
   listWorkerDomains,
   createWorkerDomainChallenge,
@@ -24,6 +26,7 @@ import {
   workerUsage,
   workerMeteredUsage,
   uploadWorkerArtifact,
+  updateWorkerEnvironment,
 } from "../workers-client.ts";
 
 const options = { apiHost: "test.xapi.to", apiKey: "sk-test-value" };
@@ -32,6 +35,22 @@ let fetchSpy: ReturnType<typeof spyOn> | undefined;
 afterEach(() => fetchSpy?.mockRestore());
 
 describe("workers client", () => {
+  it("reads target variable state and immutable declarations through scoped endpoints", async () => {
+    fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async () => new Response("{}", {
+      status: 200, headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch) as any;
+    await getWorkerVariableState(options, "worker/1", "production");
+    await getWorkerArtifactVariableConfiguration(options, "worker/1", "artifact/1");
+    expect(fetchSpy.mock.calls.map((call: any[]) => call[0])).toEqual([
+      "https://test.xapi.to/api/v1/workers/worker%2F1/environments/production/variables",
+      "https://test.xapi.to/api/v1/workers/worker%2F1/artifacts/artifact%2F1/variable-configuration",
+    ]);
+    for (const [, init] of fetchSpy.mock.calls as any[]) {
+      expect(init.headers["XAPI-KEY"]).toBe(options.apiKey);
+      expect(init.redirect).toBe("manual");
+      expect(init.body).toBeUndefined();
+    }
+  });
   it("applies secret mutations without retrying or exposing values in the URL", async () => {
     fetchSpy = spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({status:"ACTIVE"}),{status:200,headers:{"content-type":"application/json"}})) as any;
     await applyWorkerSecrets(options,"worker/1","preview",[{name:"MODEL_KEY",value:"private-value"},{name:"OLD_KEY",delete:true}]);
@@ -175,11 +194,165 @@ describe("workers client", () => {
       bundle,
       idempotencyKey: "showcase-bundle-v1",
     });
-    const [, init] = fetchSpy.mock.calls[0] as any[];
-    expect(JSON.parse(init.body)).toEqual({
+    const [target, init] = fetchSpy.mock.calls[0] as any[];
+    expect(target).toBe("https://test.xapi.to/api/v1/workers/worker%2Fid/artifacts/bundle");
+    expect(init.body).toBeInstanceOf(FormData);
+    expect(init.headers["Content-Type"]).toBeUndefined();
+    const form = init.body as FormData;
+    expect(JSON.parse(String(form.get("manifest")))).toEqual({
+      version: 2,
+      idempotencyKey: "showcase-bundle-v1",
+      mainModule: "worker.js",
+      modules: [
+        { path: "worker.js", contentType: "application/javascript+module", fileIndex: 0 },
+        { path: "chunk.js", contentType: "application/javascript+module", fileIndex: 1 },
+      ],
+    });
+    const files = form.getAll("files") as File[];
+    expect(files).toHaveLength(2);
+    expect(await files[0].text()).toBe('import "./chunk.js"; export default {};');
+    expect(await files[1].text()).toBe("export {};");
+  });
+
+  it("preserves Container deployment intent through multipart upload", async () => {
+    fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id: "artifact-2" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ) as any;
+    const containers = [{ name: "trader", className: "TraderContainer", image: "docker.io/example/trader:v1", instanceType: "lite" as const, maxInstances: 2, rolloutActiveGracePeriod: 0 }];
+    const bundle = {
+      containers,
+      vars: { PUBLIC_ORIGIN: "https://app.example", FEATURES: { images: true } },
+      version: 1 as const,
+      mainModule: "worker.js",
+      modules: [
+        {
+          path: "worker.js",
+          content: 'import "./chunk.js"; export default {};',
+          encoding: "utf8" as const,
+          contentType: "application/javascript+module" as const,
+        },
+        {
+          path: "chunk.js",
+          content: "export {};",
+          encoding: "utf8" as const,
+          contentType: "application/javascript+module" as const,
+        },
+      ],
+    };
+    await uploadWorkerArtifact(options, "worker/id", {
       bundle,
       idempotencyKey: "showcase-bundle-v1",
     });
+    const [target, init] = fetchSpy.mock.calls[0] as any[];
+    expect(target).toBe("https://test.xapi.to/api/v1/workers/worker%2Fid/artifacts/bundle");
+    expect(init.body).toBeInstanceOf(FormData);
+    expect(init.headers["Content-Type"]).toBeUndefined();
+    const form = init.body as FormData;
+    expect(JSON.parse(String(form.get("manifest")))).toEqual({
+      version: 2,
+      containers,
+      vars: { PUBLIC_ORIGIN: "https://app.example", FEATURES: { images: true } },
+      idempotencyKey: "showcase-bundle-v1",
+      mainModule: "worker.js",
+      modules: [
+        { path: "worker.js", contentType: "application/javascript+module", fileIndex: 0 },
+        { path: "chunk.js", contentType: "application/javascript+module", fileIndex: 1 },
+      ],
+    });
+    const files = form.getAll("files") as File[];
+    expect(files).toHaveLength(2);
+    expect(await files[0].text()).toBe('import "./chunk.js"; export default {};');
+    expect(await files[1].text()).toBe("export {};");
+  });
+
+  it("updates native environment placement without changing unspecified settings", async () => {
+    fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ placementMode: "smart" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ) as any;
+    await updateWorkerEnvironment(options, "worker/id", "preview", {
+      defaultResourceLocation: "apac",
+      placementMode: "smart",
+    });
+    const [target, init] = fetchSpy.mock.calls[0] as any[];
+    expect(target).toBe("https://test.xapi.to/api/v1/workers/worker%2Fid/environments/preview");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body)).toEqual({
+      defaultResourceLocation: "apac",
+      placementMode: "smart",
+    });
+  });
+
+  it("falls back to the legacy JSON bundle endpoint during a rolling backend deployment", async () => {
+    fetchSpy = spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({message: "Cannot POST /artifacts/bundle"}), {
+          status: 404,
+          headers: {"content-type": "application/json"},
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({id: "artifact-legacy"}), {
+          status: 200,
+          headers: {"content-type": "application/json"},
+        }),
+      ) as any;
+    const input = {
+      bundle: {
+        version: 1 as const,
+        mainModule: "worker.js",
+        modules: [{
+          path: "worker.js",
+          content: "export default {};",
+          encoding: "utf8" as const,
+          contentType: "application/javascript+module" as const,
+        }],
+      },
+      idempotencyKey: "rolling-deploy-v1",
+    };
+
+    await uploadWorkerArtifact(options, "worker/id", input);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls[0][0]).toBe(
+      "https://test.xapi.to/api/v1/workers/worker%2Fid/artifacts/bundle",
+    );
+    expect(fetchSpy.mock.calls[1][0]).toBe(
+      "https://test.xapi.to/api/v1/workers/worker%2Fid/artifacts",
+    );
+    expect(JSON.parse((fetchSpy.mock.calls[1][1] as RequestInit).body as string)).toEqual(input);
+  });
+
+  it("rejects bundles that the legacy backend cannot retrieve", async () => {
+    fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({message: "Cannot POST /artifacts/bundle"}), {
+        status: 404,
+        headers: {"content-type": "application/json"},
+      }),
+    ) as any;
+    const input = {
+      bundle: {
+        version: 1 as const,
+        mainModule: "worker.js",
+        modules: [{
+          path: "worker.js",
+          content: Buffer.alloc(4 * 1024 * 1024).toString("base64"),
+          encoding: "base64" as const,
+          contentType: "application/javascript+module" as const,
+        }],
+      },
+      idempotencyKey: "legacy-too-large-v1",
+    };
+
+    await expect(
+      uploadWorkerArtifact(options, "worker/id", input),
+    ).rejects.toThrow("exceeds the legacy 5 MiB compatibility channel");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("uses the server-side build endpoint with an extended timeout", async () => {

@@ -158,3 +158,59 @@ describe("Worker plan terminal output", () => {
     expect(useHumanWorkerPlanOutput({ stdoutIsTTY: false })).toBe(false);
   });
 });
+
+test("plan explains telemetry false/zero and private map count without source contents", () => {
+  const rendered = formatWorkerPlan({ ...plan, actions: [{
+    operation: "CREATE", kind: "artifact", key: "bundle", message: "Upload bundle",
+    desired: { configuration: { observability: { logs: { enabled: true, head_sampling_rate: 0, persist: false } }, sourceMaps: ["index.js.map"] } },
+  }] });
+  expect(rendered).toContain('"head_sampling_rate":0');
+  expect(rendered).toContain('"persist":false');
+  expect(rendered).toContain("1 private upload attachment(s)");
+  expect(rendered).not.toContain("sourcesContent");
+});
+
+
+test("public variable decisions show full names, type transitions and explanations without values", () => {
+  const variables: NonNullable<WorkerDeploymentPlan["variables"]> = [
+    { name: "PUBLIC_APPLICATION_ORIGIN_PREVIEW", decision: "SET", type: "plain_text", message: "Set the Artifact declaration." },
+    { name: "REMOTE_FLAG", decision: "RETAIN", currentType: "json", type: "json", message: "Keep the omitted JSON binding." },
+    { name: "OLD_LABEL", decision: "REMOVE", currentType: "plain_text", message: "Remove the omitted public variable." },
+    { name: "JSON_STRING", decision: "REPLACE", currentType: "plain_text", type: "json", message: "Preserve the native JSON-string binding type." },
+    { name: "DB", decision: "REPLACE", currentType: "json", message: "Explicit resource binding takes this name." },
+  ];
+  // Even unexpected extra response fields must not be dumped by the renderer.
+  const withValues = variables.map(variable => ({ ...variable, value: "never-render-value", currentValue: "never-render-current" }));
+  const input = { ...plan, variables: withValues };
+  const before = JSON.stringify(input);
+  const rendered = formatWorkerPlan(input);
+  expect(rendered).toContain("Public variables");
+  expect(rendered).toContain("SET      PUBLIC_APPLICATION_ORIGIN_PREVIEW · plain_text");
+  expect(rendered).toContain("RETAIN   REMOTE_FLAG · json");
+  expect(rendered).toContain("REMOVE   OLD_LABEL · plain_text → removed");
+  expect(rendered).toContain("REPLACE  JSON_STRING · plain_text → json");
+  expect(rendered).toContain("REPLACE  DB · json → explicit binding");
+  for (const variable of variables) expect(rendered).toContain(variable.message);
+  expect(rendered).toContain("Values are not displayed or compared");
+  expect(rendered).toContain("Secrets are managed independently and kept");
+  expect(rendered).not.toContain("never-render");
+  expect(JSON.stringify(input)).toBe(before);
+});
+
+test("old plans omit unavailable variable decisions while explicit empty decisions remain visible", () => {
+  expect(formatWorkerPlan(plan)).not.toContain("Public variables");
+  const empty = formatWorkerPlan({ ...plan, variables: [] });
+  expect(empty).toContain("Public variables");
+  expect(empty).toContain("No public variable decisions.");
+});
+
+test("optional variable types do not invent defaults or print undefined", () => {
+  const rendered = formatWorkerPlan({ ...plan, variables: [
+    { name: "UNTYPED", decision: "SET", message: "Artifact supplies this variable." },
+    { name: "REUSED", decision: "RETAIN", currentType: "plain_text", message: "Keep the current binding." },
+  ] });
+  expect(rendered).toContain("SET      UNTYPED\n");
+  expect(rendered).toContain("RETAIN   REUSED · plain_text");
+  expect(rendered).not.toContain("undefined");
+  expect(rendered).not.toContain("UNTYPED · plain_text");
+});

@@ -85,10 +85,13 @@ function fixture(options: { assets?: boolean } = {}): string {
 function fakePlatform(
   options: {
     budget?: number;
+    bindings?: Array<Record<string, unknown>>;
     resources?: Array<Record<string, unknown>>;
     secrets?: string[];
     failDeployOnce?: boolean;
     webAppReady?: boolean;
+    defaultResourceLocation?: string;
+    placementMode?: string;
   } = {},
 ) {
   const previewDeployments: Array<Record<string, unknown>> = [
@@ -109,8 +112,8 @@ function fakePlatform(
   ];
   const productionDeployments: Array<Record<string, unknown>> = [];
   const productionResources: Array<Record<string, unknown>> = options.resources
-    ? [...options.resources]
-    : [{ bindingName: "STATE", type: "KV_NAMESPACE", status: "ACTIVE" }];
+    ? options.resources.map((resource, index) => ({ id: `resource-${index}`, ...resource }))
+    : [{ id: "resource-state", bindingName: "STATE", type: "KV_NAMESPACE", status: "ACTIVE" }];
   const artifacts = [
     {
       id: "artifact-latest",
@@ -144,10 +147,13 @@ function fakePlatform(
         {
           id: "env-production",
           name: "PRODUCTION",
+          bindings: options.bindings,
           activeDeploymentId: productionDeployments.find(item => item.status === "ACTIVE")?.id,
           dailyBudgetUsd: options.budget ?? 2,
           publicUrl: "https://agent.example.test/w/ref/production",
           webAppReady: options.webAppReady,
+          defaultResourceLocation: options.defaultResourceLocation,
+          placementMode: options.placementMode,
         },
       ],
       artifacts,
@@ -155,11 +161,13 @@ function fakePlatform(
     };
   };
   const client: PromotionClient = {
+    getWorkerVariableState: async () => ({ environment: "production", activeDeploymentId: productionDeployments.find(item => item.status === "ACTIVE")?.id || null, exists: productionDeployments.some(item => item.status === "ACTIVE"), variables: [] }),
+    getWorkerArtifactVariableConfiguration: async (_options, _id, artifactId) => ({ artifactId, contentSha256: artifacts.find(item => item.id === artifactId)!.contentSha256, keepBindings: [], variables: [], bindingNames: [] }),
     getWorker: async () => snapshot(),
     listWorkerResources: async () => productionResources,
     createWorkerResource: async (_api, _id, _environment, input) => {
       calls.createResource += 1;
-      const created = { ...input, status: "ACTIVE" };
+      const created = { id: `resource-${calls.createResource}`, ...input, status: "ACTIVE" };
       productionResources.push(created);
       return created;
     },
@@ -189,6 +197,112 @@ function fakePlatform(
 }
 
 describe("workers promote", () => {
+  for (const recovers of [true, false]) {
+    test(`initial access authorization ${recovers ? "recovers" : "times out"} without another deployment`, async () => {
+      const platform = fakePlatform();
+      const options = {
+        cwd: fixture(), to: "production" as const, nonInteractive: true,
+        clientOptions: { apiHost: "localhost:3003", apiKey: "test" }, client: platform.client,
+        sleep: async () => undefined,
+        fetchPublic: (async (_input, _init) => {
+          platform.calls.health++;
+          return recovers && platform.calls.health === 66 ? Response.json({ ok: true })
+            : Response.json({ error: { code: "workers_postpaid_state_unavailable" } }, { status: 503 });
+        }) as typeof fetch,
+      };
+      if (recovers) {
+        const result = await promoteWorkerProject(options);
+        expect(result.health.attempts).toBe(66);
+        expect(result.health.status).toBe(200);
+      } else {
+        let failure: unknown;
+        try { await promoteWorkerProject(options); } catch (error) { failure = error; }
+        expect(failure).toBeInstanceOf(WorkerPushError);
+        expect((failure as WorkerPushError).recovery).toMatchObject({
+          releasedDeploymentId: "production-deployment", deploymentStatus: "ACTIVE",
+          healthReady: false, lastErrorCode: "workers_postpaid_state_unavailable", attempts: 75,
+        });
+        expect((failure as WorkerPushError).recovery.recovery).toContain("read-only GET");
+      }
+      expect(platform.calls.deploy).toBe(1);
+      expect(platform.productionDeployments).toHaveLength(1);
+      expect(platform.productionDeployments[0].status).toBe("ACTIVE");
+    });
+  }
+
+  test("uses selected immutable Artifact vars against production state, independent of local preview vars", async () => {
+    const root = fixture();
+    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify({ name: "promote-agent", vars: { LOCAL_ONLY: "private-marker" }, keep_vars: false }));
+    const platform = fakePlatform({ bindings: [{ name: "ENV_CONFIG", type: "plain_text", text: "private-env-marker" }] });
+    const calls: string[] = [];
+    platform.client.getWorkerVariableState = async (_options, id, environment) => {
+      calls.push(`${id}:${environment}`);
+      return { environment, activeDeploymentId: null, exists: true,
+        variables: [{ name: "RETAIN_JSON", type: "json" }, { name: "REMOVE_TEXT", type: "plain_text" },
+          ...["STATE", "MODEL_KEY", "ASSETS", "VERSION"].map(name => ({ name, type: "json" }))] };
+    };
+    platform.client.getWorkerArtifactVariableConfiguration = async (_options, id, artifactId) => {
+      calls.push(`${id}:${artifactId}`);
+      return { artifactId, contentSha256: "b".repeat(64), keepBindings: ["json"],
+        variables: [{ name: "JSON_STRING", type: "json" }], bindingNames: ["ASSETS", "VERSION"] };
+    };
+    const { plan } = await createWorkerPromotionPlan({ cwd: root, to: "production", artifactId: "artifact-older",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test" }, client: platform.client });
+    expect(calls).toEqual([`${workerId}:production`, `${workerId}:artifact-older`]);
+    expect(plan.variables?.map(({ name, decision }) => ({ name, decision }))).toEqual([
+      { name: "ASSETS", decision: "REPLACE" }, { name: "ENV_CONFIG", decision: "SET" }, { name: "JSON_STRING", decision: "SET" },
+      { name: "MODEL_KEY", decision: "REPLACE" }, { name: "REMOVE_TEXT", decision: "REMOVE" },
+      { name: "RETAIN_JSON", decision: "RETAIN" }, { name: "STATE", decision: "REPLACE" }, { name: "VERSION", decision: "REPLACE" },
+    ]);
+    expect(plan.variables).toContainEqual(expect.objectContaining({ name: "JSON_STRING", type: "json" }));
+    expect(JSON.stringify(plan)).not.toContain("LOCAL_ONLY");
+    expect(JSON.stringify(plan)).not.toContain("private-marker");
+    expect(JSON.stringify(plan)).not.toContain("private-env-marker");
+    expect(plan.canPromote).toBe(true);
+    expect(platform.calls.deploy).toBe(0);
+  });
+
+  test("fails before promotion on unreadable state, deployment race or wrong immutable declaration", async () => {
+    const root = fixture();
+    const platform = fakePlatform();
+    const options = { cwd: root, to: "production" as const, nonInteractive: true,
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test" }, client: platform.client };
+    const readState = platform.client.getWorkerVariableState;
+    const failure = new Error("state unavailable");
+    platform.client.getWorkerVariableState = async () => { throw failure; };
+    await expect(promoteWorkerProject(options)).rejects.toBe(failure);
+    platform.client.getWorkerVariableState = async () => ({ environment: "production", activeDeploymentId: "raced", exists: true, variables: [] });
+    await expect(promoteWorkerProject(options)).rejects.toThrow("deployment changed");
+    platform.client.getWorkerVariableState = readState;
+    platform.client.getWorkerArtifactVariableConfiguration = async () => ({ artifactId: "artifact-latest", contentSha256: "b".repeat(64), keepBindings: [], variables: [], bindingNames: [] });
+    await expect(promoteWorkerProject(options)).rejects.toThrow("selected immutable Artifact");
+    platform.client.getWorkerArtifactVariableConfiguration = async () => { throw failure; };
+    await expect(promoteWorkerProject(options)).rejects.toBe(failure);
+    expect(platform.calls.deploy).toBe(0);
+    expect(platform.calls.createResource).toBe(0);
+  });
+
+  test("blocks production promotion until declared placement matches", async () => {
+    const root = fixture();
+    const path = join(root, "xapi.worker.json");
+    const config = JSON.parse(await Bun.file(path).text());
+    config.environments.production.defaultResourceLocation = "apac";
+    config.environments.production.placementMode = "smart";
+    writeFileSync(path, JSON.stringify(config));
+    const prepared = await createWorkerPromotionPlan({
+      cwd: root,
+      to: "production",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: fakePlatform({ placementMode: "off" }).client,
+    });
+    expect(prepared.plan.canPromote).toBe(false);
+    expect(prepared.plan.production.checks).toContainEqual(expect.objectContaining({
+      status: "BLOCKED",
+      kind: "placement",
+      command: expect.stringContaining("--data-location apac --placement smart"),
+    }));
+  });
+
   test("promotes the exact latest ACTIVE preview Artifact, waits, health-checks, and repeats safely", async () => {
     const root = fixture();
     const platform = fakePlatform({ failDeployOnce: true });
@@ -351,7 +465,7 @@ describe("workers promote", () => {
     expect(ready.plan.canPromote).toBe(true);
   });
 
-  test("shows extra production state as MANUAL data risk and cancellation is mutation-free", async () => {
+  test("unreferenced production resources are retained; cancellation remains mutation-free", async () => {
     const root = fixture();
     const platform = fakePlatform({
       resources: [
@@ -365,10 +479,10 @@ describe("workers promote", () => {
       clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
       client: platform.client,
     });
-    expect(prepared.plan.canPromote).toBe(false);
+    expect(prepared.plan.canPromote).toBe(true);
     expect(prepared.plan.production.checks).toContainEqual(
       expect.objectContaining({
-        status: "MANUAL",
+        status: "NO_CHANGE",
         kind: "resource",
         key: "OLD_DB",
       }),
@@ -390,8 +504,8 @@ describe("workers promote", () => {
           return false;
         },
       }),
-    ).rejects.toThrow("resource drift requires reconciliation");
-    expect(confirmations).toBe(0);
+    ).rejects.toThrow("promotion cancelled");
+    expect(confirmations).toBe(1);
     expect(platform.calls.deploy).toBe(0);
   });
 });

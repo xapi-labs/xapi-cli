@@ -3,11 +3,16 @@ import type { LoadedWorkerArtifact } from "./workers-artifact.ts";
 import {
   loadWorkerArtifactInput,
   validateNativeDeploymentMetadata,
+  withNativeWorkerOptions,
   WorkerArtifactError,
+  withWorkerVars,
 } from "./workers-artifact.ts";
 import type { LoadedWorkerProject } from "./workers-project.ts";
 import { resolveWorkerProjectPath } from "./workers-project.ts";
-import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
+import {
+  readWranglerDeploymentSettings,
+  readWranglerPublicVars,
+} from "./workers-wrangler-import.ts";
 
 const BUILD_TIMEOUT_MS = 15 * 60_000;
 
@@ -87,8 +92,7 @@ export async function runWorkerProjectBuild(
             projectRoot: cwd,
             ...(code === 127
               ? {
-                  next:
-                    "Install the package manager used by build.command, then rerun the command",
+                  next: "Install the package manager used by build.command, then rerun the command",
                 }
               : {}),
           },
@@ -108,7 +112,8 @@ export async function loadWorkerProjectBundle(
     "build.output",
   );
   try {
-    const bundle = await loadWorkerArtifactInput(
+    const settings = readWranglerDeploymentSettings(project, environment);
+    const built = await loadWorkerArtifactInput(
       path,
       project.config.build.main,
       project.config.assets
@@ -121,11 +126,46 @@ export async function loadWorkerProjectBundle(
             ),
           }
         : undefined,
+      project.config.containers,
+      settings.uploadSourceMaps,
     );
+    const bundle = withWorkerVars(
+      withNativeWorkerOptions(built, settings),
+      readWranglerPublicVars(project, environment),
+    );
+    const vars =
+      "bundle" in bundle.upload ? bundle.upload.bundle.vars : undefined;
+    const occupied = new Set([
+      ...project.config.environments[environment].resources.map(
+        (resource) => resource.bindingName,
+      ),
+      ...(project.config.environments[environment].secrets || []),
+      ...(project.config.assets?.binding
+        ? [project.config.assets.binding]
+        : []),
+    ]);
+    const versionBinding =
+      "bundle" in bundle.upload
+        ? bundle.upload.bundle.versionMetadata?.binding
+        : undefined;
+    if (
+      versionBinding &&
+      (occupied.has(versionBinding) ||
+        Object.hasOwn(vars || {}, versionBinding))
+    ) {
+      throw new WorkerArtifactError(
+        `Duplicate Worker binding: ${versionBinding}`,
+      );
+    }
+    for (const name of Object.keys(vars || {})) {
+      if (occupied.has(name))
+        throw new WorkerArtifactError(`Duplicate Worker binding: ${name}`);
+    }
     validateNativeDeploymentMetadata(
       bundle,
-      readWranglerDeploymentSettings(project, environment),
+      settings,
       project.config.environments[environment].resources,
+      project.config.environments[environment].secrets,
     );
     return bundle;
   } catch (error) {

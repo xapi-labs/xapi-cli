@@ -8,6 +8,7 @@ const RULE = "─".repeat(72);
 const KIND_LABEL: Record<WorkerPlanAction["kind"], string> = {
   worker: "Worker",
   budget: "Budget",
+  placement: "Placement",
   resource: "Resource",
   secret: "Secret",
   routing: "Routing",
@@ -123,6 +124,19 @@ function actionRow(action: WorkerPlanAction): string {
             ? "!"
             : "=";
   return `  ${marker} ${KIND_LABEL[action.kind].padEnd(12)}${actionName(action).padEnd(24)}${actionDetail(action)}`;
+}
+
+function variableRows(variable: NonNullable<WorkerDeploymentPlan["variables"]>[number]): string[] {
+  const target = variable.type || (variable.decision === "REMOVE"
+    ? "removed"
+    : variable.decision === "REPLACE" ? "explicit binding" : undefined);
+  const types = variable.currentType && target && variable.currentType !== target
+    ? `${variable.currentType} → ${target}`
+    : target || variable.currentType;
+  return [
+    `  ${variable.decision.padEnd(8)} ${variable.name}${types ? ` · ${types}` : ""}`,
+    `    ${variable.message}`,
+  ];
 }
 
 function metadataRow(label: string, value: string): string {
@@ -276,6 +290,33 @@ export function formatWorkerPlan(plan: WorkerDeploymentPlan): string {
     ...(planned.length ? planned.map(actionRow) : ["  No changes required."]),
   ];
 
+  const configuration = record(
+    plan.actions.find(action => action.kind === "artifact")?.desired?.configuration,
+  );
+  if (Object.keys(configuration).length) {
+    lines.push("", "Worker configuration");
+    for (const key of ["cache", "version_metadata", "observability"] as const) {
+      if (configuration[key] !== undefined) {
+        lines.push(metadataRow(key, JSON.stringify(configuration[key])));
+      }
+    }
+    if (Array.isArray(configuration.sourceMaps)) {
+      lines.push(metadataRow(
+        "Source maps",
+        configuration.sourceMaps.length
+          ? `${configuration.sourceMaps.length} private upload attachment(s)`
+          : "None",
+      ));
+    }
+  }
+  if (plan.variables !== undefined) {
+    lines.push("", "Public variables",
+      "  Values are not displayed or compared. Secrets are managed independently and kept.",
+      ...(plan.variables.length
+        ? plan.variables.flatMap(variableRows)
+        : ["  No public variable decisions."]),
+    );
+  }
   if (manual.length) {
     lines.push("", "Manual review", ...manual.map(actionRow));
   }

@@ -43,6 +43,7 @@ export function formatWorkerPushResult(result: WorkerPushResult): string {
       `HTTP ${result.health.status} · ${result.health.attempts} attempt${result.health.attempts === 1 ? "" : "s"}`,
     ),
     metadata("Resources", resources.join(" · ") || "No managed resources"),
+    ...(result.nativeReceipts.length ? [metadata("Native steps", `${result.nativeReceipts.length} deployment receipts; event execution still needs verification`)] : []),
     "",
     "Next steps",
     `  1. Open: ${result.publicUrl}`,

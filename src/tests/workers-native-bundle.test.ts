@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { loadWorkerArtifactInput, validateNativeDeploymentMetadata } from '../workers-artifact.ts';
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root,{recursive:true,force:true}); });
@@ -46,6 +47,14 @@ test('requires declared native bindings and own main_module',async()=>{
  await expect(loadWorkerArtifactInput(path,'index.js')).rejects.toThrow('omit');
 });
 
+test('maps Wrangler inherit bindings only through one declared xAPI resource',async()=>{
+ const path=bundle([{...metadata,content:JSON.stringify({main_module:'index.js',compatibility_date:'2026-09-10',bindings:[{name:'DB',type:'inherit'}]})},entry]);
+ const a=await loadWorkerArtifactInput(path);
+ expect(()=>validateNativeDeploymentMetadata(a,{compatibilityDate:'2026-09-10'},[])).toThrow('DB');
+ validateNativeDeploymentMetadata(a,{compatibilityDate:'2026-09-10'},[{bindingName:'DB',type:'d1_database'}]);
+ expect(JSON.stringify(a.upload)).not.toContain('inherit');
+});
+
 test('preserves observability in artifact identity and rejects unmapped settings', async () => {
  const path = bundle([{...metadata, content:JSON.stringify({...JSON.parse(metadata.content),observability:{enabled:true}})},entry]);
  const a = await loadWorkerArtifactInput(path);
@@ -54,4 +63,298 @@ test('preserves observability in artifact identity and rejects unmapped settings
  const plain = await loadWorkerArtifactInput(bundle([metadata,entry]));
  expect(a.contentSha256).not.toBe(plain.contentSha256);
  await expect(loadWorkerArtifactInput(bundle([{...metadata,content:JSON.stringify({...JSON.parse(metadata.content),observability:{enabled:true,unknown:true}})},entry]))).rejects.toThrow('mapping');
+});
+
+test.each(['ASSETS', 'Assets', 'assets', 'constructor', 'prototype', 'toString', 'hasOwnProperty'])('accepts Wrangler package diagnostics and the declared static assets binding', async (bindingName) => {
+ const path = bundle([{...metadata, content:JSON.stringify({
+   ...JSON.parse(metadata.content),
+   bindings:[{name:bindingName,type:'assets'}],
+   package_dependencies:[{name:'wrangler',packageJsonVersion:'^4.135.0',installedVersion:'4.135.0'}],
+ })},entry]);
+ const assets = join(dirname(path), 'public');
+ mkdirSync(assets);
+ writeFileSync(join(assets, 'index.html'), '<h1>Jev Trader</h1>');
+ const a = await loadWorkerArtifactInput(path, undefined, {
+   directory: assets,
+   binding: bindingName,
+ });
+ validateNativeDeploymentMetadata(a,{compatibilityDate:'2026-09-10',compatibilityFlags:['nodejs_compat']},[]);
+ expect(JSON.stringify(a.upload)).not.toContain('package_dependencies');
+});
+
+test('rejects undeclared native assets bindings and malformed package diagnostics', async () => {
+ const assetMetadata = {...metadata, content:JSON.stringify({
+   ...JSON.parse(metadata.content),
+   bindings:[{name:'ASSETS',type:'assets'}],
+ })};
+ await expect(loadWorkerArtifactInput(bundle([assetMetadata,entry]))).rejects.toThrow('binding metadata');
+ await expect(loadWorkerArtifactInput(bundle([{...metadata, content:JSON.stringify({
+   ...JSON.parse(metadata.content),
+   package_dependencies:[{name:'wrangler',installedVersion:'4.135.0',unexpected:true}],
+ })},entry]))).rejects.toThrow('package dependency');
+});
+
+test('requires native Container classes to match the explicit xAPI deployment intent', async () => {
+ const container = {
+  name:'trader', className:'TraderContainer', image:'docker.io/example/trader:v1',
+  instanceType:'lite' as const, maxInstances:2, rolloutActiveGracePeriod:0,
+ };
+ const native = {...metadata, content:JSON.stringify({...JSON.parse(metadata.content),containers:[{class_name:'TraderContainer'}]})};
+ const artifact = await loadWorkerArtifactInput(bundle([native,entry]), undefined, undefined, [container]);
+ if (!('bundle' in artifact.upload)) throw Error('bundle');
+ expect(artifact.upload.bundle.containers).toEqual([container]);
+ const expectedStored = Buffer.from(JSON.stringify({
+  containers:[container], version:1, mainModule:'index.js', modules:[{
+   path:'index.js', contentBase64:Buffer.from(entry.content).toString('base64'),
+   contentType:'application/javascript+module',
+  }],
+ }));
+ expect(artifact.contentSha256).toBe(createHash('sha256').update(expectedStored).digest('hex'));
+ expect(artifact.sizeBytes).toBe(expectedStored.length);
+ await expect(loadWorkerArtifactInput(bundle([native,entry]), undefined, undefined, [])).rejects.toThrow('Container classes differ');
+});
+
+test.each(['API_CONTAINER', 'Chat', 'chat', 'constructor', 'prototype', 'toString', 'hasOwnProperty'])('maps local native Durable Object bindings by binding and class, not a foreign namespace', async (bindingName) => {
+ const binding = {name:bindingName, type:'durable_object_namespace', class_name:'ApiContainer'};
+ const native = {...metadata, content:JSON.stringify({...JSON.parse(metadata.content), bindings:[binding]})};
+ const artifact = await loadWorkerArtifactInput(bundle([native,entry]));
+ const settings = {compatibilityDate:'2026-09-10',compatibilityFlags:['nodejs_compat']};
+ validateNativeDeploymentMetadata(artifact,settings,[{type:'durable_object',bindingName,className:'ApiContainer'}]);
+ expect(() => validateNativeDeploymentMetadata(artifact,settings,[{type:'durable_object',bindingName,className:'WrongClass'}])).toThrow(bindingName);
+ expect(() => validateNativeDeploymentMetadata(artifact,settings,[])).toThrow(bindingName);
+ expect(() => validateNativeDeploymentMetadata(artifact,settings,[{type:'durable_object',bindingName:bindingName + '_OTHER',className:'ApiContainer'}])).toThrow(bindingName);
+ for (const foreign of [{script_name:'another-worker'}, {namespace_id:'another-namespace'}, {environment:'production'}]) {
+  await expect(loadWorkerArtifactInput(bundle([{...native,content:JSON.stringify({...JSON.parse(native.content), bindings:[{...binding,...foreign}]})},entry]))).rejects.toThrow('mapping');
+ }
+});
+
+
+test("carries native public string and JSON vars in immutable artifact identity", async () => {
+  const vars = {
+    PUBLIC_ORIGIN: "https://app.example",
+    FEATURES: { images: true },
+    RETRIES: 3,
+    enabled: false,
+  };
+  const make = (bindings: unknown[]) =>
+    bundle([
+      {
+        ...metadata,
+        content: JSON.stringify({
+          ...JSON.parse(metadata.content),
+          bindings,
+        }),
+      },
+      entry,
+    ]);
+  const bindings = Object.entries(vars).map(([name, value]) =>
+    typeof value === "string"
+      ? { name, type: "plain_text", text: value }
+      : { name, type: "json", json: value },
+  );
+  const artifact = await loadWorkerArtifactInput(make(bindings));
+  if (!("bundle" in artifact.upload)) throw Error("bundle");
+  expect(artifact.upload.bundle.vars).toEqual(vars);
+  const reordered = await loadWorkerArtifactInput(
+    make([...bindings].reverse()),
+  );
+  expect(artifact.contentSha256).toBe(reordered.contentSha256);
+  const changed = await loadWorkerArtifactInput(
+    make([...bindings, { name: "EXTRA", type: "plain_text", text: "new" }]),
+  );
+  expect(changed.contentSha256).not.toBe(artifact.contentSha256);
+  const settings = {
+    compatibilityDate: "2026-09-10",
+    compatibilityFlags: ["nodejs_compat"],
+  };
+  validateNativeDeploymentMetadata(artifact, settings, []);
+  expect(() =>
+    validateNativeDeploymentMetadata(artifact, settings, [
+      { type: "r2_bucket", bindingName: "PUBLIC_ORIGIN" },
+    ]),
+  ).toThrow("Duplicate");
+  await expect(
+    loadWorkerArtifactInput(make([...bindings, bindings[0]])),
+  ).rejects.toThrow("Duplicate");
+  await expect(
+    loadWorkerArtifactInput(
+      make([
+        { name: "XAPI_AI_BASE_URL", type: "plain_text", text: "override" },
+      ]),
+    ),
+  ).rejects.toThrow("reserved");
+});
+
+test("accepts more than 200 native modules without changing module names", async () => {
+  const chunks = Array.from({ length: 300 }, (_, index) => ({
+    name: `chunks/${index}.js`,
+    type: "application/javascript+module",
+    content: `export const value = ${index};`,
+  }));
+  const artifact = await loadWorkerArtifactInput(
+    bundle([metadata, entry, ...chunks]),
+  );
+  if (!("bundle" in artifact.upload)) throw Error("bundle");
+  expect(artifact.upload.bundle.modules).toHaveLength(301);
+  expect(
+    artifact.upload.bundle.modules.find((m) => m.path === "chunks/299.js")
+      ?.content,
+  ).toBe("export const value = 299;");
+});
+
+test("accepts a native 64 MiB module set, including multipart overhead, and rejects one extra byte", async () => {
+  const data = Buffer.alloc(
+    64 * 1024 * 1024 - Buffer.byteLength(entry.content),
+    7,
+  );
+  const artifact = await loadWorkerArtifactInput(
+    bundle([
+      metadata,
+      entry,
+      { name: "data.bin", type: "application/octet-stream", content: data },
+    ]),
+  );
+  if (!("bundle" in artifact.upload)) throw Error("bundle");
+  expect(
+    Buffer.from(
+      artifact.upload.bundle.modules.find((m) => m.path === "data.bin")!
+        .content,
+      "base64",
+    ),
+  ).toEqual(data);
+  await expect(
+    loadWorkerArtifactInput(
+      bundle([
+        metadata,
+        entry,
+        {
+          name: "data.bin",
+          type: "application/octet-stream",
+          content: Buffer.concat([data, Buffer.from([0])]),
+        },
+      ]),
+    ),
+  ).rejects.toThrow("capacity");
+}, 30000);
+
+test("preserves native cache/version config and maps required secrets and queue identities", async () => {
+  const { withNativeWorkerOptions } = await import("../workers-artifact.ts");
+  const options = {
+    cacheOptions: { enabled: true, cross_version_cache: false },
+    versionMetadata: { binding: "CF_VERSION_METADATA" },
+  };
+  const a = await loadWorkerArtifactInput(
+    bundle([
+      {
+        ...metadata,
+        content: JSON.stringify({
+          ...JSON.parse(metadata.content),
+          cache_options: options.cacheOptions,
+          bindings: [
+            { type: "version_metadata", name: "CF_VERSION_METADATA" },
+            { type: "inherit", name: "AUTH_SECRET" },
+            { type: "queue", name: "JOBS", queue_name: "foreign-queue" },
+          ],
+        }),
+      },
+      entry,
+    ]),
+  );
+  if (!("bundle" in a.upload)) throw Error("bundle");
+  expect(a.upload.bundle).toMatchObject(options);
+  expect(JSON.stringify(a.upload)).not.toContain("foreign-queue");
+  const settings = {
+    compatibilityDate: "2026-09-10",
+    compatibilityFlags: ["nodejs_compat"],
+  };
+  validateNativeDeploymentMetadata(
+    a,
+    settings,
+    [{ type: "queue", bindingName: "JOBS" }],
+    ["AUTH_SECRET"],
+  );
+  expect(() =>
+    validateNativeDeploymentMetadata(a, settings, [
+      { type: "queue", bindingName: "JOBS" },
+    ]),
+  ).toThrow("AUTH_SECRET");
+  expect(() =>
+    validateNativeDeploymentMetadata(
+      a,
+      settings,
+      [
+        { type: "queue", bindingName: "JOBS" },
+        { type: "d1_database", bindingName: "CF_VERSION_METADATA" },
+      ],
+      ["AUTH_SECRET"],
+    ),
+  ).toThrow("Duplicate");
+  expect(withNativeWorkerOptions(a, options)).toBe(a);
+  expect(() =>
+    withNativeWorkerOptions(a, {
+      ...options,
+      cacheOptions: { enabled: false },
+    }),
+  ).toThrow("rebuild");
+  expect(() => withNativeWorkerOptions(a, {})).toThrow("rebuild");
+  const plain = await loadWorkerArtifactInput(bundle([metadata, entry]));
+  expect(a.contentSha256).not.toBe(plain.contentSha256);
+});
+
+test("rejects malformed cache settings and unsupported metadata binding fields", async () => {
+  for (const cache_options of [
+    null,
+    { enabled: "true" },
+    { enabled: true, unknown: 1 },
+    { enabled: true, cross_version_cache: 1 },
+  ]) {
+    await expect(
+      loadWorkerArtifactInput(
+        bundle([
+          {
+            ...metadata,
+            content: JSON.stringify({
+              ...JSON.parse(metadata.content),
+              cache_options,
+            }),
+          },
+          entry,
+        ]),
+      ),
+    ).rejects.toThrow("cache");
+  }
+  await expect(
+    loadWorkerArtifactInput(
+      bundle([
+        {
+          ...metadata,
+          content: JSON.stringify({
+            ...JSON.parse(metadata.content),
+            bindings: [
+              {
+                type: "version_metadata",
+                name: "VERSION",
+                namespace: "foreign",
+              },
+            ],
+          }),
+        },
+        entry,
+      ]),
+    ),
+  ).rejects.toThrow("mapping");
+});
+
+test('maps native Workflow classes through owned resource declarations without retaining physical names', async () => {
+ const binding = {name:'PIPELINE',type:'workflow',workflow_name:'upstream-physical-flow',class_name:'Pipeline'};
+ const part = {...metadata,content:JSON.stringify({...JSON.parse(metadata.content),bindings:[binding]})};
+ const artifact = await loadWorkerArtifactInput(bundle([part,entry]));
+ const settings = {compatibilityDate:'2026-09-10',compatibilityFlags:['nodejs_compat']};
+ validateNativeDeploymentMetadata(artifact,settings,[{type:'workflow',bindingName:'PIPELINE',className:'Pipeline'}]);
+ expect(JSON.stringify(artifact.upload)).not.toContain('upstream-physical-flow');
+ for (const resource of [[],[{type:'workflow',bindingName:'PIPELINE'}],[{type:'workflow',bindingName:'PIPELINE',className:'Other'}]])
+   expect(()=>validateNativeDeploymentMetadata(artifact,settings,resource)).toThrow('PIPELINE');
+ for (const extra of [{script_name:'foreign-worker'},{class_name:''},{workflow_name:null}]) {
+   await expect(loadWorkerArtifactInput(bundle([{...part,content:JSON.stringify({...JSON.parse(metadata.content),bindings:[{...binding,...extra}]})},entry]))).rejects.toThrow('binding metadata');
+ }
 });

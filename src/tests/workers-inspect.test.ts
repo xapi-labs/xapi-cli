@@ -61,6 +61,19 @@ function client(
 }
 
 describe("workers inspect", () => {
+  test("shows the latest timed-out attempt separately from the active deployment", async () => {
+    const base = client();
+    const worker = await base.getWorker(clientOptions, "worker-1") as any;
+    worker.deployments.unshift({ id: "attempt-2", environmentId: "environment-preview", status: "FAILED",
+      outcome: { operationId: "op-2", execution: "TIMED_OUT", providerEffect: "PARTIAL_WRITES_CONFIRMED" } });
+    const report = await inspectWorker({ workerId: "worker-1", environment: "preview", clientOptions,
+      client: client({ getWorker: async () => worker }) });
+    expect(report.deployment?.id).toBe("deployment-1");
+    expect(report.latestDeployment?.id).toBe("attempt-2");
+    expect(report.diagnostics.some(item => item.check === "latest_deployment_outcome" && item.message.includes("does not imply rollback"))).toBe(true);
+    expect(formatWorkerInspection(report)).toContain("PARTIAL_WRITES_CONFIRMED");
+  });
+
   test("aggregates a read-only environment report without secret values", async () => {
     const report = await inspectWorker({
       workerId: "worker-1",

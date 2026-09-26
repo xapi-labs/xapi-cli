@@ -8,6 +8,7 @@ import type { WorkerPushResult } from "../workers-push.ts";
 const result: WorkerPushResult = {
   schemaVersion: 1,
   status: "ACTIVE",
+  nativeReceipts: [],
   initialPlan: {
     schemaVersion: 1,
     project: {

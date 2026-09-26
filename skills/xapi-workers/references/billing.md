@@ -15,6 +15,10 @@ xapi workers retention show <worker-id> --env preview --format json
 
 `billing-status` is platform configuration status, not an individual consumption bill. `workers usage` is a different diagnostic; it is not a replacement for complete ledger evidence. `billing prices` is the live xAPI price book: record its version and units, do not hard-code past acceptance prices.
 
+Container Applications add four provider-metered metrics: CPU seconds, memory byte-seconds, disk byte-seconds, and egress bytes. Worker request/CPU and Durable Object charges remain separate and can appear for the same business request. Match Container ledger rows by the saved Cloudflare application ID; never attribute account-wide Container totals by image name or class name. The five-minute collector is delayed postpaid observation and does not reserve or authorize each request.
+
+The deployment risk amount is not a bill, hold, or minimum rental. It is a conservative five-minute capacity ceiling used only when creating or enlarging Container applications. Actual customer charges continue to come from observed usage buckets and their price-book snapshot. A policy that permits unbounded egress is an operator-controlled acceptance for isolated accounts, not proof that egress is free or capped.
+
 `metering` is a bounded diagnostic and may return truncated facts. There is no `metering --all` command. Use supported billing usage ranges/filters and the complete ledger for reconciliation; if raw facts remain truncated, request platform-operator evidence through an available authorized interface and mark coverage incomplete. Do not invent a pagination endpoint.
 
 ## One consistent snapshot
@@ -42,6 +46,14 @@ Compare only the same host, Worker, environment, UTC day and filter scope. A res
 - Storage is capacity over time. A write event isn't a complete storage-day bill. Verify collector coverage, applicable date/price, day-finalization status and late-data adjustment/idempotency; merely waiting 24 hours proves nothing if collection or sealing is disabled.
 - Unknown R2 actions need explicit classification. Never default all unknown operations to free or Class A. A user-approved provisional xAPI waiver for one named operation does not establish Cloudflare's official price, and does not cover Queue deliveries triggered by notifications or other API actions.
 - Provider free allowances, subscriptions and shared infrastructure costs require separate provider evidence. A zero account invoice under a free allowance does not prove an operation is intrinsically free.
+
+## Delayed observations are not a confirmed collection defect
+
+A five-minute collection schedule is not a promise that Cloudflare will expose all usage within five minutes. An empty result, `lastSuccessfulAt`, and a cursor watermark prove different things: a successful query can return no observations, and a watermark alone does not prove that all usage before it is available. `lastObservedAt` describes the latest observed usage bucket; for an idle resource, its age alone is not proof of a stalled collector.
+
+If a known operation is absent, preserve its resource identity and time window, then take a later bounded snapshot. Compare the same resource, dataset, window, and latest revisions. If facts subsequently arrive, check that the ledger charges only the change in cumulative usage and keeps the original price snapshot. Do not count old and revised quantities as separate operations, force a new deployment, change prices, or restart resources just to make a bill appear. Stop polling at the stated observation deadline and report the missing evidence; do not claim free usage or a collection bug without matching query/response evidence.
+
+For a real discrepancy, give the operator the exact resource/window and sanitized cursor/error metadata. Distinguish a provider data delay, a query/identity mismatch, a mapping failure, and a settlement failure before proposing a fix. Never promise a universal provider reporting delay based on one test.
 
 ## Real cost experiment
 

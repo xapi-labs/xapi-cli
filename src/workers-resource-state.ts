@@ -26,6 +26,7 @@ export interface RemoteWorkerResourceState {
   rawType?: string;
   status: string;
   className?: string;
+  nativeWorkflowPrepared?: boolean;
   requestedLocation?: WorkerDesiredResource["location"];
   effectiveLocation?: WorkerDesiredResource["location"];
   readReplication?: WorkerDesiredResource["readReplication"];
@@ -66,7 +67,8 @@ export function remoteWorkerResourceState(
     type: rawType ? REMOTE_RESOURCE_TYPES[rawType] : undefined,
     rawType,
     status: text(value.status) || "UNKNOWN",
-    className: text(config.className ?? config.class_name ?? value.className),
+    className: text(record(config.nativeWorkflow)?.className ?? config.className ?? config.class_name ?? value.className),
+    nativeWorkflowPrepared: rawType?.toLowerCase() === "workflow" && record(config.nativeWorkflow)?.prepared === true,
     requestedLocation: location(
       config.requestedLocation ?? config.requested_location,
     ),
@@ -100,4 +102,9 @@ export function desiredResourceFromRemote(
       ? { readReplication: state.readReplication }
       : {}),
   } as WorkerDesiredResource;
+}
+
+export function resourceReadyForDeployment(state: RemoteWorkerResourceState): boolean {
+  return state.status === "ACTIVE" || (state.status === "PROVISIONING" &&
+    (state.type === "durable_object" || (state.type === "workflow" && Boolean(state.className) && state.nativeWorkflowPrepared === true)));
 }

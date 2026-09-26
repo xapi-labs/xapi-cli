@@ -10,6 +10,8 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 import {
+  workerManagedResourceSchema,
+  workerProjectConfigSchema,
   WORKER_PROJECT_SCHEMA_URL,
   findWorkerProjectConfig,
   loadWorkerProject,
@@ -68,6 +70,8 @@ describe("Worker project configuration", () => {
       "auto",
       "disabled",
     ]);
+    expect(schema.$defs.environment.properties.defaultResourceLocation.enum).toContain("apac");
+    expect(schema.$defs.environment.properties.placementMode.enum).toEqual(["off", "smart"]);
   });
 
   test("discovers the project config from a nested directory", () => {
@@ -132,6 +136,39 @@ describe("Worker project configuration", () => {
       htmlHandling: "auto-trailing-slash",
       runWorkerFirst: ["/api/*", "!/api/docs/*"],
     });
+  });
+
+  test("accepts native environment data location and Smart Placement", () => {
+    const root = fixture({
+      environments: {
+        preview: {
+          dailyBudgetUsd: 0.25,
+          defaultResourceLocation: "apac",
+          placementMode: "smart",
+        },
+        production: { dailyBudgetUsd: 2, placementMode: "off" },
+      },
+    });
+    expect(loadWorkerProject(root).config.environments.preview).toMatchObject({
+      defaultResourceLocation: "apac",
+      placementMode: "smart",
+    });
+  });
+
+  test('requires every Container class to be a Durable Object in both environments', () => {
+    const container = {
+      name: 'trader', className: 'TraderContainer', image: 'docker.io/example/trader:v1',
+    };
+    const valid = fixture({
+      containers: [container],
+      environments: {
+        preview: { dailyBudgetUsd: 0.25, resources: [{ type: 'durable_object', bindingName: 'TRADER', className: 'TraderContainer' }] },
+        production: { dailyBudgetUsd: 2, resources: [{ type: 'durable_object', bindingName: 'TRADER', className: 'TraderContainer' }] },
+      },
+    });
+    expect(loadWorkerProject(valid).config.containers?.[0].instanceType).toBe('lite');
+    const invalid = fixture({ containers: [container] });
+    expect(() => loadWorkerProject(invalid)).toThrow('must match exactly one durable_object class in preview');
   });
 
   test("accepts D1 and R2 placement and rejects it on unrelated resources", () => {
@@ -204,6 +241,48 @@ describe("Worker project configuration", () => {
     );
   });
 
+  test("accepts ordinary xapi-prefixed display names and project paths", () => {
+    const root = fixture({
+      worker: {
+        name: "xapi-resource-debug",
+        slug: "xapi-resource-debug",
+        template: "worker",
+      },
+      wrangler: "xapi-worker/wrangler.jsonc",
+      build: {
+        command: "node xapi-worker/build.mjs",
+        output: "xapi-worker/worker.mjs",
+      },
+      assets: { directory: "xapi-worker/public" },
+    });
+    expect(loadWorkerProject(root).config.build.output).toBe("xapi-worker/worker.mjs");
+    expect(loadWorkerProject(root).config.worker.name).toBe("xapi-resource-debug");
+  });
+
+  test("still rejects recognized credentials in public identifiers and paths", () => {
+    for (const credential of [
+      `sk-${"a".repeat(48)}`,
+      `cfat_${"a".repeat(32)}`,
+      `xapi_${"a".repeat(32)}`,
+    ]) {
+      for (const override of [
+        { worker: { name: credential, slug: "safe-worker", template: "worker" } },
+        { build: { command: "npm run build", output: `dist/${credential}.mjs` } },
+      ]) {
+        expect(() => loadWorkerProject(fixture(override))).toThrow(
+          "must not contain credentials or Secret values",
+        );
+      }
+    }
+    expect(() => loadWorkerProject(fixture({
+      worker: {
+        name: "Public name",
+        slug: `sk-${"a".repeat(40)}`,
+        template: "worker",
+      },
+    }))).toThrow("must not contain credentials or Secret values");
+  });
+
   test("allows declared secret names but never credential-shaped values", () => {
     const namesRoot = fixture({
       environments: {
@@ -273,4 +352,29 @@ describe("Worker project configuration", () => {
       );
     }
   });
+});
+
+// The published schema and runtime admission must describe the same resource names.
+test("resource and assets schemas preserve native case while keeping Secret names unchanged", () => {
+  const schema = JSON.parse(readFileSync(new URL("../../schemas/worker-project.v1.schema.json", import.meta.url), "utf8"));
+  const resourcePattern = new RegExp(schema.$defs.resource.properties.bindingName.pattern);
+  const assetsPattern = new RegExp(schema.properties.assets.properties.binding.pattern);
+  for (const name of ["Chat", "CHAT", "chat", "constructor", "prototype", "toString", "hasOwnProperty", "Room_2", "a".repeat(64)]) {
+    expect(workerManagedResourceSchema.parse({ type: "durable_object", bindingName: name, className: "Chat" }).bindingName).toBe(name);
+    expect(workerProjectConfigSchema.shape.assets.parse({ directory: "public", binding: name })?.binding).toBe(name);
+    expect(resourcePattern.test(name)).toBe(true);
+    expect(assetsPattern.test(name)).toBe(true);
+  }
+  for (const name of ["", "2Chat", "Chat-room", "Chat room", "../Chat", "Chat/room", "Chat\0", "éChat", "a".repeat(65), "__XAPI_INTERNAL", "$Chat"]) {
+    expect(workerManagedResourceSchema.safeParse({ type: "kv_namespace", bindingName: name }).success).toBe(false);
+    expect(workerProjectConfigSchema.shape.assets.safeParse({ directory: "public", binding: name }).success).toBe(false);
+    expect(resourcePattern.test(name)).toBe(false);
+    expect(assetsPattern.test(name)).toBe(false);
+  }
+  const env = workerProjectConfigSchema.shape.environments.shape.preview;
+  expect(env.safeParse({ dailyBudgetUsd: 0.25, secrets: ["ApiKey"] }).success).toBe(false);
+  expect(env.parse({ dailyBudgetUsd: 0.25, secrets: ["API_KEY"] }).secrets).toEqual(["API_KEY"]);
+  expect(env.safeParse({ dailyBudgetUsd: 0.25, resources: [
+    { type: "kv_namespace", bindingName: "Chat" }, { type: "kv_namespace", bindingName: "Chat" },
+  ] }).success).toBe(false);
 });

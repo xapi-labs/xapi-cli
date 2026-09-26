@@ -496,16 +496,19 @@ test scripts:
 ```bash
 cd existing-web-app
 xapi workers init
-npm install
-npm run xapi:build
+# Run the existing package-manager install command printed by init.
+# plan and push run the configured existing build.
 xapi workers plan --env preview
 xapi workers push --env preview
 ```
 
-The initializer adds `xapi:build`, `xapi:worker:build`, and
-`xapi:worker:dev`, plus a small `xapi-worker/index.ts`, `wrangler.jsonc`, and
-`xapi.worker.json`. `xapi:worker:dev` is only a package script around Wrangler;
-there is no separate xAPI local runtime. Use `--framework react|vite|vue|next`
+The initializer preserves package.json, dependencies, scripts and lockfiles.
+It adds a dependency-free `xapi-worker/index.mjs`, `wrangler.jsonc`, and
+`xapi.worker.json`. It does not add `xapi:build` or other package scripts;
+use the existing development command. There is no separate xAPI local runtime. For workspace packages, `init` walks
+to the repository root and honors its declared `packageManager` or lockfile;
+the printed install and build commands are therefore safe for Yarn and pnpm
+monorepos as well as npm and Bun projects. Use `--framework react|vite|vue|next`
 only when automatic package detection is ambiguous. `init` is a one-time
 adapter setup, not a synchronization command; after it creates
 `xapi.worker.json`, use resource commands and `plan` to manage state.
@@ -533,9 +536,27 @@ through xAPI as Cloudflare native static assets:
 `workers plan` shows whether the selected environment has a dedicated hostname.
 When `webAppReady` is false, production promotion asks you to review the base
 path, root-relative routes, and OAuth callbacks without blocking applications
-that deliberately support path-prefix hosting. The current JSON Artifact
-transport accepts 12 MiB of decoded Worker modules and static assets per
-deployment.
+that deliberately support path-prefix hosting. Project bundles use one
+authenticated multipart request: modules and static assets are not uploaded as
+independent deployments. Limits are 64 MiB aggregate module content (no arbitrary 200-module cutoff),
+100,000 assets / 25 MiB per asset, and 100 MiB total decoded project content.
+These are CLI validation limits; the platform and provider also validate uploads.
+
+Environment placement is declared beside the budget. Workers remain globally
+deployed; the data location is inherited only by newly created D1/R2 resources,
+and Smart Placement lets Cloudflare optimize execution near backends:
+
+```json
+{
+  "dailyBudgetUsd": 0.25,
+  "defaultResourceLocation": "apac",
+  "placementMode": "smart"
+}
+```
+
+Use `xapi workers environment <worker-id> preview --data-location apac
+--placement smart` for an already linked project. This changes the environment
+default and deployment metadata; it does not move existing D1/R2 data.
 
 Templates are versioned packages shipped with the CLI, not remote code fetched
 during `init`. `persistent-agent` includes buildable source plus KV, D1, R2,
@@ -553,6 +574,36 @@ xapi workers secrets set <worker-id> MODEL_KEY --env preview --from-env MODEL_KE
 The project workflow works without Git. `xapi.worker.json` may be committed,
 but Secret values must stay in environment variables or the encrypted Secret
 store. `push` never silently deletes extra stateful resources or Secrets.
+
+Public variables travel with the immutable Artifact. By default, deployment
+replaces public vars: omitted `plain_text` and `json` bindings are removed.
+Top-level Wrangler `keep_vars: true` retains omitted bindings of both types;
+`false` or absence uses replacement. `env.<name>.keep_vars` is ignored with an
+import warning and never overrides the root setting. Named environments have
+their own `vars`, without inheriting root vars. Native `keep_bindings` preserves
+the exact public types requested, so retaining only `json` does not retain
+`plain_text`. A native JSON-string binding stays `json`. Secrets are independent
+and always kept across code deployment, regardless of public-variable retention.
+
+`workers plan` shows public-variable `SET`, `RETAIN`, `REMOVE`, and `REPLACE`
+decisions using live target Cloudflare binding names/types, never values. These
+reads happen during management, not application requests. `SET` applies the
+Artifact value; it does not claim that the old value differs. Promotion derives
+variable intent from the selected immutable preview Artifact and compares it
+with production; local preview files and local production `vars` do not rewrite
+that Artifact.
+
+**Roll out the matching backend before upgrading the CLI.** It must support
+`keepBindings`/`varTypes` and these authenticated reads:
+
+- `GET /api/v1/workers/:id/environments/:environment/variables`
+- `GET /api/v1/workers/:id/artifacts/:artifactId/variable-configuration`
+
+Missing endpoints, failed reads, and malformed responses stop preflight; they
+must never be treated as an empty variable set. Local tests and dry-run bundles
+do not establish cloud verification. See the
+[deployment reference](skills/xapi-workers/references/deployment.md#public-variable-decisions)
+for retention and review details.
 
 For project-managed resources, `xapi.worker.json` is the Git-tracked desired
 state and xAPI is live state. `plan` always fetches live state; the CLI keeps no
@@ -592,12 +643,18 @@ no-op, while reusing a binding for another type is rejected. `--env both`
 declares the same binding independently for preview and production; it does not
 make both environments share one physical resource.
 
+Resource and static-assets binding names are case-sensitive: `Chat`, `CHAT`, and
+`chat` remain distinct. They must match `^[A-Za-z][A-Za-z0-9_]{0,63}$`; import,
+resource editing, and deployment preserve the spelling. This is a bounded native
+identifier subset, not full JavaScript identifier support. Secret names retain
+`^[A-Z][A-Z0-9_]{0,63}$` and their existing value-management behavior.
+
 `push` creates missing preview resources only after its full plan passes.
 `promote` performs the same production preflight and, after confirmation,
 creates missing production declarations before activating the exact tested
-preview Artifact. A budget mismatch, missing Secret, incompatible binding, or
-undeclared production resource blocks the command before any resource or
-deployment write. If creation requires an accepted freeze quote, pass its exact
+preview Artifact. A budget mismatch, missing required Secret or incompatible binding blocks activation.
+An undeclared production resource is retained and unbound by the next deployment.
+If creation requires an accepted freeze quote, pass its exact
 version with `--retention-price-version`.
 
 `resources update` requires the resource type because it replaces the complete
@@ -616,13 +673,14 @@ git diff -- xapi.worker.json
 xapi workers plan --env preview
 ```
 
-`pull` performs an additive, all-or-nothing merge. It preserves local-only
-declarations, writes no provider IDs, deletes nothing, and rejects unhealthy,
-unsupported, duplicate, or conflicting remote bindings. `--env both` reads and
-merges preview and production independently.
+`pull` imports compatible live declarations initially, then uses a metadata-only
+`.xapi/resource-sync-*` baseline for a three-way merge. Local edits and removed
+bindings are preserved; remote-only changes are adopted; conflicting edits abort
+without overwriting JSON. It changes no native resources and copies no Secret
+values. `--env both` uses independent environment baselines.
 
 Use `resources remove --env ... --binding ...` only when the live resource must
-remain. `plan` then marks it `MANUAL`, and `resources pull` can adopt it again.
+remain. `plan` explains that the next deployment removes its binding only.
 To delete data, back it up first and run:
 
 ```bash
@@ -632,18 +690,19 @@ xapi workers resources destroy --env preview --binding FILES --yes
 `destroy` accepts one environment at a time, removes the local declaration
 before requesting deletion, and reports deletion as requested until the live
 resource disappears. If the request fails, the live resource remains visible
-and `resources pull` restores the declaration. `resources list/create/delete
+and the user can inspect and explicitly retry deletion. `resources list/create/delete
 <worker-id> ...` remain low-level recovery primitives and do not update project
 files.
 
 Deployment identity includes the code Artifact, remote resource identities,
-Secret versions, environment bindings and compatibility settings. Changing only
+environment bindings and compatibility settings. Secret values are independent
+and do not trigger a code deployment. Changing only
 resources or compatibility settings therefore deploys again; repeating an
 unchanged push reuses the current activation. Older deployments without this
 configuration fingerprint require one deployment to establish the baseline.
 
 Removing a resource from `xapi.worker.json` does **not** destroy it: `plan`
-reports `MANUAL`, and the resource remains billable. `resources destroy` is the
+shows the unbinding consequence, and the resource remains billable. `resources destroy` is the
 project-aware destructive operation. Preserve a backup before using it and wait
 until `resources list` no longer returns the binding. A successful deployment
 alone is not proof of deletion or final billing settlement.
@@ -722,9 +781,27 @@ xapi-to workers budget <worker-id> production --daily-usd 3
 xapi-to workers delete <worker-id> --yes
 ```
 
-Set `XAPI_API_HOST=test.xapi.to` for the test control plane. Mutating requests
+Set `XAPI_API_HOST=api.test.xapi.to` for the test control plane. Mutating requests
 are not retried automatically; when a deployment result is uncertain, inspect
 the Worker and retry with the same idempotency key.
+
+For a custom hostname, `workers domains attach --xdomain-domain-id` automates
+ownership TXT through xdomain. Without an xdomain record, use the public manual
+DNS flow (the authoritative zone must still belong to the platform CF account):
+
+```sh
+xapi-to workers domains challenge <worker-id> --env preview \
+  --hostname chat.example.com --format json > challenge.json
+# Publish the exact TXT dns.name / dns.value from challenge.json, then:
+xapi-to workers domains attach <worker-id> --env preview --challenge-file challenge.json
+xapi-to workers domains list <worker-id>
+```
+
+Remove that temporary TXT after attachment is accepted. `PROVISIONING` is not
+yet `ACTIVE`; verify TLS/routing and then the application's business route.
+See the bundled [domain guide](skills/xapi-workers/references/domains.md) for
+DNS propagation, expiry and explicit retry instructions. No custom domain is
+required to use a platform-provided public address.
 
 ### OAuth
 

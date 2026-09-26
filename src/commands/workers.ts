@@ -44,6 +44,8 @@ import {
   workerBillingOutputMode,
 } from "../workers-billing-output.ts";
 import { bindXdomainWorker } from "../workers-domain-bind.ts";
+import { readWorkerDomainChallenge } from "../workers-domain-challenge.ts";
+import { formatWorkerRetentionGuidance, type WorkerRetentionGuidanceOptions } from "../workers-operation-guidance.ts";
 import { inspectWorker } from "../workers-inspect.ts";
 import {
   formatWorkerInspection,
@@ -85,12 +87,15 @@ ADVANCED ARTIFACT PRIMITIVES (custom CI and recovery only)
 
 RESOURCES, BILLING, AND LIFECYCLE
   budget <worker-id> <environment> --daily-usd USD
+  environment <worker-id> <environment> [--daily-usd USD] [--data-location apac] [--placement smart]
   billing-status
   billing ledger <worker-id> --env ENV [--all] [--snapshot-time ISO] [--json]
   retention show|quote|accept|pause|resume|keep-paused|delete <worker-id> --env ENV
   billing prices|overview|usage|ledger|forecast|risk|lifecycle <worker-id> --env preview|production
   domains list <worker-id>
+  domains challenge <worker-id> --env ENV --hostname HOSTNAME --format json
   domains attach <worker-id> --env ENV --xdomain-domain-id ID [--subdomain @]
+  domains attach <worker-id> --env ENV --challenge-file challenge.json
   domains detach <worker-id> <domain-id> --yes
   domains retry <worker-id> <domain-id>
   schedules list <worker-id>
@@ -134,10 +139,13 @@ CREATE FLAGS
   --description TEXT
   --preview-budget 0.10..100    Explicit preview daily budget
   --production-budget 0.10..100 Explicit production daily budget
+  --data-location REGION        Default for new D1/R2: wnam|enam|weur|eeur|apac|oc
+  --placement MODE              Worker execution placement: off|smart
 
 INIT FLAGS
   --template TEMPLATE                   worker|agent|chat|webhook|persistent-agent
   --from-wrangler PATH                  Import an existing wrangler.jsonc or wrangler.toml
+                                       Cannot combine with target directory, --template, --name, --slug, or --framework
   --accept-partial                      Write only after explicitly accepting unsupported fields
   --build-command COMMAND               Override the imported project build command
   --build-output PATH                   Override the deployable bundle/module path
@@ -146,6 +154,8 @@ INIT FLAGS
   --slug SLUG                           Stable lowercase Worker slug
   --preview-budget 0.10..100            Default: 0.25
   --production-budget 0.10..100         Default: 2
+  --data-location REGION                Default for newly created D1/R2 resources
+  --placement off|smart                 Cloudflare Worker placement metadata
   --force                               Overwrite template-managed files only
   --framework auto|react|vite|vue|next  Override existing package detection
 
@@ -158,7 +168,7 @@ PUSH FLAGS
   --env preview                         Required; production uses workers promote
   --config PATH                         Explicit xapi.worker.json path
   --non-interactive                     CI mode; never bypasses BLOCKED checks
-  --retention-price-version VERSION     Explicit accepted freeze quote; does not auto-accept policy
+  --retention-price-version VERSION     Current freeze quote; no separate policy acceptance required
 
 PROMOTE FLAGS
   --to production                       Required explicit production target
@@ -212,11 +222,17 @@ RESOURCE FLAGS
   --env preview|production|both Project resource environment
   --config PATH                 Explicit xapi.worker.json path
   --type kv|d1|r2|do|queue|workflow
-  --class-name NAME             Exported class for a Durable Object
+  --class-name NAME             Exported class for a Durable Object or native Workflow
   --location REGION             D1/R2 placement: wnam|enam|weur|eeur|apac|oc
   --read-replication MODE       D1 replicas: auto|disabled
   --binding NAME                Uppercase env binding, for example STATE or FILES
   --yes                         Required for physical resource destruction
+
+CONTAINERS
+  Declare prebuilt Container images in Wrangler and xapi.worker.json. Each
+  Container class must have a Durable Object resource in preview and production.
+  Container Applications are reconciled by plan/push; do not create them with
+  workers resources create.
 
 ADVANCED REMOTE RESOURCE COMMANDS
   These recovery/debug commands mutate live state without updating xapi.worker.json.
@@ -279,9 +295,10 @@ STARTING POINTS
     Run vinext check/init first, then import its generated Wrangler config.
 
 WRITES
-  Existing frontends gain xapi.worker.json, wrangler.jsonc,
-  xapi-worker/index.ts, and xapi:* package scripts. Re-running init is not a
-  resource synchronization operation.
+  Existing static frontends gain xapi.worker.json, wrangler.jsonc,
+  xapi-worker/index.mjs, and local ignore entries. Existing package.json,
+  dependencies, scripts, and lockfiles are preserved.
+  Re-running init is not a resource synchronization operation.
 
 FLAGS
   --template worker|agent|chat|webhook|persistent-agent
@@ -295,6 +312,8 @@ FLAGS
   --slug SLUG
   --preview-budget USD
   --production-budget USD
+  --data-location wnam|enam|weur|eeur|apac|oc
+  --placement off|smart
   --force
 `;
 
@@ -393,6 +412,21 @@ function budget(value: string | undefined, flag: string): number {
     err(`${flag} must be between 0.10 and 100`);
   }
   return amount;
+}
+
+type WorkerDataLocation = "wnam" | "enam" | "weur" | "eeur" | "apac" | "oc";
+
+function dataLocation(value: string | undefined): WorkerDataLocation | undefined {
+  if (!value) return undefined;
+  if (!["wnam", "enam", "weur", "eeur", "apac", "oc"].includes(value))
+    err("--data-location must be wnam, enam, weur, eeur, apac, or oc");
+  return value as WorkerDataLocation;
+}
+
+function placementMode(value: string | undefined): "off" | "smart" | undefined {
+  if (!value) return undefined;
+  if (!["off", "smart"].includes(value)) err("--placement must be off or smart");
+  return value as "off" | "smart";
 }
 
 function durationMs(value: string | undefined, fallback: number): number {
@@ -572,6 +606,8 @@ export async function workersCommand(
         "production-budget",
         "force",
         "framework",
+        "data-location",
+        "placement",
       ]);
       if (rest.length > 1) {
         err("usage: xapi-to workers init [directory] [flags]");
@@ -611,6 +647,8 @@ export async function workersCommand(
             productionDailyBudgetUsd: flags["production-budget"]
               ? budget(flags["production-budget"], "--production-budget")
               : 2,
+            defaultResourceLocation: dataLocation(flags["data-location"]),
+            placementMode: placementMode(flags.placement),
           });
         } catch (error) {
           err(
@@ -653,6 +691,8 @@ export async function workersCommand(
             productionDailyBudgetUsd: flags["production-budget"]
               ? budget(flags["production-budget"], "--production-budget")
               : 2,
+            defaultResourceLocation: dataLocation(flags["data-location"]),
+            placementMode: placementMode(flags.placement),
             force: flags.force === "true",
             framework: flags.framework === "true" ? undefined : flags.framework,
           }),
@@ -691,15 +731,16 @@ export async function workersCommand(
       return;
     }
     case "retention": {
-      assertFlags(flags, ["env", "type", "price-version", "yes"]);
+      assertFlags(flags, ["env", "type", "price-version", "yes", "json"]);
       const [action, id, ...extra] = rest;
       if (!id || extra.length || !["show", "quote", "accept", "pause", "resume", "keep-paused", "delete"].includes(action)) err("usage: workers retention show|quote|accept|pause|resume|keep-paused|delete <worker-id> --env ENV");
       const env = environment(flags.env);
+      const retentionOutputMode = workerBillingOutputMode(flags);
       if (["accept", "delete"].includes(action) && flags.yes !== "true") err("--yes is required to accept automatic reserve-exhaustion deletion or delete this environment");
       const result = await client.workerRetention(options(), id, env,
         action === "quote" ? `/quote/${encodeURIComponent(flags.type || "WORKER")}` : action === "accept" ? "/accept" : action === "show" ? "" : "/actions",
         action === "accept" ? { policyVersion: "retention-v3", automaticDeletionAccepted: true, priceVersion: required(flags["price-version"], "--price-version") } : ["show", "quote"].includes(action) ? undefined : { action });
-      if (flags.format === "json") output(result);
+      if (retentionOutputMode === "json") output(result, "json");
       else {
         const state = result.lifecycle || result;
         console.log(`Worker ${id} · ${env}\nState: ${state.state || (result.enabled === false ? "retention disabled" : "quote / policy")}`);
@@ -716,6 +757,10 @@ export async function workersCommand(
         if (state.pauseReason) console.log(`Pause reason: ${state.pauseReason}`);
         if (result.fundingSource) console.log(`Funding: ${result.fundingSource}`);
         if (state.graceDeadlineAt) console.log(`Deletion deadline: ${state.graceDeadlineAt}`);
+        console.log(formatWorkerRetentionGuidance({
+          action: action as WorkerRetentionGuidanceOptions["action"],
+          workerId: id, environment: env, response: result,
+        }));
         console.log("Frozen funds remain yours; freezing is not a consumption charge. Use --format json for full evidence.");
       }
       return;
@@ -938,6 +983,8 @@ export async function workersCommand(
         "template",
         "preview-budget",
         "production-budget",
+        "data-location",
+        "placement",
       ]);
       if (rest.length) err("usage: xapi-to workers create [flags]");
       const template = flags.template || "worker";
@@ -957,6 +1004,8 @@ export async function workersCommand(
             flags["production-budget"],
             "--production-budget",
           ),
+          defaultResourceLocation: dataLocation(flags["data-location"]),
+          placementMode: placementMode(flags.placement),
         }),
       );
       return;
@@ -1084,6 +1133,22 @@ export async function workersCommand(
           budget(flags["daily-usd"], "--daily-usd"),
         ),
       );
+      return;
+    }
+    case "environment": {
+      assertFlags(flags, ["daily-usd", "data-location", "placement"]);
+      if (rest.length !== 2)
+        err("usage: xapi-to workers environment <worker-id> <preview|production> [--daily-usd USD] [--data-location REGION] [--placement off|smart]");
+      if (!["preview", "production"].includes(rest[1])) err("environment must be preview or production");
+      const location = dataLocation(flags["data-location"]);
+      const placement = placementMode(flags.placement);
+      if (!flags["daily-usd"] && !location && !placement)
+        err("provide --daily-usd, --data-location, or --placement");
+      output(await client.updateWorkerEnvironment(options(), rest[0], rest[1], {
+        ...(flags["daily-usd"] ? { dailyBudgetUsd: budget(flags["daily-usd"], "--daily-usd") } : {}),
+        ...(location ? { defaultResourceLocation: location } : {}),
+        ...(placement ? { placementMode: placement } : {}),
+      }));
       return;
     }
     case "audit":
@@ -1273,6 +1338,16 @@ export async function workersCommand(
     }
     case "domains": {
       const [action, ...domainArgs] = rest;
+      if (action === "challenge") {
+        assertFlags(flags, ["env", "hostname"]);
+        output(await client.createWorkerDomainChallenge(
+          options(),
+          oneId(domainArgs, "usage: xapi-to workers domains challenge <worker-id> --env ENV --hostname HOSTNAME"),
+          environment(flags.env),
+          required(flags.hostname, "--hostname"),
+        ));
+        return;
+      }
       if (action === "list") {
         assertFlags(flags);
         output(
@@ -1287,11 +1362,19 @@ export async function workersCommand(
         return;
       }
       if (action === "attach") {
-        assertFlags(flags, ["env", "xdomain-domain-id", "subdomain", "timeout"]);
+        assertFlags(flags, ["env", "xdomain-domain-id", "subdomain", "timeout", "challenge-file"]);
         const workerId = oneId(
           domainArgs,
-          "usage: xapi-to workers domains attach <worker-id> --env ENV --xdomain-domain-id ID [--subdomain @]",
+          "usage: xapi-to workers domains attach <worker-id> --env ENV (--xdomain-domain-id ID [--subdomain @] | --challenge-file PATH)",
         );
+        if (flags["challenge-file"]) {
+          if (flags["xdomain-domain-id"] || flags.subdomain || flags.timeout) {
+            err("--challenge-file cannot be combined with --xdomain-domain-id, --subdomain or --timeout; manual attachment sends one request");
+          }
+          const challenge = await readWorkerDomainChallenge(flags["challenge-file"], environment(flags.env));
+          output(await client.attachWorkerDomain(options(), workerId, challenge.challengeToken));
+          return;
+        }
         const cfg = getConfig();
         requireApiKey(cfg);
         output(
@@ -1341,7 +1424,7 @@ export async function workersCommand(
         );
         return;
       }
-      err("usage: xapi-to workers domains <list|attach|detach|retry> ...");
+      err("usage: xapi-to workers domains <list|challenge|attach|detach|retry> ...");
     }
     case "schedules": {
       const [action, ...scheduleArgs] = rest;
@@ -1622,7 +1705,7 @@ export async function workersCommand(
         const className =
           type === "do"
             ? required(flags["class-name"], "--class-name")
-            : undefined;
+            : type === "workflow" ? flags["class-name"] : undefined;
         const location = flags.location;
         if (
           location &&

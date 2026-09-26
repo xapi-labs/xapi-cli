@@ -1,3 +1,4 @@
+import { remoteWorkerResourceState } from "./workers-resource-state.ts";
 import { createHash } from "node:crypto";
 
 type Row = Record<string, unknown>;
@@ -18,19 +19,19 @@ const sorted = (rows: Row[]) => rows.sort((a, b) => String(a.bindingName).locale
 // Provider observations must not cause deployments. No secret plaintext is read.
 export function deploymentPrefix(workerId: string, environment: string, artifactId: string,
   compatibility: { compatibilityDate?: string; compatibilityFlags?: string[] },
-  environmentState: Row, resources: Row[], secrets: Row[]): string {
-  return `v2-${hash({ workerId, environment: environment.toLowerCase(), artifactId,
+  environmentState: Row, resources: Row[], _secrets: Row[]): string {
+  return `v3-${hash({ workerId, environment: environment.toLowerCase(), artifactId,
     compatibilityDate: compatibility.compatibilityDate,
     compatibilityFlags: [...(compatibility.compatibilityFlags || [])].sort(),
+    placementMode: environmentState.placementMode || "off",
     bindings: environmentState.bindings || [],
     resources: sorted(resources.map(r => {
       const config = (r.config || {}) as Row;
       return { id: r.id, bindingName: r.bindingName, type: r.type,
         providerResourceId: r.providerResourceId, providerResourceName: r.providerResourceName,
-        className: config.className, state: config.state,
+        className: remoteWorkerResourceState(r).className, state: config.state,
         status: r.status === "PROVISIONING" ? "ACTIVE" : r.status };
     })),
-    secrets: sorted(secrets.map(s => ({ bindingName: s.bindingName, version: s.version }))),
   })}-`;
 }
 
@@ -45,4 +46,21 @@ export function currentMatchingDeployment(deployments: Row[], environmentState: 
 // create a fresh deployment, not replay an inactive historical one.
 export function deploymentKey(prefix: string, environmentState: Row): string {
   return prefix + hash(environmentState.activeDeploymentId || "initial").slice(0, 32);
+}
+
+// A user retry may advance only past a terminal receipt proving no provider
+// writes. Error codes or FAILED alone do not establish that boundary.
+export function safeDeploymentRetryKey(baseKey: string, deployment: Row): string | undefined {
+  const outcome = deployment.outcome as Row | undefined;
+  const provider = deployment.providerResult as Row | undefined;
+  if (deployment.status !== "FAILED" || typeof deployment.id !== "string" || !deployment.id || deployment.deployedAt ||
+      !outcome || !["FAILED", "CANCELLED", "TIMED_OUT"].includes(String(outcome.execution)) ||
+      !["NOT_DISPATCHED", "NO_WRITES"].includes(String(outcome.providerEffect)) ||
+      typeof outcome.operationId !== "string" || !outcome.operationId ||
+      outcome.operationId !== provider?.controlOperationId || outcome.supersededBy || outcome.observation ||
+      !Array.isArray(outcome.steps) || !outcome.steps.every(step => step &&
+        ["PLANNED", "SKIPPED"].includes(step.state) && !step.evidence)) return undefined;
+  // Keep the original deployment prefix/activation scope and stay below the
+  // API's 128-character limit. Mutable receipt timestamps are not key inputs.
+  return `${baseKey}-r${hash([deployment.id, outcome.operationId]).slice(0, 24)}`;
 }
