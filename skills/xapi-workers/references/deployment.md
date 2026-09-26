@@ -230,7 +230,25 @@ make a probe pass. Also inspect returned state: `domains retry` can return a
 domain record with `status: ERROR`; command completion does not certify DNS,
 TLS, root-relative assets or OAuth callback readiness.
 
-After deployment reaches ACTIVE, run health plus business persistence and asynchronous completion checks in resources.md. Review data/schema compatibility before promoting the same preview artifact:
+After deployment reaches ACTIVE, run health plus business persistence and asynchronous completion checks in resources.md.
+
+`ACTIVE` does not mean public access authorization is ready. For exactly
+HTTP 503 with JSON `error.code: workers_postpaid_state_unavailable`, the CLI
+continues read-only GET health checks within a 75-second total health window
+(at most 75 attempts, with each request limited to 10 seconds and the remaining
+window). It still requires a successful HTTP response; expiration remains a
+nonzero failure with the deployment ACTIVE and runtime readiness unconfirmed.
+This response does not identify a Cloudflare/KV cache root cause: initial
+postpaid enrollment or publication may be pending, and existing deployments
+can also encounter authorization-state unavailability or a publisher outage. Do not republish,
+re-promote, rotate Secrets, or change configuration to retry health. Preserve
+the released deployment ID, health URL, HTTP status and exact error code;
+recheck that URL with a bounded read-only GET and use `workers inspect` for the
+same environment. Keep management credentials off the public URL. Other errors,
+including 403 authorization denials, invalid configuration and application 503s,
+keep the ordinary 10-attempt limit and must be diagnosed separately.
+
+Review data/schema compatibility before promoting the same preview artifact:
 
 ```sh
 xapi workers promote --to production

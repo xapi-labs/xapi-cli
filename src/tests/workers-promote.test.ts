@@ -197,6 +197,39 @@ function fakePlatform(
 }
 
 describe("workers promote", () => {
+  for (const recovers of [true, false]) {
+    test(`initial access authorization ${recovers ? "recovers" : "times out"} without another deployment`, async () => {
+      const platform = fakePlatform();
+      const options = {
+        cwd: fixture(), to: "production" as const, nonInteractive: true,
+        clientOptions: { apiHost: "localhost:3003", apiKey: "test" }, client: platform.client,
+        sleep: async () => undefined,
+        fetchPublic: (async (_input, _init) => {
+          platform.calls.health++;
+          return recovers && platform.calls.health === 66 ? Response.json({ ok: true })
+            : Response.json({ error: { code: "workers_postpaid_state_unavailable" } }, { status: 503 });
+        }) as typeof fetch,
+      };
+      if (recovers) {
+        const result = await promoteWorkerProject(options);
+        expect(result.health.attempts).toBe(66);
+        expect(result.health.status).toBe(200);
+      } else {
+        let failure: unknown;
+        try { await promoteWorkerProject(options); } catch (error) { failure = error; }
+        expect(failure).toBeInstanceOf(WorkerPushError);
+        expect((failure as WorkerPushError).recovery).toMatchObject({
+          releasedDeploymentId: "production-deployment", deploymentStatus: "ACTIVE",
+          healthReady: false, lastErrorCode: "workers_postpaid_state_unavailable", attempts: 75,
+        });
+        expect((failure as WorkerPushError).recovery.recovery).toContain("read-only GET");
+      }
+      expect(platform.calls.deploy).toBe(1);
+      expect(platform.productionDeployments).toHaveLength(1);
+      expect(platform.productionDeployments[0].status).toBe("ACTIVE");
+    });
+  }
+
   test("uses selected immutable Artifact vars against production state, independent of local preview vars", async () => {
     const root = fixture();
     writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify({ name: "promote-agent", vars: { LOCAL_ONLY: "private-marker" }, keep_vars: false }));

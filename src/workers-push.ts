@@ -44,6 +44,10 @@ const WORKER_ID =
 const DEPLOYMENT_TIMEOUT_MS = 3 * 60_000;
 const HEALTH_ATTEMPTS = 10;
 const HEALTH_INTERVAL_MS = 1_000;
+const HEALTH_TIMEOUT_MS = 75_000;
+const HEALTH_AUTHORIZATION_ATTEMPTS = 75;
+const HEALTH_ERROR_BODY_BYTES = 8_192;
+const POSTPAID_STATE_UNAVAILABLE = "workers_postpaid_state_unavailable";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -768,12 +772,44 @@ export async function ensureActiveDeployment(
   };
 }
 
+// Only this structured platform error earns a longer readiness wait. Never
+// buffer an arbitrary application response or include its body in diagnostics.
+async function postpaidStateUnavailable(response: Response, signal: AbortSignal): Promise<boolean> {
+  if (response.status !== 503 || !response.body) return false;
+  const reader = response.body.getReader();
+  const cancel = () => { void reader.cancel().catch(() => undefined); };
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    const body = new Uint8Array(HEALTH_ERROR_BODY_BYTES);
+    let size = 0;
+    while (!signal.aborted) {
+      const { done, value } = await reader.read();
+      if (done) {
+        if (signal.aborted) return false;
+        const parsed = JSON.parse(new TextDecoder().decode(body.subarray(0, size)));
+        return parsed?.error?.code === POSTPAID_STATE_UNAVAILABLE;
+      }
+      if (size + value.byteLength > body.byteLength) return false;
+      body.set(value, size);
+      size += value.byteLength;
+    }
+  } catch {
+    // Invalid, truncated or unavailable bodies are ordinary health failures.
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    cancel();
+    reader.releaseLock();
+  }
+  return false;
+}
+
 export async function checkWorkerHealth(
   worker: UnknownRecord,
   environmentName: "preview" | "production",
   path: string,
   fetchPublic: typeof fetch,
   sleep: (milliseconds: number) => Promise<void>,
+  now: () => number = () => performance.now(),
 ): Promise<{ url: string; status: number; attempts: number }> {
   const environment = environmentOf(worker, environmentName);
   const publicUrl = text(environment.publicUrl);
@@ -793,38 +829,67 @@ export async function checkWorkerHealth(
     throw new WorkerPushError("Worker health URL must use HTTPS");
   }
   let lastStatus = 0;
-  for (let attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt += 1) {
+  let lastErrorCode: string | undefined;
+  let attempts = 0;
+  const started = now();
+  const remaining = () => HEALTH_TIMEOUT_MS - (now() - started);
+  // Both an elapsed-time ceiling and an attempt ceiling: slow requests cannot
+  // stretch the window, and injected/no-op sleeps cannot make polling infinite.
+  while (attempts < HEALTH_AUTHORIZATION_ATTEMPTS && remaining() > 0) {
+    attempts += 1;
+    lastStatus = 0;
+    lastErrorCode = undefined;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
+    const timer = setTimeout(() => controller.abort(), Math.min(10_000, remaining()));
+    let response: Response | undefined;
     try {
-      const response = await fetchPublic(target, {
+      response = await fetchPublic(target, {
         method: "GET",
         headers: { Accept: "application/json" },
         redirect: "manual",
         signal: controller.signal,
       });
       lastStatus = response.status;
-      if (response.ok) {
+      if (response.ok && !controller.signal.aborted && remaining() > 0) {
         return {
           url: target.toString(),
           status: response.status,
-          attempts: attempt,
+          attempts,
         };
       }
+      if (await postpaidStateUnavailable(response, controller.signal)) {
+        lastErrorCode = POSTPAID_STATE_UNAVAILABLE;
+      }
     } catch {
-      lastStatus = 0;
+      // Preserve an HTTP status if headers arrived before the body failed.
     } finally {
       clearTimeout(timer);
+      controller.abort();
+      // Do not wait for cancellation of a streaming/never-ending body.
+      if (response?.body && !response.body.locked) {
+        void response.body.cancel().catch(() => undefined);
+      }
     }
-    if (attempt < HEALTH_ATTEMPTS) await sleep(HEALTH_INTERVAL_MS);
+    if (attempts >= HEALTH_ATTEMPTS && lastErrorCode !== POSTPAID_STATE_UNAVAILABLE) break;
+    if (attempts >= HEALTH_AUTHORIZATION_ATTEMPTS || remaining() <= 0) break;
+    await sleep(Math.min(HEALTH_INTERVAL_MS, remaining()));
   }
   throw new WorkerPushError(
-    "Deployment is ACTIVE but its health check failed",
+    lastErrorCode === POSTPAID_STATE_UNAVAILABLE
+      ? "Deployment is ACTIVE but public access authorization is not yet ready; runtime readiness is unconfirmed"
+      : "Deployment is ACTIVE but its health check failed",
     {
       publicUrl,
       healthUrl: target.toString(),
       lastStatus,
-      recovery: `xapi workers logs ${text(worker.id) || "<worker-id>"} --env ${environmentName}`,
+      ...(lastErrorCode ? { lastErrorCode } : {}),
+      attempts,
+      elapsedMs: Math.max(0, Math.round(now() - started)),
+      deploymentStatus: "ACTIVE",
+      healthReady: false,
+      recovery: lastErrorCode === POSTPAID_STATE_UNAVAILABLE
+        ? `Recheck healthUrl with a read-only GET and inspect with xapi workers inspect ${text(worker.id) || "<worker-id>"} --env ${environmentName}; do not republish to retry health`
+        : `xapi workers logs ${text(worker.id) || "<worker-id>"} --env ${environmentName}`,
     },
   );
 }
