@@ -53,6 +53,7 @@ import {
 } from "../workers-inspect-output.ts";
 import { loadWorkerProject } from "../workers-project.ts";
 import { WorkerProjectBuildError } from "../workers-project-build.ts";
+import { planD1Migrations, publicD1MigrationPlan, applyD1Migrations, D1MigrationError } from "../workers-d1-migrations.ts";
 
 export const WORKERS_HELP = `xapi-to workers - Deploy and manage xAPI-hosted Cloudflare Workers
 
@@ -68,6 +69,10 @@ NORMAL PROJECT WORKFLOW (recommended)
   rollback --env preview|production (--to previous | --deployment DEPLOYMENT_ID)
 
 INSPECTION AND OPERATIONS
+  d1 migrations plan --binding NAME --env preview|production [--config PATH]
+  d1 migrations apply --binding NAME --env preview|production [--config PATH]
+    plan lists local SQL only; apply explicitly changes the selected remote D1.
+    push/promote do not execute SQL. Code rollback does not undo database changes.
   list
   get <worker-id>
   inspect [worker-id] --env preview|production
@@ -586,6 +591,30 @@ export async function workersCommand(
   }
   const [command, ...rest] = args;
   switch (command) {
+    case "d1": {
+      assertFlags(flags, ["env", "binding", "config"]);
+      const [group, action, ...extra] = rest;
+      if (group !== "migrations" || !["plan", "apply"].includes(action) || extra.length)
+        err("usage: workers d1 migrations plan|apply --binding NAME --env preview|production [--config PATH]");
+      if (flags.config === "true" || flags.config === "") err("--config requires a path");
+      const env = environment(flags.env) as "preview" | "production";
+      const binding = required(flags.binding, "--binding");
+      try {
+        const project = loadWorkerProject(process.cwd(), flags.config);
+        const plan = planD1Migrations(project, env, binding);
+        if (action === "plan") {
+          output(publicD1MigrationPlan(plan), flags.format as OutputFormat | undefined);
+          return;
+        }
+        const workerId = project.config.workerId;
+        if (!workerId) err("Project has no workerId; create/link the Worker and D1 resource before applying migrations");
+        output(await applyD1Migrations(client, options(), workerId, plan), flags.format as OutputFormat | undefined);
+      } catch (error) {
+        if (error instanceof D1MigrationError) err(error.message, error.details);
+        err(error instanceof Error ? error.message : "D1 migration command failed");
+      }
+      return;
+    }
     case "templates": {
       assertFlags(flags);
       if (rest.length) err("usage: xapi-to workers templates");

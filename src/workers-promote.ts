@@ -153,7 +153,7 @@ function productionChecks(
 ): { checks: WorkerPromotionCheck[]; dataRisk: string[] } {
   const checks: WorkerPromotionCheck[] = [];
   const dataRisk: string[] = [
-    "Promotion deploys the selected Worker Artifact and the displayed local Wrangler migration/event plan; it does not snapshot, copy, or roll back production data",
+    "Promotion deploys the selected Worker Artifact and the displayed local Wrangler event plan; it does not snapshot, copy, or roll back production data",
   ];
   const currentBudget = amount(remoteEnvironment.dailyBudgetUsd);
   if (hasStaticAssets) {
@@ -429,7 +429,7 @@ export async function createWorkerPromotionPlan(
     Boolean(project.config.assets),
   );
   const nativePlan = nativeDeploymentPlan(project, "production");
-  checked.dataRisk.push("Remote D1 migrations run before code; Queue/Cron configuration runs after code. Completed database changes are not rolled back on code/configuration failure.");
+  checked.dataRisk.push("D1 SQL is not executed by promotion. Apply database migrations explicitly when needed; Queue/Cron configuration runs after code. Code rollback does not roll back SQL.");
   const plan: WorkerPromotionPlan = {
     schemaVersion: 1,
     variables: planWorkerVariables(declaration, currentVariables, [
@@ -517,7 +517,6 @@ export async function promoteWorkerProject(
       project.config.environments.production.resources,
       options.retentionPriceVersion,
     );
-    nativeReceipts.push(...await applyNativeDeploymentPhase(api, options.clientOptions, prepared.plan.workerId, "production", prepared.nativePlan, "BEFORE_CODE"));
     const deployed = await ensureActiveDeployment(
       api,
       options.clientOptions,

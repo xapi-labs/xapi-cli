@@ -1,19 +1,8 @@
 import { validNativeCron } from "./workers-cron.ts";
 export { validNativeCron } from "./workers-cron.ts";
 import { createHash } from "node:crypto";
-import {
-  existsSync,
-  readFileSync,
-  readdirSync,
-  realpathSync,
-  statSync,
-} from "node:fs";
-import { relative, resolve } from "node:path";
 import { z } from "zod";
-import {
-  type LoadedWorkerProject,
-  resolveWorkerProjectPath,
-} from "./workers-project.ts";
+import type { LoadedWorkerProject } from "./workers-project.ts";
 import {
   queueBinding,
   readWranglerEventConfig,
@@ -37,66 +26,13 @@ export function nativeDeploymentPlan(
   environment: "preview" | "production",
 ) {
   const source = readWranglerEventConfig(project, environment);
-  const migrations: Array<{
-    bindingName: string;
-    table: string;
-    name: string;
-    sql: string;
-    sha256: string;
-  }> = [];
-  for (const database of source.databases) {
-    if (database.migrations_pattern !== undefined)
-      throw new Error(
-        "migrations_pattern needs an explicit supported file-discovery mapping; no migration was executed",
-      );
-    const path = resolve(
-      source.directory,
-      String(database.migrations_dir ?? "migrations"),
-    );
-    if (!existsSync(path) && database.migrations_dir === undefined) continue;
-    const directory = resolveWorkerProjectPath(
-      project,
-      relative(project.rootDir, path),
-      "D1 migrations",
-    );
-    const realDirectory = realpathSync(directory);
-    resolveWorkerProjectPath(
-      project,
-      relative(project.rootDir, realDirectory),
-      "D1 migrations real path",
-    );
-    const table = z
-      .string()
-      .regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/)
-      .parse(database.migrations_table ?? "d1_migrations");
-    if (table.toLowerCase() === "__xapi_migration_hashes")
-      throw new Error("Reserved D1 migration table");
-    for (const name of readdirSync(directory)
-      .filter((name) => name.endsWith(".sql"))
-      .sort()) {
-      const file = resolveWorkerProjectPath(
-        project,
-        relative(project.rootDir, resolve(directory, name)),
-        "D1 migration file",
-      );
-      resolveWorkerProjectPath(
-        project,
-        relative(project.rootDir, realpathSync(file)),
-        "D1 migration real path",
-      );
-      if (!statSync(file).isFile())
-        throw new Error(`Migration is not a file: ${name}`);
-      const sql = readFileSync(file, "utf8");
-      if (!sql.trim()) throw new Error(`Empty D1 migration: ${name}`);
-      migrations.push({
-        bindingName: String(database.binding),
-        table,
-        name,
-        sql,
-        sha256: createHash("sha256").update(sql).digest("hex"),
-      });
-    }
-  }
+  const d1Migrations = project.config.environments[environment].resources
+    .filter(resource => resource.type === "d1_database")
+    .map(resource => ({
+      bindingName: resource.bindingName,
+      execution: "EXPLICIT_COMMAND" as const,
+      command: `xapi workers d1 migrations plan --binding ${resource.bindingName} --env ${environment}`,
+    }));
   const consumers = source.consumers.map((raw) => {
     const { dead_letter_queue, ...consumer } = consumerSchema.parse(raw);
     return {
@@ -120,8 +56,8 @@ export function nativeDeploymentPlan(
         "The platform scheduled adapter currently supports numeric five-field UTC Cron; Quartz extensions must not be silently converted",
       );
   }
-  for (const item of [...migrations, ...consumers]) {
-    const expectedType = "sql" in item ? "d1_database" : "queue";
+  for (const item of consumers) {
+    const expectedType = "queue";
     if (
       !project.config.environments[environment].resources.some(
         (resource) =>
@@ -134,7 +70,7 @@ export function nativeDeploymentPlan(
       );
   }
   return {
-    migrations,
+    d1Migrations,
     consumers,
     crons,
     cronsConfigured: source.crons !== undefined,
@@ -142,10 +78,7 @@ export function nativeDeploymentPlan(
 }
 export type NativeDeploymentPlan = ReturnType<typeof nativeDeploymentPlan>;
 export function publicNativeDeploymentPlan(plan: NativeDeploymentPlan) {
-  return {
-    ...plan,
-    migrations: plan.migrations.map(({ sql: _sql, ...migration }) => migration),
-  };
+  return plan;
 }
 export class NativeDeploymentError extends Error {
   constructor(
@@ -162,13 +95,6 @@ export interface NativeDeploymentClient {
     options: WorkersClientOptions,
     id: string,
     environment: string,
-  ): Promise<unknown>;
-  applyWorkerD1Migration?(
-    options: WorkersClientOptions,
-    id: string,
-    environment: string,
-    resourceId: string,
-    input: Record<string, unknown>,
   ): Promise<unknown>;
   configureWorkerQueueConsumer?(
     options: WorkersClientOptions,
@@ -210,14 +136,11 @@ export async function applyNativeDeploymentPhase(
   workerId: string,
   environment: "preview" | "production",
   plan: NativeDeploymentPlan,
-  phase: "BEFORE_CODE" | "AFTER_CODE",
+  phase: "AFTER_CODE",
 ) {
   const receipts: unknown[] = [];
   try {
-    const resources =
-      phase === "AFTER_CODE" || plan.migrations.length
-        ? rows(await api.listWorkerResources(options, workerId, environment))
-        : [];
+    const resources = rows(await api.listWorkerResources(options, workerId, environment));
     const resourceId = (binding: string, type: string) => {
       const resource = resources.find(
         (resource) =>
@@ -229,28 +152,6 @@ export async function applyNativeDeploymentPhase(
         throw new Error(`Active ${type} binding ${binding} is required`);
       return resource.id as string;
     };
-    if (phase === "BEFORE_CODE") {
-      for (const migration of plan.migrations) {
-        if (!api.applyWorkerD1Migration)
-          throw new Error("Client does not support remote D1 migrations");
-        const result: any = await api.applyWorkerD1Migration(
-          options,
-          workerId,
-          environment,
-          resourceId(migration.bindingName, "d1_database"),
-          { table: migration.table, name: migration.name, sql: migration.sql },
-        );
-        if (
-          !["APPLIED", "ALREADY_APPLIED"].includes(result?.status) ||
-          result.remote !== true
-        )
-          throw new Error(
-            `Remote migration receipt missing: ${migration.name}`,
-          );
-        receipts.push(result);
-      }
-      return receipts;
-    }
     const desiredBindings = new Set(plan.consumers.map(item => item.bindingName));
     for (const resource of resources) {
       if (

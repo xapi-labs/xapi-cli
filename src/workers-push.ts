@@ -1172,7 +1172,6 @@ export async function pushWorkerProject(
         },
       );
     }
-    nativeReceipts.push(...await applyNativeDeploymentPhase(api, options.clientOptions, workerState.id, "preview", nativePlan, "BEFORE_CODE"));
     const deployed = await ensureActiveDeployment(
       api,
       options.clientOptions,

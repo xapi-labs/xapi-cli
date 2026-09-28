@@ -60,7 +60,7 @@ export interface WranglerImportReport {
   entries: WranglerCompatibilityEntry[];
   summary: Record<WranglerCompatibilityCategory, number>;
   deploymentPlan: Array<{
-    phase: "BEFORE_CODE" | "CODE" | "AFTER_CODE";
+    phase: "EXPLICIT_COMMAND" | "CODE" | "AFTER_CODE";
     kind: "D1_MIGRATIONS" | "WORKER" | "QUEUE_CONSUMER" | "CRON";
     environment: "preview" | "production";
     status: "SUPPORTED" | "REQUIRES_MAPPING";
@@ -505,7 +505,7 @@ function resourceList(
       item.binding,
       `${prefix}d1_databases[${index}]`,
       item,
-      new Set(["binding", "migrations_dir", "migrations_table"]),
+      new Set(["binding", "migrations_dir", "migrations_table", "migrations_pattern"]),
     ),
   );
   array(config.r2_buckets).forEach((item, index) =>
@@ -1126,19 +1126,22 @@ export function importWranglerProject(
     }
     array(config.d1_databases).forEach((database, index) => {
       if (
+        database.migrations_pattern !== undefined ||
         database.migrations_dir !== undefined ||
         database.migrations_table !== undefined ||
         existsSync(resolve(sourceDir, "migrations"))
       ) {
         deploymentPlan.push({
-          phase: "BEFORE_CODE",
+          phase: "EXPLICIT_COMMAND",
           kind: "D1_MIGRATIONS",
           environment,
-          status: "SUPPORTED",
+          status: database.migrations_pattern !== undefined ? "REQUIRES_MAPPING" : "SUPPORTED",
           ...(typeof database.binding === "string"
             ? { bindingName: database.binding }
             : {}),
           configuration: {
+            command: `xapi workers d1 migrations plan --binding ${String(database.binding)} --env ${environment}`,
+            ...(database.migrations_pattern !== undefined ? { pattern: database.migrations_pattern } : {}),
             directory: database.migrations_dir ?? "migrations",
             table: database.migrations_table ?? "d1_migrations",
             relativeTo:
@@ -1149,7 +1152,7 @@ export function importWranglerProject(
           entries,
           "MANAGED",
           `${prefix}d1_databases[${index}].migrations`,
-          `D1 SQL migrations execute remotely against the owned binding before code deployment; directory=${String(database.migrations_dir ?? "migrations")}, table=${String(database.migrations_table ?? "d1_migrations")}. Code rollback does not roll back SQL.`,
+          `D1 SQL is not executed by push/promote. Use workers d1 migrations plan/apply explicitly; custom migrations_pattern is not supported by that command; directory=${String(database.migrations_dir ?? "migrations")}, table=${String(database.migrations_table ?? "d1_migrations")}. Code rollback does not roll back SQL.`,
           {
             environment,
             ...(typeof database.binding === "string"
@@ -1245,8 +1248,8 @@ export function importWranglerProject(
     deploymentPlan: deploymentPlan.sort(
       (a, b) =>
         a.environment.localeCompare(b.environment) ||
-        ["BEFORE_CODE", "CODE", "AFTER_CODE"].indexOf(a.phase) -
-          ["BEFORE_CODE", "CODE", "AFTER_CODE"].indexOf(b.phase),
+        ["EXPLICIT_COMMAND", "CODE", "AFTER_CODE"].indexOf(a.phase) -
+          ["EXPLICIT_COMMAND", "CODE", "AFTER_CODE"].indexOf(b.phase),
     ),
   };
   if (!report.compatible && !options.acceptPartial) {

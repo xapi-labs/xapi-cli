@@ -261,6 +261,30 @@ function fakePlatform(
 }
 
 describe("workers push preview", () => {
+  test("push creates and binds D1 without touching missing migrations or the migration API", async () => {
+    const root = fixture({ resources: [{ type: "d1_database", bindingName: "DB" }] });
+    const config = JSON.parse(readFileSync(join(root, "wrangler.jsonc"), "utf8"));
+    config.d1_databases = [{ binding: "DB", migrations_dir: "absent-sql", migrations_pattern: "**/*.sql" }];
+    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify(config));
+    const platform = fakePlatform();
+    let sqlCalls = 0;
+    Object.assign(platform.client, { applyWorkerD1Migration: async () => {
+      sqlCalls++; throw new HttpError(409, "d1_migration_result_unconfirmed");
+    } });
+    const result = await pushWorkerProject({
+      cwd: root, environment: "preview", clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: platform.client, confirm: async () => true,
+      runBuild: async () => {
+        mkdirSync(join(root, "dist"), { recursive: true });
+        writeFileSync(join(root, "dist/worker.mjs"), "export default {fetch(){return new Response('ok')}};");
+      },
+      fetchPublic: (async () => Response.json({ ok: true })) as unknown as typeof fetch, sleep: async () => undefined,
+    });
+    expect(result.status).toBe("ACTIVE");
+    expect(sqlCalls).toBe(0);
+    expect(platform.calls.createResource).toBe(1);
+    expect(platform.state.deployments[0].resourceIds).toEqual(["resource-1"]);
+  });
   test("passes only the explicit retention quote version to resource creation and deployment", async () => {
     const root=fixture({resources:[{type:"kv_namespace",bindingName:"STATE"}]});
     const platform=fakePlatform();

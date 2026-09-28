@@ -267,6 +267,10 @@ export function formatWorkerPlan(plan: WorkerDeploymentPlan): string {
       `${plan.project.build.command} → ${plan.project.build.output}${plan.project.build.main ? ` (main: ${plan.project.build.main})` : ""}`,
     ),
     "  Plan built and validated this exact bundle; push applies the reviewed result.",
+    ...(plan.nativeSteps?.d1Migrations.length ? [
+      "  D1 SQL is not executed by push/promote. Database changes are explicit:",
+      ...plan.nativeSteps.d1Migrations.map(item => `  · ${item.command}`),
+    ] : []),
     "",
     "Summary",
     metadataRow("Create", String(plan.summary.CREATE)),

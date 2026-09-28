@@ -8,7 +8,7 @@ Keep resource declarations driven by application behavior. R2, D1, KV, Durable O
 
 An R2 bucket can already exist while xAPI is confirming its metering event delivery. `PROVISIONING` with `R2_EVENT_CAPTURE_NOT_READY` is not a new bucket request or proof of failure. `workers resources list` only reads state: repeatedly listing does not finish initialization.
 
-`workers push --env preview` continues this known pending phase on the same binding, waits up to 600 seconds between bounded API calls, and only proceeds to migrations, upload and publication when the resource is ready. It keeps the bucket identity and existing reserve. If its wait expires, rerun the same push command; do not remove the resource or change the binding to get past it. This wait does not change Artifact upload timeouts.
+`workers push --env preview` continues this known pending phase on the same binding, waits up to 600 seconds between bounded API calls, and only proceeds to upload and publication when the resource is ready. It keeps the bucket identity and existing reserve. If its wait expires, rerun the same push command; do not remove the resource or change the binding to get past it. This wait does not change Artifact upload timeouts.
 
 For standalone resource creation (or an older CLI that blocks push on pending R2), explicitly repeat `workers resources create <worker-id> --env <environment> --type r2 --binding <same-binding>`, preserving the original placement options and supplying the current retention quote version when requested. Inspect the returned status. Stop and report transport/unknown-operation errors or `automaticProbeRetry: false`; do not loop indiscriminately on all failures. `ACTIVE` means initialization completed, not that final usage settlement has been verified.
 
@@ -27,7 +27,32 @@ Do not run `resources create` for a Container. Declare it in Wrangler and `xapi.
 
 Exercise a Container through the application route that causes its controlling Durable Object to start or contact an instance. Verify the business response, Container status, DO coordination state, and four Container usage dimensions separately. Do not conclude that an image runs merely because the application resource exists.
 
-Supply the explicitly accepted retention price version when required. Redeploy after binding changes. Use `env.<BINDING>`; no provider API/S3 credentials belong in application code. Initialize D1 schema through the application's migration mechanism; creation doesn't create tables.
+Supply the explicitly accepted retention price version when required. Redeploy after binding changes. Use `env.<BINDING>`; no provider API/S3 credentials belong in application code. D1 resource creation does not create application tables; initialize schema with the explicit migration commands below.
+
+### D1 binding and schema initialization
+
+Push/promote create and bind D1 resources without automatically reading or
+executing SQL. To initialize schema before the first deployment, create or use
+an existing Worker record (`workers create`), set its `workerId` in
+`xapi.worker.json`, and declare `DB` in both Wrangler and the target environment's
+project resources. Then precreate the binding:
+
+```sh
+xapi workers resources create <worker-id> --env preview --type d1 --binding DB
+xapi workers resources list <worker-id> --env preview --format json
+# Apply requires the existing binding to be ACTIVE.
+xapi workers d1 migrations plan --binding DB --env preview
+xapi workers d1 migrations apply --binding DB --env preview
+xapi workers push --env preview
+```
+
+Skip creation if the binding already exists. For creation, preserve desired
+`--location`/`--read-replication` options and supply the quoted
+`--retention-price-version VERSION` when required. See
+[explicit D1 migrations](deployment.md#explicit-d1-migrations) for the alternative
+push-first sequence, environment/config selection, receipts, and failure handling.
+
+### Real business checks
 
 | Resource | Real business check | Evidence |
 |---|---|---|
