@@ -28,7 +28,12 @@ import {
   type WorkerDeploymentPlan,
 } from "./workers-plan.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
-import { remoteWorkerResourceState, resourceReadyForDeployment, r2ReadinessPending } from "./workers-resource-state.ts";
+import {
+  remoteWorkerResourceState,
+  resourceReadyForDeployment,
+  r2ReadinessPending,
+  r2CreationRetryable,
+} from "./workers-resource-state.ts";
 import { deploymentPrefix, deploymentKey, currentMatchingDeployment, safeDeploymentRetryKey } from "./workers-deployment-state.ts";
 import {
   inspectWorker,
@@ -467,7 +472,7 @@ export async function ensureManagedResources(
         unchanged.push(resource.bindingName);
         continue;
       }
-      if (!r2ReadinessPending(existing)) {
+      if (!r2ReadinessPending(existing) && !r2CreationRetryable(existing)) {
         throw new WorkerPushError(
           `Resource ${resource.bindingName} is ${existing.status}; it is not ready for deployment`,
           { workerId },
@@ -495,11 +500,21 @@ export async function ensureManagedResources(
       let retryDelay = 5_000;
       let continuableResponse = false;
       try {
-        await api.createWorkerResource(options, workerId, environment, {
+        const created = await api.createWorkerResource(options, workerId, environment, {
           ...resource,
           ...(retentionPriceVersion ? { retentionPriceVersion } : {}),
         });
-        continuableResponse = true;
+        const result = record(created, "created resource");
+        const initialization = result.initialization === undefined
+          ? undefined
+          : record(result.initialization, "R2 initialization");
+        continuableResponse = initialization?.automaticProbeRetry !== false;
+        if (
+          typeof initialization?.retryAfterSeconds === "number" &&
+          Number.isFinite(initialization.retryAfterSeconds)
+        ) {
+          retryDelay = Math.max(5_000, initialization.retryAfterSeconds * 1000);
+        }
       } catch (error) {
         if (!shouldReconcileWrite(error)) throw error;
         failure = error;
@@ -580,11 +595,20 @@ async function checkRetentionQuotes(
     .filter(action => action.kind === "resource" && action.operation === "CREATE")
     .map(action => String(action.desired?.type || "").toUpperCase());
   const firstRelease = !plan.remote.activeDeploymentId;
-  if ((!types.length && !firstRelease) || !api.workerRetention) return;
+  const r2Retries = plan.actions.filter(action =>
+    action.kind === "resource" && action.operation === "UPDATE" &&
+    action.desired?.type === "r2_bucket",
+  );
+  if ((!types.length && !firstRelease && !r2Retries.length) || !api.workerRetention) return;
 
   const summary = await api.workerRetention(options, workerId, "preview");
   if (summary.enabled === false) return;
   const holds = records(summary.holds, "retention holds");
+  for (const retry of r2Retries) {
+    if (!holds.some(hold =>
+      hold.resourceKey === retry.current?.resourceId && !hold.releasedAt,
+    )) types.push("R2_BUCKET");
+  }
   if (firstRelease && !holds.some(hold => hold.resourceType === "WORKER" && !hold.releasedAt)) {
     types.push("WORKER");
   }

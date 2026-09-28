@@ -123,3 +123,19 @@ export function r2ReadinessPending(value: UnknownRecord): boolean {
     !config.controlDeletionRequested
   );
 }
+
+/** An explicit user push may retry the same R2 creation. The backend checks
+ * the original operation and observes CF before deciding whether to create. */
+export function r2CreationRetryable(value: UnknownRecord): boolean {
+  const state = remoteWorkerResourceState(value);
+  const config = record(value.config) || {};
+  return (
+    state.type === "r2_bucket" &&
+    ["ERROR", "PROVISIONING"].includes(state.status) &&
+    Boolean(
+      text(value.id) && text(record(config.controlOperation)?.operationId),
+    ) &&
+    config.__xapiDeletionIntentV1 === undefined &&
+    !config.controlDeletionRequested
+  );
+}

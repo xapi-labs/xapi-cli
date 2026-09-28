@@ -16,7 +16,12 @@ import {
   loadWorkerProject,
   resolveWorkerProjectPath,
 } from "./workers-project.ts";
-import { remoteWorkerResourceState, resourceReadyForDeployment, r2ReadinessPending } from "./workers-resource-state.ts";
+import {
+  remoteWorkerResourceState,
+  resourceReadyForDeployment,
+  r2ReadinessPending,
+  r2CreationRetryable,
+} from "./workers-resource-state.ts";
 import {
   prepareWorkerProjectBundle,
   loadWorkerProjectBundle,
@@ -346,10 +351,10 @@ function compareResources(
     }
     const status = state.status;
     const readyForDeployment = resourceReadyForDeployment(state);
-    if (r2ReadinessPending(existing)) {
+    if (r2ReadinessPending(existing) || r2CreationRetryable(existing)) {
       add(actions, "UPDATE", "resource", resource.bindingName,
-        "Continue this existing R2 bucket's metering initialization before publishing; push waits up to 600 seconds and preserves its identity and reserve",
-        desiredState, { status, ...currentPlacement });
+        "Retry the same R2 creation before publishing; xAPI checks the original operation and CF state, preserves identity, and continues known metering waits for up to 600 seconds",
+        desiredState, { status, resourceId: existing.id, ...currentPlacement });
       continue;
     }
     if (!readyForDeployment) {

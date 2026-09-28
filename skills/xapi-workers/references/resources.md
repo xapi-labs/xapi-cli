@@ -64,3 +64,18 @@ xapi workers logs <worker-id> --env preview --request-id <request-id>
 ```
 
 An immediate run doesn't prove future cron firing. Pause test schedules when finished. Log each resource separately as not connected / connected / exercised / result verified / metering observed / reconciled. Test data must not overwrite existing user content. Correlate operation times and IDs with billing.md; unrelated background traffic can also generate charges.
+
+
+### Retrying R2 creation
+
+Use the original binding and environment; do not rename it to bypass a pending or failed attempt.
+
+| Observed result | Next explicit create or push |
+| --- | --- |
+| CF rejected creation and no bucket exists | Retry creation with the same binding. |
+| Bucket exists; metering setup is pending | Continue the original bucket. API may return HTTP 202 with `initialization.status=PENDING`. This is not a failed creation. |
+| Creation request timed out | xAPI checks CF against the stored resource identity; reuse if present, create only if confirmed absent. |
+| Resource is ACTIVE | Return/reuse the existing resource. |
+| CF lookup also fails | Report the uncertainty and stop this attempt; the user can retry. Do not blindly create another bucket. |
+
+`push` accepts an explicit retry of an R2 creation with its original operation record, including ERROR or PROVISIONING. Only a recognized metering wait permits bounded automatic continuation within that push. Ordinary timeouts and failed lookups do not. Pending responses with `automaticProbeRetry=false` require delivery investigation; preserve the bucket and report the reason rather than automatically resubmitting. The server remains authoritative for ownership, deletion conflicts and retained funds.

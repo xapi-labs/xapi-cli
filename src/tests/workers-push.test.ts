@@ -269,7 +269,7 @@ describe("workers push preview", () => {
     const deploy=platform.client.deployWorker.bind(platform.client);
     platform.client.createWorkerResource=async(...args)=>{resources.push(args[3].retentionPriceVersion);return create(...args)};
     platform.client.deployWorker=async(...args)=>{deployments.push(args[2].retentionPriceVersion);return deploy(...args)};
-    await pushWorkerProject({cwd:root,environment:"preview",clientOptions:{apiHost:"localhost:3003",apiKey:"test-key"},client:platform.client,retentionPriceVersion:"accepted-v1",confirm:async()=>true,runBuild:async()=>{mkdirSync(join(root,"dist"),{recursive:true});writeFileSync(join(root,"dist/worker.mjs"),"export default {fetch(){return new Response('ok')}};");},fetchPublic:(async()=>Response.json({ok:true})) as unknown as typeof fetch,sleep:async()=>undefined});
+    await pushWorkerProject({cwd:root,environment:"preview",clientOptions:{apiHost:"localhost:3003",apiKey:"test-key"},client:platform.client,retentionPriceVersion:"accepted-v1",confirm:async()=>true,runBuild:async()=>{mkdirSync(join(root,"dist"),{recursive:true});writeFileSync(join(root,"dist/worker.mjs"),"export default {fetch(){return new Response('ok')}};");},fetchPublic:(async()=>Response.json({ok:true})) as unknown as unknown as typeof fetch,sleep:async()=>undefined});
     expect(resources).toEqual(["accepted-v1"]);
     expect(deployments).toEqual(["accepted-v1"]);
   });
@@ -305,7 +305,7 @@ describe("workers push preview", () => {
         );
       },
       fetchPublic: (async () =>
-        Response.json({ ok: true })) as unknown as typeof fetch,
+        Response.json({ ok: true })) as unknown as unknown as typeof fetch,
       sleep: async () => undefined,
     });
     expect(inputs).toEqual([
@@ -444,7 +444,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
       client: platform.client,
       nonInteractive: true,
       runBuild: async () => undefined,
-      fetchPublic: (async () => Response.json({ ok: true })) as unknown as typeof fetch,
+      fetchPublic: (async () => Response.json({ ok: true })) as unknown as unknown as typeof fetch,
       sleep: async () => undefined,
     });
     expect(resumed.status).toBe("ACTIVE");
@@ -479,7 +479,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
             "export default {fetch(){return new Response('ok')}};",
           );
         },
-        fetchPublic: (async () => Response.json({ ok: true })) as unknown as typeof fetch,
+        fetchPublic: (async () => Response.json({ ok: true })) as unknown as unknown as typeof fetch,
         sleep: async () => undefined,
     });
     expect(confirmations).toBe(1);
@@ -636,7 +636,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
         );
       },
       fetchPublic: (async () =>
-        Response.json({ ok: true })) as unknown as typeof fetch,
+        Response.json({ ok: true })) as unknown as unknown as typeof fetch,
       sleep: async () => undefined,
     });
     expect(result.status).toBe("ACTIVE");
@@ -668,7 +668,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
         writeFileSync(join(root, "dist/worker.mjs"), "export default {};");
       },
       fetchPublic: (async () =>
-        Response.json({ ok: true })) as unknown as typeof fetch,
+        Response.json({ ok: true })) as unknown as unknown as typeof fetch,
       sleep: async () => undefined,
     });
     expect(update).toEqual({
@@ -713,7 +713,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
         );
       },
       fetchPublic: (async () =>
-        Response.json({ ok: true })) as unknown as typeof fetch,
+        Response.json({ ok: true })) as unknown as unknown as typeof fetch,
       sleep: async () => undefined,
     };
     await expect(pushWorkerProject(options)).rejects.toThrow("No second publish was sent");
@@ -868,7 +868,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
           `export const message = "ok";`,
         );
       },
-      fetchPublic: (async () => new Response("ok")) as unknown as typeof fetch,
+      fetchPublic: (async () => new Response("ok")) as unknown as unknown as typeof fetch,
       sleep: async () => undefined,
     });
 
@@ -909,7 +909,7 @@ describe("deployment quote preflight", () => {
       },
       fetchPublic: (async () => {
         return Response.json({ ok: true });
-      }) as unknown as typeof fetch,
+      }) as unknown as unknown as typeof fetch,
       sleep: async () => undefined,
     };
     return { root, platform, quotePaths, options };
@@ -1065,6 +1065,201 @@ describe("R2 readiness during push", () => {
       errorCode: "R2_EVENT_CAPTURE_NOT_READY",
     };
   }
+  test.each(["worker_control_cancelled_before_dispatch", "provider_timeout"])(
+    "a new push explicitly retries %s using the same R2 binding",
+    async (errorCode) => {
+      const root = fixture({ linked: true, resources: desired });
+      const platform = fakePlatform({ exists: true });
+      platform.state.resources.push({
+        ...pending(),
+        status: "ERROR",
+        providerResourceId: null,
+        errorCode,
+        config: { controlOperation: { operationId: "original-create" } },
+      });
+      let creates = 0;
+      platform.client.createWorkerResource = async (
+        _api,
+        _id,
+        environment,
+        input,
+      ) => {
+        creates++;
+        expect(environment).toBe("preview");
+        expect(input.bindingName).toBe("FILES");
+        platform.state.resources[0] = {
+          ...pending(),
+          status: "ACTIVE",
+          errorCode: null,
+        };
+        return platform.state.resources[0];
+      };
+      await pushWorkerProject({
+        cwd: root,
+        environment: "preview",
+        clientOptions,
+        client: platform.client,
+        nonInteractive: true,
+        sleep: async () => {},
+        fetchPublic: (async () => new Response("ok")) as unknown as typeof fetch,
+        runBuild: async () => {
+          mkdirSync(join(root, "dist"), { recursive: true });
+          writeFileSync(
+            join(root, "dist/worker.mjs"),
+            "export default {fetch(){return new Response('ok')}};",
+          );
+        },
+      });
+      expect(creates).toBe(1);
+      expect(platform.state.resources).toHaveLength(1);
+      expect(platform.calls.deploy).toBe(1);
+    },
+  );
+  test.each([true, false])(
+    "R2 retry quotes only if the original hold is missing: existing=%s",
+    async (held) => {
+      const root = fixture({ linked: true, resources: desired }),
+        platform = fakePlatform({ exists: true });
+      platform.state.resources.push({
+        ...pending(),
+        config: { controlOperation: { operationId: "original" } },
+      });
+      const quotes: string[] = [];
+      platform.client.workerRetention = async (_api, _id, _env, path = "") => {
+        if (path) {
+          quotes.push(path);
+          return { priceVersion: "price-v1", freezeUsd: "0.03" };
+        }
+        return {
+          enabled: true,
+          holds: [
+            {
+              resourceType: "WORKER",
+              resourceKey: "worker:env-preview",
+              releasedAt: null,
+            },
+            ...(held
+              ? [
+                  {
+                    resourceType: "R2_BUCKET",
+                    resourceKey: "same-resource",
+                    releasedAt: null,
+                  },
+                ]
+              : []),
+          ],
+        };
+      };
+      platform.client.createWorkerResource = async () => {
+        platform.state.resources[0] = { ...pending(), status: "ACTIVE" };
+        return platform.state.resources[0];
+      };
+      const options = {
+        cwd: root,
+        environment: "preview" as const,
+        clientOptions,
+        client: platform.client,
+        nonInteractive: true,
+        sleep: async () => {},
+        fetchPublic: (async () => new Response("ok")) as unknown as typeof fetch,
+        runBuild: async () => {
+          mkdirSync(join(root, "dist"), { recursive: true });
+          writeFileSync(
+            join(root, "dist/worker.mjs"),
+            "export default {fetch(){return new Response('ok')}};",
+          );
+        },
+      };
+      if (held) {
+        await expect(pushWorkerProject(options)).resolves.toMatchObject({
+          status: "ACTIVE",
+        });
+        expect(quotes).toEqual([]);
+      } else {
+        await expect(pushWorkerProject(options)).rejects.toThrow(
+          "Retention quote required",
+        );
+        expect(quotes).toEqual(["/quote/R2_BUCKET"]);
+        expect(platform.calls.uploadArtifact).toBe(0);
+      }
+    },
+  );
+  test.each([true, false])(
+    "honors accepted-pending continuation instructions: %s",
+    async (automaticProbeRetry) => {
+      let row = pending(),
+        calls = 0;
+      const sleeps: number[] = [];
+      const client = {
+        listWorkerResources: async () => [row],
+        createWorkerResource: async () => {
+          calls++;
+          if (calls === 2) row = { ...row, status: "ACTIVE" };
+          return {
+            ...row,
+            initialization: {
+              status: "PENDING",
+              automaticProbeRetry,
+              retryAfterSeconds: 65,
+            },
+          };
+        },
+      };
+      const result = ensureManagedResources(
+        client,
+        clientOptions,
+        workerId,
+        "preview",
+        desired,
+        undefined,
+        {
+          sleep: async (ms) => {
+            sleeps.push(ms);
+          },
+        },
+      );
+      if (automaticProbeRetry) {
+        await expect(result).resolves.toEqual({
+          created: [],
+          unchanged: ["FILES"],
+        });
+        expect(sleeps).toEqual([65000]);
+        expect(calls).toBe(2);
+      } else {
+        await expect(result).rejects.toThrow();
+        expect(sleeps).toEqual([]);
+        expect(calls).toBe(1);
+      }
+    },
+  );
+  test("does not retry a R2 resource being deleted", async () => {
+    let calls = 0;
+    const client = {
+      listWorkerResources: async () => [
+        {
+          ...pending(),
+          config: {
+            controlOperation: { operationId: "original" },
+            controlDeletionRequested: true,
+          },
+        },
+      ],
+      createWorkerResource: async () => {
+        calls++;
+        return {};
+      },
+    };
+    await expect(
+      ensureManagedResources(
+        client,
+        clientOptions,
+        workerId,
+        "preview",
+        desired,
+      ),
+    ).rejects.toThrow();
+    expect(calls).toBe(0);
+  });
   test("continues a completed probe against the same bucket and waits for real ACTIVE", async () => {
     let row: Record<string, unknown> | undefined;
     const calls: unknown[] = [],
