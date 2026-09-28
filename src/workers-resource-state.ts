@@ -108,3 +108,18 @@ export function resourceReadyForDeployment(state: RemoteWorkerResourceState): bo
   return state.status === "ACTIVE" || (state.status === "PROVISIONING" &&
     (state.type === "durable_object" || (state.type === "workflow" && Boolean(state.className) && state.nativeWorkflowPrepared === true)));
 }
+
+/** A completed R2 probe awaiting delivery is continuable, not a failed create.
+ * Never infer this permission from PROVISIONING alone. */
+export function r2ReadinessPending(value: UnknownRecord): boolean {
+  const state = remoteWorkerResourceState(value);
+  const config = record(value.config) || {};
+  return (
+    state.type === "r2_bucket" &&
+    state.status === "PROVISIONING" &&
+    value.errorCode === "R2_EVENT_CAPTURE_NOT_READY" &&
+    Boolean(text(value.id) && text(value.providerResourceId)) &&
+    config.__xapiDeletionIntentV1 === undefined &&
+    !config.controlDeletionRequested
+  );
+}

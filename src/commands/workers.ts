@@ -791,6 +791,7 @@ export async function workersCommand(
           clientOptions: options(),
           nonInteractive,
           retentionPriceVersion: flags["retention-price-version"],
+          onProgress: (message) => console.error(message),
           onPlan: nonInteractive
             ? undefined
             : (plan) => printWorkerPlan(plan, flags.format),

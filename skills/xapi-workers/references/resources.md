@@ -4,6 +4,14 @@ Run `workers capabilities` and `workers resources list <worker-id> --env preview
 
 Keep resource declarations driven by application behavior. R2, D1, KV, Durable Objects, Queues, Workflows, and Container Applications are independent bindings and resources; none must be added or deleted just because another resource is used. A Container Application is the one exception to the generic create command: it is deployment-owned and must reference a Durable Object class in the same Worker. When the goal is to verify every platform resource, use a separate disposable acceptance Worker so those checks cannot change a real application's storage or lifecycle.
 
+### R2 initialization and continuation
+
+An R2 bucket can already exist while xAPI is confirming its metering event delivery. `PROVISIONING` with `R2_EVENT_CAPTURE_NOT_READY` is not a new bucket request or proof of failure. `workers resources list` only reads state: repeatedly listing does not finish initialization.
+
+`workers push --env preview` continues this known pending phase on the same binding, waits up to 600 seconds between bounded API calls, and only proceeds to migrations, upload and publication when the resource is ready. It keeps the bucket identity and existing reserve. If its wait expires, rerun the same push command; do not remove the resource or change the binding to get past it. This wait does not change Artifact upload timeouts.
+
+For standalone resource creation (or an older CLI that blocks push on pending R2), explicitly repeat `workers resources create <worker-id> --env <environment> --type r2 --binding <same-binding>`, preserving the original placement options and supplying the current retention quote version when requested. Inspect the returned status. Stop and report transport/unknown-operation errors or `automaticProbeRetry: false`; do not loop indiscriminately on all failures. `ACTIVE` means initialization completed, not that final usage settlement has been verified.
+
 Prefer declarations plus plan/push. For granular provisioning:
 
 ```sh

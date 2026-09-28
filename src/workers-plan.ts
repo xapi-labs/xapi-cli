@@ -16,7 +16,7 @@ import {
   loadWorkerProject,
   resolveWorkerProjectPath,
 } from "./workers-project.ts";
-import { remoteWorkerResourceState, resourceReadyForDeployment } from "./workers-resource-state.ts";
+import { remoteWorkerResourceState, resourceReadyForDeployment, r2ReadinessPending } from "./workers-resource-state.ts";
 import {
   prepareWorkerProjectBundle,
   loadWorkerProjectBundle,
@@ -346,6 +346,12 @@ function compareResources(
     }
     const status = state.status;
     const readyForDeployment = resourceReadyForDeployment(state);
+    if (r2ReadinessPending(existing)) {
+      add(actions, "UPDATE", "resource", resource.bindingName,
+        "Continue this existing R2 bucket's metering initialization before publishing; push waits up to 600 seconds and preserves its identity and reserve",
+        desiredState, { status, ...currentPlacement });
+      continue;
+    }
     if (!readyForDeployment) {
       blocked = true;
       const config = record(existing.config);
