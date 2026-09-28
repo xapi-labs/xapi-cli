@@ -28,7 +28,12 @@ import {
   type WorkerDeploymentPlan,
 } from "./workers-plan.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
-import { remoteWorkerResourceState } from "./workers-resource-state.ts";
+import {
+  remoteWorkerResourceState,
+  resourceReadyForDeployment,
+  r2ReadinessPending,
+  r2CreationRetryable,
+} from "./workers-resource-state.ts";
 import { deploymentPrefix, deploymentKey, currentMatchingDeployment, safeDeploymentRetryKey } from "./workers-deployment-state.ts";
 import {
   inspectWorker,
@@ -139,6 +144,7 @@ export interface PushWorkerProjectOptions {
   client?: PushClient;
   confirm?: (plan: WorkerDeploymentPlan) => Promise<boolean>;
   onPlan?: (plan: WorkerDeploymentPlan) => void;
+  onProgress?: (message: string) => void;
   runBuild?: WorkerProjectBuildRunner;
   fetchPublic?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
@@ -419,6 +425,10 @@ export async function ensureManagedResources(
   environment: "preview" | "production",
   desired: LoadedWorkerProject["config"]["environments"]["preview"]["resources"],
   retentionPriceVersion?: string,
+  wait: {
+    sleep?: (milliseconds: number) => Promise<void>;
+    onProgress?: (message: string) => void;
+  } = {},
 ): Promise<{ created: string[]; unchanged: string[] }> {
   let remote = records(
     await api.listWorkerResources(options, workerId, environment),
@@ -428,9 +438,12 @@ export async function ensureManagedResources(
   for (const item of remote) {
     const bindingName = text(item.bindingName);
     if (!bindingName) {
-      throw new WorkerPushError("xAPI returned a managed resource without bindingName", {
-        workerId,
-      });
+      throw new WorkerPushError(
+        "xAPI returned a managed resource without bindingName",
+        {
+          workerId,
+        },
+      );
     }
     if (remoteBindings.has(bindingName)) {
       throw new WorkerPushError(
@@ -455,16 +468,73 @@ export async function ensureManagedResources(
           { workerId, bindingName: resource.bindingName },
         );
       }
-      unchanged.push(resource.bindingName);
-      continue;
+      if (resourceReadyForDeployment(remoteWorkerResourceState(existing))) {
+        unchanged.push(resource.bindingName);
+        continue;
+      }
+      if (!r2ReadinessPending(existing) && !r2CreationRetryable(existing)) {
+        throw new WorkerPushError(
+          `Resource ${resource.bindingName} is ${existing.status}; it is not ready for deployment`,
+          { workerId },
+        );
+      }
     }
-    try {
-      await api.createWorkerResource(options, workerId, environment, {
-        ...resource,
-        ...(retentionPriceVersion ? { retentionPriceVersion } : {}),
-      });
-    } catch (error) {
-      if (!shouldReconcileWrite(error)) throw error;
+    const wasExisting = Boolean(existing);
+    let resourceId = text(existing?.id);
+    let providerId = text(existing?.providerResourceId);
+    const deadline = performance.now() + 600_000;
+    const sleep =
+      wait.sleep ||
+      ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const pendingTimeout = () => new WorkerPushError(
+      `R2 ${resource.bindingName} initialization is still pending; no code was uploaded or deployed`,
+      {
+        workerId, resourceId, bindingName: resource.bindingName,
+        code: "R2_EVENT_CAPTURE_NOT_READY", status: "PENDING",
+        next: "Rerun the same xapi workers push command to continue this bucket; do not destroy or recreate it",
+      },
+    );
+    for (let attempt = 0; ; attempt++) {
+      if (attempt > 0 && performance.now() >= deadline) throw pendingTimeout();
+      let failure: unknown;
+      let retryDelay = 5_000;
+      let continuableResponse = false;
+      try {
+        const created = await api.createWorkerResource(options, workerId, environment, {
+          ...resource,
+          ...(retentionPriceVersion ? { retentionPriceVersion } : {}),
+        });
+        const result = record(created, "created resource");
+        const initialization = result.initialization === undefined
+          ? undefined
+          : record(result.initialization, "R2 initialization");
+        continuableResponse = initialization?.automaticProbeRetry !== false;
+        if (
+          typeof initialization?.retryAfterSeconds === "number" &&
+          Number.isFinite(initialization.retryAfterSeconds)
+        ) {
+          retryDelay = Math.max(5_000, initialization.retryAfterSeconds * 1000);
+        }
+      } catch (error) {
+        if (!shouldReconcileWrite(error)) throw error;
+        failure = error;
+        if (error instanceof HttpError && error.status === 503) {
+          try {
+            const body = JSON.parse(error.message.slice("HTTP 503: ".length));
+            continuableResponse =
+              body.code === "R2_EVENT_CAPTURE_NOT_READY" &&
+              body.automaticProbeRetry !== false;
+            if (
+              typeof body.retryAfterSeconds === "number" &&
+              Number.isFinite(body.retryAfterSeconds)
+            ) {
+              retryDelay = Math.max(5_000, body.retryAfterSeconds * 1000);
+            }
+          } catch {
+            /* An unrecognized response is not permission to replay. */
+          }
+        }
+      }
       remote = records(
         await api.listWorkerResources(options, workerId, environment),
         "managed resources",
@@ -472,10 +542,42 @@ export async function ensureManagedResources(
       existing = remote.find(
         (item) => item.bindingName === resource.bindingName,
       );
-      if (!existing || !resourceMatches(existing, resource)) throw error;
+      if (
+        !existing ||
+        !resourceMatches(existing, resource) ||
+        (resourceId && existing.id !== resourceId) ||
+        (providerId && existing.providerResourceId !== providerId)
+      ) {
+        throw (
+          failure ||
+          new WorkerPushError(
+            `Resource ${resource.bindingName} changed during initialization`,
+            { workerId },
+          )
+        );
+      }
+      resourceId = text(existing.id);
+      providerId = text(existing.providerResourceId);
+      if (resourceReadyForDeployment(remoteWorkerResourceState(existing)))
+        break;
+      if (!continuableResponse || !r2ReadinessPending(existing)) {
+        throw (
+          failure ||
+          new WorkerPushError(`Resource ${resource.bindingName} is not ready`, {
+            workerId,
+            status: existing.status,
+          })
+        );
+      }
+      if (attempt >= 120 || performance.now() + retryDelay >= deadline) {
+        throw pendingTimeout();
+      }
+      wait.onProgress?.(
+        `R2 ${resource.bindingName}: waiting for metering events; continuing the existing bucket (up to 600s)`,
+      );
+      await sleep(retryDelay);
     }
-    created.push(resource.bindingName);
-    remote.push({ ...resource, status: "ACTIVE" });
+    (wasExisting ? unchanged : created).push(resource.bindingName);
   }
   return { created: created.sort(), unchanged: unchanged.sort() };
 }
@@ -493,11 +595,20 @@ async function checkRetentionQuotes(
     .filter(action => action.kind === "resource" && action.operation === "CREATE")
     .map(action => String(action.desired?.type || "").toUpperCase());
   const firstRelease = !plan.remote.activeDeploymentId;
-  if ((!types.length && !firstRelease) || !api.workerRetention) return;
+  const r2Retries = plan.actions.filter(action =>
+    action.kind === "resource" && action.operation === "UPDATE" &&
+    action.desired?.type === "r2_bucket",
+  );
+  if ((!types.length && !firstRelease && !r2Retries.length) || !api.workerRetention) return;
 
   const summary = await api.workerRetention(options, workerId, "preview");
   if (summary.enabled === false) return;
   const holds = records(summary.holds, "retention holds");
+  for (const retry of r2Retries) {
+    if (!holds.some(hold =>
+      hold.resourceKey === retry.current?.resourceId && !hold.releasedAt,
+    )) types.push("R2_BUCKET");
+  }
   if (firstRelease && !holds.some(hold => hold.resourceType === "WORKER" && !hold.releasedAt)) {
     types.push("WORKER");
   }
@@ -1020,6 +1131,7 @@ export async function pushWorkerProject(
       "preview",
       linkedProject.config.environments.preview.resources,
       options.retentionPriceVersion,
+      { sleep: options.sleep, onProgress: options.onProgress },
     );
     const nativePlan = prepared.nativePlan;
     const missing = await missingSecrets(

@@ -4,6 +4,14 @@ Run `workers capabilities` and `workers resources list <worker-id> --env preview
 
 Keep resource declarations driven by application behavior. R2, D1, KV, Durable Objects, Queues, Workflows, and Container Applications are independent bindings and resources; none must be added or deleted just because another resource is used. A Container Application is the one exception to the generic create command: it is deployment-owned and must reference a Durable Object class in the same Worker. When the goal is to verify every platform resource, use a separate disposable acceptance Worker so those checks cannot change a real application's storage or lifecycle.
 
+### R2 initialization and continuation
+
+An R2 bucket can already exist while xAPI is confirming its metering event delivery. `PROVISIONING` with `R2_EVENT_CAPTURE_NOT_READY` is not a new bucket request or proof of failure. `workers resources list` only reads state: repeatedly listing does not finish initialization.
+
+`workers push --env preview` continues this known pending phase on the same binding, waits up to 600 seconds between bounded API calls, and only proceeds to migrations, upload and publication when the resource is ready. It keeps the bucket identity and existing reserve. If its wait expires, rerun the same push command; do not remove the resource or change the binding to get past it. This wait does not change Artifact upload timeouts.
+
+For standalone resource creation (or an older CLI that blocks push on pending R2), explicitly repeat `workers resources create <worker-id> --env <environment> --type r2 --binding <same-binding>`, preserving the original placement options and supplying the current retention quote version when requested. Inspect the returned status. Stop and report transport/unknown-operation errors or `automaticProbeRetry: false`; do not loop indiscriminately on all failures. `ACTIVE` means initialization completed, not that final usage settlement has been verified.
+
 Prefer declarations plus plan/push. For granular provisioning:
 
 ```sh
@@ -56,3 +64,18 @@ xapi workers logs <worker-id> --env preview --request-id <request-id>
 ```
 
 An immediate run doesn't prove future cron firing. Pause test schedules when finished. Log each resource separately as not connected / connected / exercised / result verified / metering observed / reconciled. Test data must not overwrite existing user content. Correlate operation times and IDs with billing.md; unrelated background traffic can also generate charges.
+
+
+### Retrying R2 creation
+
+Use the original binding and environment; do not rename it to bypass a pending or failed attempt.
+
+| Observed result | Next explicit create or push |
+| --- | --- |
+| CF rejected creation and no bucket exists | Retry creation with the same binding. |
+| Bucket exists; metering setup is pending | Continue the original bucket. API may return HTTP 202 with `initialization.status=PENDING`. This is not a failed creation. |
+| Creation request timed out | xAPI checks CF against the stored resource identity; reuse if present, create only if confirmed absent. |
+| Resource is ACTIVE | Return/reuse the existing resource. |
+| CF lookup also fails | Report the uncertainty and stop this attempt; the user can retry. Do not blindly create another bucket. |
+
+`push` accepts an explicit retry of an R2 creation with its original operation record, including ERROR or PROVISIONING. Only a recognized metering wait permits bounded automatic continuation within that push. Ordinary timeouts and failed lookups do not. Pending responses with `automaticProbeRetry=false` require delivery investigation; preserve the bucket and report the reason rather than automatically resubmitting. The server remains authoritative for ownership, deletion conflicts and retained funds.

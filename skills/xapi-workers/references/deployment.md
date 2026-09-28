@@ -66,6 +66,8 @@ adapter cannot replace its server-side behavior.
 
 Retain the application's routing behavior. `single-page-application` is suitable
 for an SPA's client-side routes; it does not make missing JS/CSS files valid.
+For R2 initialization waits, push continues the existing bucket before native migrations or publication. If it returns a pending timeout, rerun the same push; a read-only resource-list loop cannot finish this phase. See [resources.md](resources.md#r2-initialization-and-continuation). Unknown provider results are not automatically replayed.
+
 After publication, check a real deep link and refresh, resource MIME types,
 actual UI actions, and any PWA/local-storage persistence across an update.
 The generated health endpoint checks transport only. Use the returned routing
