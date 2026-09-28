@@ -44,6 +44,9 @@ candidates awaiting verification, never as confirmed available or purchasable.
 If the user only wants name ideas, Search alone is enough.
 If Search fails, report the failed query rather than claiming no suggestions
 exist. A failed single-domain Check is not evidence that a domain is unavailable.
+If any Search result has `search_incomplete: true`, show the valid candidates
+and tell the user that malformed provider suggestions were omitted, so the list
+may be incomplete. Do not describe the returned list as all matches.
 
 When the user needs available options or a purchase price, select the relevant
 fully qualified domains from Search and call `domain.checkBatch` once for 1–20
