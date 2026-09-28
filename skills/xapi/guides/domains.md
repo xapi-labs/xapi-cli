@@ -42,6 +42,8 @@ npx xapi-to get-batch domain.search domain.checkBatch domain.check domain.price 
 `pricing.quote_type: "search_estimate"` is an estimate. Present these as
 candidates awaiting verification, never as confirmed available or purchasable.
 If the user only wants name ideas, Search alone is enough.
+If Search fails, report the failed query rather than claiming no suggestions
+exist. A failed single-domain Check is not evidence that a domain is unavailable.
 
 When the user needs available options or a purchase price, select the relevant
 fully qualified domains from Search and call `domain.checkBatch` once for 1–20
