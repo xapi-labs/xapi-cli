@@ -9,6 +9,8 @@ the project workflow:
 | --- | --- | --- |
 | Inspect one running environment | `workers inspect [worker-id] --env ENV` | No |
 | Build locally and compare exact desired state with xAPI | `workers plan --env ENV` | No remote writes |
+| Inspect local D1 migration files without a build or backend call | `workers d1 migrations plan --binding DB --env ENV` | No; remote status is not checked |
+| Explicitly execute D1 migrations on an existing binding | `workers d1 migrations apply --binding DB --env ENV` | Yes; SQL only |
 | Rebuild, present the final plan, reconcile and deploy preview | `workers push --env preview` | Yes, after confirmation |
 | Release the accepted preview Artifact | `workers promote --to production` | Yes |
 | Restore an earlier active version | `workers rollback --env ENV ...` | Yes |
@@ -66,7 +68,7 @@ adapter cannot replace its server-side behavior.
 
 Retain the application's routing behavior. `single-page-application` is suitable
 for an SPA's client-side routes; it does not make missing JS/CSS files valid.
-For R2 initialization waits, push continues the existing bucket before native migrations or publication. If it returns a pending timeout, rerun the same push; a read-only resource-list loop cannot finish this phase. See [resources.md](resources.md#r2-initialization-and-continuation). Unknown provider results are not automatically replayed.
+For R2 initialization waits, push continues the existing bucket before upload or publication. If it returns a pending timeout, rerun the same push; a read-only resource-list loop cannot finish this phase. See [resources.md](resources.md#r2-initialization-and-continuation). Unknown provider results are not automatically replayed.
 
 After publication, check a real deep link and refresh, resource MIME types,
 actual UI actions, and any PWA/local-storage persistence across an update.
@@ -99,7 +101,7 @@ class sets remain blocked because they need an explicit state migration plan.
 `xapi.worker.json` holds desired xAPI state and Worker ID; Wrangler holds entrypoint, compatibility and binding declarations. The persistent-agent template declares the six ordinary managed binding types so it can demonstrate the platform; Containers remain deployment-owned and must be declared explicitly. An ordinary application should declare only the resources its business logic uses. Do not add unrelated bindings merely to complete an acceptance checklist. Test the full resource matrix in a separate disposable Worker or environment, then clean up only that isolated test state. Install/build according to the generated project instructions. Inspect plans for missing permissions, prices, secrets, budget, and policy requirements.
 
 ```sh
-# No required Secrets: push can complete the deployment directly.
+# Prepare required D1 schema separately; push does not execute SQL.
 # Required Secrets: follow secrets.md's first-project setup before expecting a release.
 xapi workers push --env preview
 xapi workers get <worker-id> --format json
@@ -283,6 +285,62 @@ Inspect the exact `worker_control_*` code and operation status. A conflict can m
 For explicit artifact operations: `workers upload <worker-id> --file dist/worker.mjs --idempotency-key <stable-key>`, then `workers deploy <worker-id> --artifact <artifact-id> --env preview --idempotency-key <stable-release-key>`. Reuse a key only for identical inputs. `workers build` is an optional managed Sandbox build, not a requirement for deploying locally built code.
 
 
+### Explicit D1 migrations
+
+`workers push` and `workers promote` do not read, parse, or execute D1 SQL
+files. They still create and bind declared resources, publish code, and configure
+Queue/Cron in `AFTER_CODE`. A normal release does not require repairing a D1
+migration ledger. Choose schema execution separately for each environment:
+
+```sh
+# Local files only: no backend call and no application build.
+xapi workers d1 migrations plan --binding DB --env preview
+# Explicit remote SQL execution on the existing ACTIVE binding.
+xapi workers d1 migrations apply --binding DB --env preview
+```
+
+Both commands require `--binding NAME` and `--env preview|production`, and accept
+`--config PATH` to select the project configuration (`xapi.worker.json`). They
+read the referenced Wrangler configuration for the selected environment. The
+binding must be declared in both Wrangler and that environment's project
+resources. Migration paths are relative to the Wrangler file and constrained
+to the project. Files ending in `.sql` are ordered by filename and snapshotted
+with their SQL content and SHA256; use ordered filename prefixes. If the
+Wrangler config is generated, prepare that file beforehand: these commands do
+not run the application build.
+
+Plan reports local filenames and SHA256 values with `remoteStatus: NOT_CHECKED`.
+It does not identify which files are remotely pending or applied and needs no
+existing remote Worker. Apply takes its own local snapshot, requires `workerId`
+in the project configuration and an existing `ACTIVE` D1 binding in the target
+environment, and checks the remote ledger while executing files sequentially.
+Apply does not create resources or publish code. It uses normal Worker access
+permissions, with no administrator approval or `--yes` gate.
+
+Require `APPLIED` or `ALREADY_APPLIED` and `remote: true` for each successful
+receipt. An existing database or table does not establish that local migrations
+were applied. A legacy Wrangler ledger entry returned with `sha256: null` does
+not verify its original SQL against the local file. On any failure, later files
+stop; retain completed receipts and the failed filename. Completed SQL is not
+rolled back. A timeout or lost response is an unknown outcome: inspect the
+error and remote ledger before an explicit retry; never automatically replay
+uncertain SQL or clear data/ledger entries to force progress.
+
+For an existing `ACTIVE` D1 binding, apply needed, compatible schema changes before
+push or promotion. For a new project, prefer precreating the binding with
+[`workers resources create`](resources.md#d1-binding-and-schema-initialization),
+then apply and publish. Alternatively, push can create the binding first and
+apply can initialize it afterward. That first push may fail its health check
+because tables do not yet exist. Inspect the actual deployment/resource state,
+apply to the same binding, and check the application's business behavior; do
+not recreate the database or clear its contents. Migration success alone does
+not establish a successful deployment.
+
+Production uses its own binding and ledger: apply with `--env production`
+when intended, separately from `workers promote --to production`. Code
+rollback never rolls back SQL; plan schema changes to remain compatible with
+the code versions that may run before, during, and after a release.
+
 ### Native configuration and application deployment prerequisites
 
 `cache.enabled`, `cache.cross_version_cache` and `version_metadata.binding` are
@@ -311,20 +369,13 @@ assets directory: files explicitly placed there are website assets. The plan
 shows telemetry settings and the private attachment count. Verify actual CF
 logging/stack remapping after release; local upload validation proves neither.
 
-The import report includes `BEFORE_CODE` (D1 migrations), `CODE` (Worker
-configuration), and `AFTER_CODE` (Queue consumers and Cron). Current push/promote
-execute these steps only with the matching backend and Dispatcher release. Check
-the plan before confirmation; migrations are resolved relative to the referenced
-Wrangler file, constrained to the project, and frozen with their SHA256 before
-execution. Promote uses the selected Artifact plus the displayed local migration
-and event plan. It does not restore these from the old Artifact automatically.
-
-D1 files execute remotely through xAPI in order, recording each file and checksum
-in the target D1 database. Require APPLIED/ALREADY_APPLIED and remote:true receipts.
-An existing Wrangler record without a checksum is skipped with sha256:null: its
-original content has not been verified. Failed SQL stops later files/code release;
-completed migrations do not roll back with code. A lost response is reconciled
-against the remote ledger, never blindly replayed. Preserve partial receipts.
+Push/promote retain `CODE` (Worker configuration) and `AFTER_CODE` (Queue
+consumers and Cron), using the matching backend and Dispatcher release. D1
+migration guidance points to the [explicit commands](#explicit-d1-migrations);
+there is no automatic D1 `BEFORE_CODE` execution. Check the event plan before
+confirmation. Promote uses the selected Artifact plus the displayed local event
+plan; it does not automatically restore that event configuration from the old
+Artifact.
 
 Queue consumers invoke queue(batch, env, ctx) through the platform event adapter;
 CF owns ack/retry/delay/DLQ delivery. The adapter preserves message IDs, attempts,

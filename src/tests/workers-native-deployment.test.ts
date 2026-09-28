@@ -1,10 +1,12 @@
 import { test, expect } from "bun:test";
+import { applyD1Migrations } from "../workers-d1-migrations.ts";
 import { applyNativeDeploymentPhase } from "../workers-native-deployment.ts";
 const options = {
   apiKey: "test-key",
   apiBaseUrl: "https://api.xapi.to",
 } as any;
 const plan = {
+  d1Migrations: [],
   migrations: [
     {
       bindingName: "DB",
@@ -53,13 +55,9 @@ test("remote migrations are ordered and failures stop subsequent files", async (
     },
   };
   await expect(
-    applyNativeDeploymentPhase(
-      api,
-      options,
-      "worker",
-      "preview",
-      plan,
-      "BEFORE_CODE",
+    applyD1Migrations(
+      api, options, "worker",
+      { environment: "preview", bindingName: "DB", migrations: plan.migrations },
     ),
   ).rejects.toThrow("remote SQL rejected");
   expect(seen).toEqual(["0001.sql"]);
@@ -74,13 +72,9 @@ test("does not accept local/missing receipts as remote completion", async () => 
     },
   };
   await expect(
-    applyNativeDeploymentPhase(
-      api,
-      options,
-      "worker",
-      "preview",
-      plan,
-      "BEFORE_CODE",
+    applyD1Migrations(
+      api, options, "worker",
+      { environment: "preview", bindingName: "DB", migrations: plan.migrations },
     ),
   ).rejects.toThrow("Remote migration receipt missing");
 });
@@ -147,17 +141,13 @@ test("preserves completed remote migration receipts when the next file fails", a
     },
   };
   try {
-    await applyNativeDeploymentPhase(
-      api,
-      options,
-      "worker",
-      "production",
-      plan,
-      "BEFORE_CODE",
+    await applyD1Migrations(
+      api, options, "worker",
+      { environment: "production", bindingName: "DB", migrations: plan.migrations },
     );
     throw new Error("expected failure");
   } catch (error: any) {
-    expect(error.phase).toBe("BEFORE_CODE");
+    expect(error.failedMigration).toBe("0002.sql");
     expect(error.completed).toEqual([receipt]);
     expect(error.message).toBe("second SQL failed");
   }
@@ -191,7 +181,7 @@ test("an explicit empty Cron list disables only CLI-managed schedules in this en
     },
   };
   const empty = {
-    migrations: [],
+    d1Migrations: [],
     consumers: [],
     crons: [],
     cronsConfigured: false,
@@ -238,7 +228,7 @@ test("removed native Queue consumer is disabled once; the Queue and manual consu
       return { status: "UNCHANGED" };
     },
   };
-  const desired = { migrations: [], consumers: [plan.consumers[0]], crons: [], cronsConfigured: false };
+  const desired = { d1Migrations: [], consumers: [plan.consumers[0]], crons: [], cronsConfigured: false };
   await applyNativeDeploymentPhase(api, options, "worker", "preview", desired, "AFTER_CODE");
   await applyNativeDeploymentPhase(api, options, "worker", "preview", desired, "AFTER_CODE");
   expect(calls).toEqual(["disable:old", "configure:current", "configure:current"]);
@@ -250,7 +240,7 @@ test("removing all consumer declarations reconciles a previously managed consume
   await applyNativeDeploymentPhase({
     async listWorkerResources() { return [{ id: "old", type: "QUEUE", bindingName: "OLD", status: "ACTIVE", config: { nativeConsumerHash: "hash" } }]; },
     async disableWorkerQueueConsumer(_o, _w, _e, id) { disabled.push(id); return { status: "DISABLED" }; },
-  }, options, "worker", "preview", { migrations: [], consumers: [], crons: [], cronsConfigured: false }, "AFTER_CODE");
+  }, options, "worker", "preview", { d1Migrations: [], consumers: [], crons: [], cronsConfigured: false }, "AFTER_CODE");
   expect(disabled).toEqual(["old"]);
 });
 

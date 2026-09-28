@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RequestTimeoutError } from "../client.ts";
@@ -303,6 +303,26 @@ describe("workers promote", () => {
     }));
   });
 
+  test("promote binds production D1 without executing or validating its SQL migrations", async () => {
+    const root = fixture();
+    const project = JSON.parse(readFileSync(join(root, "xapi.worker.json"), "utf8"));
+    project.environments.production.resources = [{ type: "d1_database", bindingName: "DB" }];
+    writeFileSync(join(root, "xapi.worker.json"), JSON.stringify(project));
+    const wrangler = JSON.parse(readFileSync(join(root, "wrangler.jsonc"), "utf8"));
+    wrangler.env.production.d1_databases = [{ binding: "DB", migrations_dir: "absent-sql" }];
+    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify(wrangler));
+    const platform = fakePlatform({ resources: [{ id: "db-prod", bindingName: "DB", type: "D1_DATABASE", status: "ACTIVE" }] });
+    let sqlCalls = 0;
+    Object.assign(platform.client, { applyWorkerD1Migration: async () => { sqlCalls++; throw new Error("Must not execute SQL"); } });
+    const result = await promoteWorkerProject({
+      cwd: root, to: "production", clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: platform.client, confirm: async () => true,
+      fetchPublic: (async () => Response.json({ ok: true })) as unknown as typeof fetch, sleep: async () => undefined,
+    });
+    expect(result.status).toBe("ACTIVE");
+    expect(platform.calls.deploy).toBe(1);
+    expect(sqlCalls).toBe(0);
+  });
   test("promotes the exact latest ACTIVE preview Artifact, waits, health-checks, and repeats safely", async () => {
     const root = fixture();
     const platform = fakePlatform({ failDeployOnce: true });

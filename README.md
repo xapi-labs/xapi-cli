@@ -480,6 +480,22 @@ xapi workers logs <worker-id> --env production --tail --since 10m
 xapi workers logs <worker-id> --env production --request-id <request-id>
 ```
 
+`workers push` and `workers promote` keep resource creation/binding and Queue/Cron
+`AFTER_CODE`, but do not read or execute D1 SQL. Migrations are explicit:
+
+```sh
+# Local plan only: no backend call or build; remoteStatus: NOT_CHECKED.
+xapi workers d1 migrations plan --binding DB --env preview
+# Remote SQL only: requires a linked workerId and an ACTIVE D1 binding.
+xapi workers d1 migrations apply --binding DB --env preview
+```
+
+Both commands accept `--config PATH` and `--env preview|production`. Apply does
+not create resources or publish code. Ordinary publishing needs no migration-ledger
+repair; code rollback does not undo SQL. See the
+[complete migration workflow](skills/xapi-workers/references/deployment.md#explicit-d1-migrations)
+for first-deployment ordering, receipts, and failure handling.
+
 Choose `init` based on the starting point:
 
 | Starting point | Command |
@@ -606,7 +622,7 @@ do not establish cloud verification. See the
 for retention and review details.
 
 For project-managed resources, `xapi.worker.json` is the Git-tracked desired
-state and xAPI is live state. `plan` always fetches live state; the CLI keeps no
+state and xAPI is live state. `workers plan` always fetches live state; the CLI keeps no
 third cached copy.
 
 | Intent | Project command | Effect |

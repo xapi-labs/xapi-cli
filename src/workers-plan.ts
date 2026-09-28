@@ -59,7 +59,7 @@ export interface WorkerPlanAction {
 export interface WorkerDeploymentPlan {
   schemaVersion: 1;
   variables?: WorkerVariableDecision[];
-  nativeSteps?: { migrations: Array<{ bindingName: string; table: string; name: string; sha256: string }>; consumers: unknown[]; crons: string[] };
+  nativeSteps?: ReturnType<typeof publicNativeDeploymentPlan>;
   project: {
     rootDir: string;
     configPath: string;
@@ -1030,6 +1030,6 @@ export async function prepareWorkerPlan(
   if (readFileSync(project.configPath, "utf8") !== configContent)
     throw new WorkerProjectBuildError("Project configuration changed while planning; rerun the plan", { remoteChangesApplied: false });
   if (JSON.stringify(plan.nativeSteps) !== JSON.stringify(publicNativeDeploymentPlan(nativePlan)))
-    throw new Error('Wrangler configuration or migrations changed while planning; rerun the plan');
+    throw new Error('Wrangler event configuration or D1 binding guidance changed while planning; rerun the plan');
   return { plan, bundle, nativePlan, configContent };
 }

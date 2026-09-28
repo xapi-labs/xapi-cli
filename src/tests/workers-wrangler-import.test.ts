@@ -513,7 +513,7 @@ test("imports native metadata/cache and modern required secrets without values",
   expect(result.config?.environments.preview.secrets).toEqual(["AUTH_SECRET"]);
 });
 
-test("reports ordered remote migrations and explicit platform event mappings", () => {
+test("reports explicit D1 commands separately from automatic platform event mappings", () => {
   const root = workspace();
   writeFileSync(
     join(root, "wrangler.jsonc"),
@@ -544,6 +544,7 @@ test("reports ordered remote migrations and explicit platform event mappings", (
   ]);
   expect(phases[0]).toMatchObject({
     bindingName: "DB",
+    phase: "EXPLICIT_COMMAND",
     configuration: { directory: "migrations", table: "d1_migrations" },
   });
   expect(phases[2]).toMatchObject({
