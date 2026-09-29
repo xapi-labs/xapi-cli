@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.2.0](https://github.com/xapi-labs/xapi-cli/compare/v0.1.23...v0.2.0) (2026-09-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **workers:** workers push and workers promote no longer execute D1 SQL automatically. Run workers d1 migrations plan/apply --binding NAME --env ENV explicitly when schema changes are intended. Deployment nativeSteps now carries d1Migrations command guidance rather than SQL migration entries; imported D1 steps use EXPLICIT_COMMAND instead of BEFORE_CODE.
+
+### Features
+
+* **skill:** enable native Workers project deployment and setup ([#40](https://github.com/xapi-labs/xapi-cli/issues/40)) ([100024f](https://github.com/xapi-labs/xapi-cli/commit/100024f6cc76ca5a00bc6b9eccf0e87dfec3152b))
+* **skill:** verify domain search suggestions before purchase ([#44](https://github.com/xapi-labs/xapi-cli/issues/44)) ([341d8dc](https://github.com/xapi-labs/xapi-cli/commit/341d8dcca2349ff501a0e2f0c9c3707265333bf6))
+
+
+### Bug Fixes
+
+* **skill:** guide Workers DNS conflicts and domain switching ([#41](https://github.com/xapi-labs/xapi-cli/issues/41)) ([eb3fd39](https://github.com/xapi-labs/xapi-cli/commit/eb3fd39c78891eb175c57b180228f79672789173))
+* **workers:** continue pending R2 initialization before publishing ([36ddb9a](https://github.com/xapi-labs/xapi-cli/commit/36ddb9a004355fd18559e71c80976cc9a3893681))
+* **workers:** resume pending R2 initialization during push ([8aa96dc](https://github.com/xapi-labs/xapi-cli/commit/8aa96dc3c107db2bdb52f1d461ba82549d9963bd))
+* **workers:** retry R2 creation through the original push flow ([189874e](https://github.com/xapi-labs/xapi-cli/commit/189874efbf3b2336a70cf1fefa82b31b83b58b32))
+* **workers:** separate D1 migrations from code deployment ([86ed3ba](https://github.com/xapi-labs/xapi-cli/commit/86ed3ba28a30a47f01b3a420ff5a6735492d5bc3))
+
+
+### Documentation
+
+* **skill:** document Workers domain conflict recovery ([#36](https://github.com/xapi-labs/xapi-cli/issues/36)) ([ac26d51](https://github.com/xapi-labs/xapi-cli/commit/ac26d51de6ab9a9e187a668b5d45182508c62228))
+
 ## [0.1.23](https://github.com/xapi-labs/xapi-cli/compare/v0.1.22...v0.1.23) (2026-09-21)
 
 
