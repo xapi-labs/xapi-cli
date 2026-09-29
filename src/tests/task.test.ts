@@ -9,8 +9,11 @@ describe('task commands', () => {
   let errSpy: ReturnType<typeof spyOn>;
   let cfgSpy: ReturnType<typeof spyOn>;
   let exitSpy: ReturnType<typeof spyOn>;
+  let callSpy: ReturnType<typeof spyOn>;
+  let clockSpy: ReturnType<typeof spyOn> | undefined;
 
   beforeEach(() => {
+    callSpy = spyOn(client, 'actionCall');
     outputSpy = spyOn(format, 'output').mockImplementation(() => {});
     errSpy = spyOn(format, 'err').mockImplementation((() => { throw new Error('err called'); }) as any);
     cfgSpy = spyOn(config, 'getConfig').mockReturnValue({ actionHost: 'action.xapi.to', apiKey: 'sk-test' });
@@ -18,6 +21,9 @@ describe('task commands', () => {
   });
 
   afterEach(() => {
+    callSpy.mockRestore();
+    clockSpy?.mockRestore();
+    clockSpy = undefined;
     if (jest.isFakeTimers()) {
       jest.useRealTimers();
     }
@@ -28,7 +34,7 @@ describe('task commands', () => {
   });
 
   it('taskPoll calls task.poll and outputs payload', async () => {
-    const callSpy = spyOn(client, 'actionCall').mockResolvedValue({
+    callSpy.mockResolvedValue({
       success: true,
       data: { task_id: 'tid', status: 'pending' },
     });
@@ -37,12 +43,11 @@ describe('task commands', () => {
 
     expect(callSpy).toHaveBeenCalledWith('task.poll', { task_id: 'tid' }, expect.any(Object), undefined, 2);
     expect(outputSpy).toHaveBeenCalledWith({ task_id: 'tid', status: 'pending' }, undefined);
-    callSpy.mockRestore();
   });
 
   it('taskWait polls until succeeded', async () => {
     jest.useFakeTimers();
-    const callSpy = spyOn(client, 'actionCall')
+    callSpy
       .mockResolvedValueOnce({ data: { task_id: 'tid', status: 'pending' } })
       .mockResolvedValueOnce({ data: { task_id: 'tid', status: 'succeeded', result: { ok: true } } });
 
@@ -56,11 +61,10 @@ describe('task commands', () => {
       { task_id: 'tid', status: 'succeeded', result: { ok: true } },
       undefined,
     );
-    callSpy.mockRestore();
   });
 
   it('taskWait exits with code 1 on failed status', async () => {
-    const callSpy = spyOn(client, 'actionCall').mockResolvedValue({
+    callSpy.mockResolvedValue({
       data: { task_id: 'tid', status: 'failed', error: { code: 'upstream_500' } },
     });
 
@@ -70,15 +74,27 @@ describe('task commands', () => {
       undefined,
     );
     expect(exitSpy).toHaveBeenCalledWith(1);
-    callSpy.mockRestore();
   });
 
   it('taskWait treats --timeout as a real upper bound (no extra poll after deadline)', async () => {
     // interval far larger than timeout: the old code slept a full interval before
     // checking, overshooting by ~10m and polling once more. The deadline must fire
     // after a single poll instead.
-    const callSpy = spyOn(client, 'actionCall').mockResolvedValue({ data: { task_id: 'tid', status: 'pending' } });
-    await expect(taskWait(['tid'], { interval: '10m', timeout: '30ms' })).rejects.toThrow('err called');
+    callSpy.mockResolvedValue({ data: { task_id: 'tid', status: 'pending' } });
+    jest.useFakeTimers();
+    let now = 1000;
+    clockSpy = spyOn(Date, 'now').mockImplementation(() => now);
+    const result = taskWait(['tid'], { interval: '10m', timeout: '30ms' })
+      .catch(error => error);
+    await Promise.resolve();
+    // Reproduce a timer waking one millisecond before the deadline clock.
+    now = 1029;
+    jest.advanceTimersByTime(30);
+    await Promise.resolve();
+    await Promise.resolve();
+    now = 1030;
+    jest.advanceTimersByTime(1);
+    expect(await result).toMatchObject({ message: 'err called' });
     expect(errSpy).toHaveBeenCalledWith('task wait timeout', expect.stringContaining('timeout_ms=30'));
     expect(callSpy).toHaveBeenCalledTimes(1);
     // The single poll must be bounded by the remaining deadline and not retried,
@@ -87,11 +103,10 @@ describe('task commands', () => {
     expect(method).toBeUndefined();
     expect(retries).toBe(0);
     expect(pollTimeout).toBeLessThanOrEqual(30);
-    callSpy.mockRestore();
   });
 
   it('taskWait recovers from a transient poll failure within the deadline', async () => {
-    const callSpy = spyOn(client, 'actionCall')
+    callSpy
       .mockRejectedValueOnce(new client.HttpError(503, 'busy'))
       .mockResolvedValueOnce({ data: { task_id: 'tid', status: 'succeeded' } });
 
@@ -104,11 +119,10 @@ describe('task commands', () => {
     }
     expect(outputSpy).toHaveBeenCalledWith({ task_id: 'tid', status: 'succeeded' }, undefined);
     expect(errSpy).not.toHaveBeenCalled();
-    callSpy.mockRestore();
   });
 
   it('taskWait counts transient failures toward max-attempts', async () => {
-    const callSpy = spyOn(client, 'actionCall').mockRejectedValue(new TypeError('fetch failed'));
+    callSpy.mockRejectedValue(new TypeError('fetch failed'));
 
     await expect(taskWait(['tid'], { interval: '1ms', 'max-attempts': '2' })).rejects.toThrow('err called');
 
@@ -117,11 +131,10 @@ describe('task commands', () => {
       'task wait exceeded max attempts',
       expect.stringContaining('max_attempts=2'),
     );
-    callSpy.mockRestore();
   });
 
   it('taskWait errors when max attempts exceeded', async () => {
-    const callSpy = spyOn(client, 'actionCall').mockResolvedValue({
+    callSpy.mockResolvedValue({
       data: { task_id: 'tid', status: 'pending' },
     });
 
@@ -130,7 +143,6 @@ describe('task commands', () => {
       'task wait exceeded max attempts',
       expect.stringContaining('max_attempts=1'),
     );
-    callSpy.mockRestore();
   });
 
   it('taskWait validates max-attempts', async () => {

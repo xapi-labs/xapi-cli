@@ -6,6 +6,7 @@
 import { getConfig, requireApiKey } from '../config.ts';
 import * as client from '../client.ts';
 import { output, err } from '../format.ts';
+import { waitForPoll } from '../poll-wait.ts';
 
 const POLL_HELP = `xapi-to task poll - Poll an async task once
 
@@ -92,11 +93,6 @@ function parsePositiveInt(raw: string, flagName: string): number {
     err(`${flagName} must be a positive integer`);
   }
   return n;
-}
-
-function sleep(ms: number): Promise<void> {
-  if (ms <= 0) return Promise.resolve();
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function extractTaskPayload(res: unknown): Record<string, unknown> {
@@ -223,10 +219,7 @@ export async function taskWait(args: string[], flags: Record<string, string>) {
 
     // Sleep no longer than the time remaining before the deadline.
     const desiredWaitMs = retryDelayMs ?? intervalMs;
-    const waitMs = deadline !== undefined
-      ? Math.min(desiredWaitMs, Math.max(0, deadline - Date.now()))
-      : desiredWaitMs;
-    await sleep(waitMs);
+    await waitForPoll(desiredWaitMs, deadline);
   }
 }
 
