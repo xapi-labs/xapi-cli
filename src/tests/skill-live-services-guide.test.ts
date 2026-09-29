@@ -7,7 +7,7 @@ const blockpi = readFileSync(new URL('../../skills/xapi/guides/blockpi.md', impo
 const binance = readFileSync(new URL('../../skills/xapi/guides/binance_web3.md', import.meta.url), 'utf8');
 
 const DOMAIN_ACTIONS = [
-  'domain.search', 'domain.check', 'domain.price', 'domain.register',
+  'domain.search', 'domain.checkBatch', 'domain.check', 'domain.price', 'domain.register',
   'domain.registration.get', 'domain.list', 'domain.get', 'dns.list',
   'dns.upsert', 'dns.delete', 'dns.dnssec.get', 'dns.dnssec.set',
 ];
@@ -113,8 +113,10 @@ describe('bundled xAPI live-service guides', () => {
       'record_id', 'record_index', 'domain.list', 'dns.list',
       'task_id', 'pending', 'processing', 'pending-disabled',
       'desired_enabled', 'effective_enabled', 'action_required',
+      'verification_status: "unverified"', 'pricing.quote_type: "search_estimate"',
+      'pricing.quote_type: "checked"', '1–20', 'unavailable candidates',
     ]) expect(domains).toContain(safeguard);
-    expectValidJsonExamples(domains, 12);
+    expectValidJsonExamples(domains, 13);
     expectBalancedFences(domains);
   });
 
