@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/xapi-labs/xapi-cli/compare/v0.2.0...v0.2.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* **cli:** respect polling delays when timers wake early ([b5333eb](https://github.com/xapi-labs/xapi-cli/commit/b5333eb3a9822425283d84c023b3448d41cb0911))
+* **cli:** respect polling delays when timers wake early ([03a98ea](https://github.com/xapi-labs/xapi-cli/commit/03a98eac7e365759b243c40d503dab5429d4e344))
+
 ## [0.2.0](https://github.com/xapi-labs/xapi-cli/compare/v0.1.23...v0.2.0) (2026-09-29)
 
 
