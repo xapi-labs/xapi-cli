@@ -342,7 +342,7 @@ xapi workers push --env preview --non-interactive
 xapi workers inspect --env preview --format json
 ```
 
-For xAPI platform maintainers, keep this Worker implementation on one Worker feature branch; Sandbox changes stay separate. Integrate the authorized release through `dev → staging → main`, completing the checks at each stage. This repository rollout is distinct from a customer's preview-to-production Worker promotion. Local source/tests are not evidence that the platform has been deployed or that a CLI package is published; package version/tag/publication remains governed by Release Please.
+For xAPI platform maintainers, keep Worker implementation changes on one Worker feature branch; Sandbox changes stay separate. The backend platform integrates an authorized release through `dev → staging → main`, completing the checks at each stage. The separate CLI repository uses its own development PR to `main` and Release Please release review; do not invent CLI staging branches or publish a feature checkout. These repository flows are distinct from a customer's preview-to-production Worker promotion. Local source/tests are not evidence that the platform has been deployed or that a CLI package is published; package version/tag/publication remains governed by Release Please.
 
 Promote in the already authorized release job after preview acceptance. Follow repository AGENTS.md and branch/PR rules; do not infer release authorization from a successful preview push. On uncertain results inspect deployments/logs and read the original operation before choosing an explicit retry with unchanged inputs; stable idempotency keys preserve its identity without automatic write replay. Do not change IDs or clear deletion flags to force deployment through.
 
