@@ -248,7 +248,11 @@ export async function createWorkerRollbackPlan(
         : {}),
     },
     selection: options.to === "previous" ? "previous" : "explicit",
-    codeOnly: !Array.isArray((target?.providerResult as UnknownRecord | undefined)?.containerOverrides),
+    codeOnly:
+      ((target?.providerResult as UnknownRecord | undefined)?.deploymentSnapshot as UnknownRecord | undefined)?.version !== 1 &&
+      !Array.isArray((target?.providerResult as UnknownRecord | undefined)?.containerOverrides) &&
+      (target?.providerResult as UnknownRecord | undefined)?.variableOverrides === undefined &&
+      (target?.providerResult as UnknownRecord | undefined)?.nativeMetadataOverrides === undefined,
     dataAndSecretsRolledBack: false,
     warning:
       "Re-deploy the selected Artifact code, public variables, compatibility settings, required Secret names and Container configuration. D1, R2, KV, Durable Object data, Queue/Workflow state, schedules and Secret values keep their current state; Secret values are not restored from a historical value snapshot; D1 migrations are explicit commands.",

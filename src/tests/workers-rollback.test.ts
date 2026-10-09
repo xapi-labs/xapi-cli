@@ -268,6 +268,26 @@ test('explicit rollback accepts a prior deployment with the same Artifact',async
   expect(plan.plan.codeOnly).toBe(false);
 });
 
+test.each([
+  [{ deploymentSnapshot: { version: 1, variables: { TITLE: 'v1' } } }, false],
+  [{ variableOverrides: {} }, false],
+  [{ nativeMetadataOverrides: {} }, false],
+  [{ containerOverrides: [] }, false],
+  [{ deploymentSnapshot: { version: 2 } }, true],
+  [{ requiredSecrets: ['API_TOKEN'] }, true],
+])('rollback plan codeOnly matches server audit for %j', async (providerResult, codeOnly) => {
+  const root = fixture(), platform = fakePlatform();
+  platform.deployments.find(item => item.id === 'production-previous')!.providerResult = providerResult;
+  const { plan } = await createWorkerRollbackPlan({
+    cwd: root, environment: 'production', to: 'previous',
+    clientOptions: { apiHost: 'localhost:3003', apiKey: 'test-key' }, client: platform.client,
+  });
+  expect(plan.codeOnly).toBe(codeOnly);
+  expect(plan.dataAndSecretsRolledBack).toBe(false);
+  expect(plan.target).toEqual({ deploymentId: 'production-previous', artifactId: 'artifact-previous' });
+  expect(platform.calls.rollback).toBe(0);
+});
+
  test('lost rollback response with no visible receipt never dispatches a second write',async()=>{
   const root=fixture(),platform=fakePlatform();
   platform.client.rollbackWorker=async()=>{platform.calls.rollback++;throw new RequestTimeoutError(60_000);};
