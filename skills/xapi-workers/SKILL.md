@@ -15,6 +15,16 @@ Use the `xapi` CLI (`xapi-to` is the same executable). Verify `xapi workers --he
 - For an existing linked project, start with `workers inspect [worker-id] --env <environment>` and `workers capabilities`. For a new unlinked project, use capabilities and plan; inspect needs a real Worker ID. Use `workers plan --env <environment>` when a local project is available and desired-state drift matters. `inspect` reads current runtime state only. `plan` runs the configured local build with credential-shaped environment variables removed, validates the exact Artifact, and compares it with live state without writing to the xAPI control plane. It also shows the budget cap, active price-book visibility, and usage-dependent resource changes; never present those estimates as an accrued invoice. Use existing user authorization for changes; don't expand cleanup from a test environment to production.
 - Treat Worker execution and data placement separately. Worker code remains global. Use environment `defaultResourceLocation` only as the default for newly created D1/R2 resources and `placementMode: smart` only for Cloudflare Smart Placement. Never claim either setting migrates existing data.
 
+## Build where the CLI runs
+
+The MVP deployment path builds where the CLI runs, uploads the immutable artifact
+and publishes it through xAPI. That execution environment may be a computer, CI
+runner or user-owned Sandbox. A user-owned Sandbox remains under its own billing
+and lifecycle; Worker deployment never implies its automatic deletion. Managed
+server-side `workers build` retains the main-branch unavailable contract. New user
+delegation and a separate cloud-build customer charge are deferred; do not claim
+that an ordinary `workers push` creates or bills a managed build Sandbox.
+
 ## D1 migrations are explicit
 
 `workers push` and `workers promote` preserve resource creation/binding and Queue/Cron `AFTER_CODE`, but do not read or execute D1 SQL. Use `workers d1 migrations plan` for a local-only plan and `workers d1 migrations apply` for explicit remote execution. Both take `--binding NAME --env preview|production [--config PATH]`. Read [the complete migration workflow](references/deployment.md#explicit-d1-migrations) before migration work, including first-deployment ordering and failure handling. Ordinary publishing does not require migration-ledger repair; code rollback does not undo SQL.

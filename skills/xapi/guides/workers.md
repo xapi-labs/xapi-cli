@@ -568,25 +568,20 @@ npx xapi-to workers get <worker-id> --format pretty
 curl "<preview-publicUrl>/health"
 ```
 
-### Optional Sandbox build
+### Build in your execution environment
 
-`workers build` uploads a bounded project snapshot. The control plane creates an ephemeral Sandbox with platform credentials, writes the project, executes the explicit command, stores the output as the same immutable Artifact type, and requests termination in `finally`.
+For this MVP, build with the CLI on your computer, CI runner or user-owned xAPI
+Sandbox, then upload the Artifact and deploy through xAPI. A user-owned Sandbox
+has its own billing/lifecycle; Worker deployment does not create another build
+Sandbox or automatically delete yours. Use only your authorized credentials,
+never platform/provider credentials, and keep secrets out of build artifacts.
 
-The CLI skips `.git`, `.xapi`, `node_modules`, `dist`, credential directories (`.ssh`, `.aws`, `.gnupg`, `.docker`), `.env*`, package-manager credential files, private-key extensions, and common SSH private-key names.
-
-The optional server-side Sandbox builder currently requires `--output` to
-identify one bundled ES module produced by the command:
-
-```bash
-npx xapi-to workers build <worker-id> \
-  --project . \
-  --entrypoint src/index.ts \
-  --command "npm install --ignore-scripts --no-audit --no-fund && npm run build" \
-  --output dist/worker.mjs \
-  --idempotency-key source-2026-08-21
-```
-
-The result must have `status: SUCCEEDED`. Save its `artifactId`, not the build `id`, and deploy it with `--artifact`.
+The separate managed `workers build` API retains the main-branch unavailable
+contract (`worker_cloud_build_disabled` / `USER_BUILD_BUDGET_NOT_IMPLEMENTED`).
+New user delegation and customer cloud-build billing are deferred; do not use
+that command as a required deployment step or claim setting a platform build Key
+enables it. Existing build history remains readable. See the current
+[Worker deployment reference](../../xapi-workers/references/deployment.md).
 
 Reuse an upload key only for identical normalized Artifact bytes. Reuse a build key only for the exact same source snapshot and parameters. Reuse a deployment key only for the same Artifact and environment. A successful deployment returns `status: ACTIVE`; `DEPLOYING` is not completion and `FAILED` must be surfaced with its error.
 
