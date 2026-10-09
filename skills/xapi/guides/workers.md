@@ -877,6 +877,13 @@ verified immutable content before deployment; upload cancellation does not
 occupy the deployment target. Expiry requires a new upload. Legacy upload remains
 available for other storage modes.
 
+Transient file lists live in private R2, with small DB references. A new explicit
+preparation of identical content may reuse a channel and still grants the full
+15-minute window, so an earlier CLI exit does not shorten the next attempt.
+After the existing24h cleanup grace, a failed expired session may be absent;
+start a new upload. Confirmed artifact receipts and deployment history remain.
+There is no new per-owner file/session quota.
+
 `xapi workers pull --env preview --output deployment-snapshot.json` reads the
 active deployment snapshot and local differences, and saves a separate public
 configuration snapshot. It preserves native metadata without rewriting Wrangler
