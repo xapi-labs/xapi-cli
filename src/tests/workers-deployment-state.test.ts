@@ -49,6 +49,26 @@ test("preserves direct v3 matching without requiring rollback provenance", () =>
   expect(currentMatchingDeployment([p.current], p.environment, "artifact", p.prefix)).toBe(p.current);
 });
 
+test("matches nested successful rollback links in the existing snapshot", () => {
+  const p = rollbackSnapshot();
+  const original: Record<string, unknown> = { ...p.target, id: "original" };
+  p.target.idempotencyKey = "rollback:previous";
+  p.target.providerResult = { rollbackTargetDeploymentId: original.id };
+  p.deployments.push(original);
+  expect(currentMatchingDeployment(p.deployments, p.environment, "artifact", p.prefix)).toBe(p.current);
+  for (const change of [
+    () => { original.environmentId = "foreign"; },
+    () => { original.artifactId = "foreign"; },
+    () => { original.status = "FAILED"; },
+    () => { original.idempotencyKey = "different-configuration"; },
+    () => { original.idempotencyKey = "rollback:cycle"; original.providerResult = { rollbackTargetDeploymentId: p.current.id }; },
+  ]) {
+    Object.assign(original, { ...p.target, id: "original", idempotencyKey: p.prefix + "original" });
+    change();
+    expect(currentMatchingDeployment(p.deployments, p.environment, "artifact", p.prefix)).toBeUndefined();
+  }
+});
+
 for (const [name, change] of [
   ["current activation points elsewhere", (p: ReturnType<typeof rollbackSnapshot>) => { p.environment.activeDeploymentId = "unlisted"; }],
   ["current activation absent", (p: ReturnType<typeof rollbackSnapshot>) => { delete (p.environment as Record<string, unknown>).activeDeploymentId; delete p.current.id; }],
@@ -71,7 +91,8 @@ for (const [name, change] of [
   ["target configuration prefix differs", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.idempotencyKey = "v3-other-config-original"; }],
   ["target key missing", (p: ReturnType<typeof rollbackSnapshot>) => { delete p.target.idempotencyKey; }],
   ["self-reference", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.providerResult = { rollbackTargetDeploymentId: p.current.id }; }],
-  ["target is another rollback, not a direct configuration proof", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.idempotencyKey = "rollback:previous"; p.target.providerResult = { rollbackTargetDeploymentId: "matching-grandparent" }; p.deployments.push({ ...p.target, id: "matching-grandparent", idempotencyKey: p.prefix + "historical" }); }],
+  ["nested rollback target missing", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.idempotencyKey = "rollback:previous"; p.target.providerResult = { rollbackTargetDeploymentId: "missing-grandparent" }; }],
+  ["nested rollback cycle", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.idempotencyKey = "rollback:previous"; p.target.providerResult = { rollbackTargetDeploymentId: p.current.id }; }],
 ] as const) {
   test(`rollback match fails closed: ${name}`, () => {
     const p = rollbackSnapshot();
@@ -94,8 +115,14 @@ test("push reuses the current successful rollback without another deploy or hist
   expect(result.idempotencyKey).toBe(rollback.idempotencyKey);
   expect(p.deployments).toHaveLength(2);
   expect(reads).toBe(1);
-  expect((await p.run("2026-09-06")).deployment.id).not.toBe(rollback.id);
+  const nested = { ...rollback, id: "rollback-again", providerResult: { rollbackTargetDeploymentId: rollback.id } };
+  p.deployments.push(nested);
+  p.environment.activeDeploymentId = nested.id;
+  expect((await p.run()).deployment).toBe(nested);
   expect(p.deployments).toHaveLength(3);
+  expect(reads).toBe(2);
+  expect((await p.run("2026-09-06")).deployment.id).not.toBe(rollback.id);
+  expect(p.deployments).toHaveLength(4);
 });
 
 test("same code: add, replace and explicitly remove bindings deploy; unchanged repeats do not", async () => {

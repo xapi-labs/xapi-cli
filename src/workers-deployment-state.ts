@@ -51,18 +51,25 @@ export function currentMatchingDeployment(deployments: Row[], environmentState: 
   const current = deployments.find(d => d.id === environmentState.activeDeploymentId &&
     d.environmentId === environmentState.id && d.artifactId === artifactId &&
     d.status === "ACTIVE");
-  if (!current || typeof current.idempotencyKey !== "string") return undefined;
-  if (current.idempotencyKey.startsWith(prefix)) return current;
-  if (!current.idempotencyKey.startsWith("rollback:")) return undefined;
-  // A successful rollback restores the server-selected release configuration.
-  // Reuse only its exact recorded target from this snapshot, never guess from
-  // an Artifact match or follow a chain of historical rollback records.
-  const targetId = (current.providerResult as Row | undefined)?.rollbackTargetDeploymentId;
-  if (typeof targetId !== "string" || !targetId || targetId === current.id) return undefined;
-  const target = deployments.find(d => d.id === targetId &&
-    d.environmentId === environmentState.id && d.artifactId === artifactId &&
-    d.status === "ACTIVE" && typeof d.idempotencyKey === "string" && d.idempotencyKey.startsWith(prefix));
-  return target ? current : undefined;
+  if (!current) return undefined;
+  // A rollback may itself select a successful rollback. Follow only exact
+  // server-recorded links already in this bounded snapshot, with every link
+  // proving the same environment/artifact. Never infer from artifact alone or
+  // fetch unbounded history. Cycles/missing evidence simply require deployment.
+  const byId = new Map(deployments.map(d => [d.id, d]));
+  const visited = new Set<unknown>();
+  let proof: Row | undefined = current;
+  while (proof && !visited.has(proof.id)) {
+    visited.add(proof.id);
+    if (proof.environmentId !== environmentState.id || proof.artifactId !== artifactId ||
+        proof.status !== "ACTIVE" || typeof proof.idempotencyKey !== "string") return undefined;
+    if (proof.idempotencyKey.startsWith(prefix)) return current;
+    if (!proof.idempotencyKey.startsWith("rollback:")) return undefined;
+    const targetId = (proof.providerResult as Row | undefined)?.rollbackTargetDeploymentId;
+    if (typeof targetId !== "string" || !targetId) return undefined;
+    proof = byId.get(targetId);
+  }
+  return undefined;
 }
 
 // Scope to the previous activation: returning to an older configuration must
