@@ -1,10 +1,30 @@
 # xAPI Hosted Workers
 
+Container deployment settings accept custom `instanceType` objects such as
+`{"vcpu":1,"memory_mib":3072,"disk_mb":5500}`, including Wrangler import,
+environment-specific deployment and rollback. MiB memory and decimal MB disk
+use existing compute rates and the five-minute exposure calculation. Confirm
+actual native rollout/size before claiming a configuration switch completed;
+native sizing/account errors remain upstream errors. Native `dev` and
+`standard` aliases are accepted with the same capacity pricing as `lite` and
+`standard-1`. Compute coverage does not replace seven-day retention funding;
+use the server quote and preserve Worker/DO protection. The local candidate's
+Container retention classification remains under review, not a released
+fee exemption. See `xapi-workers/references/deployment.md`.
+
+Worker `ACTIVE` and a Container rollout's completion are separate facts.
+An ACTIVE retry with the same deployment idempotency key returns the original
+deployment with its observed Container progress, without another rollout or
+funding freeze. Read `deployments[].containerRollout` from `workers get --format json` for the
+recorded configuration progress; do not resubmit a deployment because native
+confirmation is pending. Seven-day preservation covers code/configuration and
+native persistent resources, not automatic recovery of ephemeral disk files.
+
 Use this guide when the user wants to deploy an API, Webhook, Chat endpoint, scheduled JavaScript task, or persistent Agent to xAPI-managed Cloudflare Workers for Platforms.
 
 ## Choose Worker or Sandbox
 
-- Use `workers` for continuously addressable HTTP/WebSocket applications, Webhooks, scheduled tasks, and persistent Agent entrypoints. The control plane currently manages KV, D1, R2, Durable Objects, Queues, Workflows, Secrets, and persistent schedules. Run `workers capabilities` before provisioning because the configured Cloudflare token may not have every required resource permission.
+- Use `workers` for continuously addressable HTTP/WebSocket applications, Webhooks, scheduled tasks, and persistent Agent entrypoints. The control plane currently manages KV, D1, R2, Durable Objects, Queues, Workflows, Secrets, and persistent schedules. Use `workers capabilities` for optional read-only provider diagnosis; provisioning reports its own upstream result.
 - Use `sandbox` for arbitrary shell commands, builds, browsers, GPU work, or short-lived isolated jobs.
 - A Worker may dispatch heavy work to Sandbox. Do not keep a Sandbox alive merely to act as an HTTP service when a Worker fits.
 
@@ -155,6 +175,8 @@ xapi workers resources add --env both --type r2 --binding FILES --location apac
 xapi workers resources add --env both --type do --binding ROOM --class-name Room
 xapi workers resources add --env both --type queue --binding JOBS
 xapi workers resources add --env both --type workflow --binding PIPELINE
+# To run your exported native Workflow class:
+xapi workers resources add --env both --type workflow --binding NATIVE_PIPELINE --class-name Pipeline --workflow-name pipeline
 xapi workers resources update --env preview --type d1 --binding DB \
   --location weur --read-replication disabled
 xapi workers plan --env preview
@@ -245,20 +267,55 @@ published using CF's asset upload session before the script is activated.
 Compatibility date/flags must match the project's Wrangler configuration.
 D1/R2/KV binding names must match declared xAPI resources; native account IDs
 and resource IDs are not reused. Secrets are set separately through xAPI.
-The artifact also preserves `observability.enabled`.
+Named `env.preview`/`env.production` bindings and vars do not inherit root
+declarations; when a named environment is absent, the default Wrangler config
+continues to map to that xAPI slot. `vars` stay public Artifact/deployment
+configuration, with native `plain_text`/`json` types; they are not Secret names.
+Promotion of the same Artifact applies production vars, including an explicit
+empty override when production has none. Variable-only changes participate in
+deployment identity; rollback restores the recorded public override and preserves
+current Secret values. Re-import with `--force` corrects desired declarations and
+preserves the linked Worker ID; it does not delete old physical resources.
+The deploy API accepts `variables: {vars: {...}, varTypes?: {...}}`; omission uses
+Artifact defaults, `{vars: {}}` clears them, and `varTypes` can preserve a native
+JSON string. `secrets.required` declares actual Secret names. Secret Store
+references remain an explicit owned-reference adaptation gap, not ordinary Secrets.
+Ordinary native upload configuration is retained in `nativeMetadata`, including
+placement, user-selected limits, logpush and observability extensions; xAPI does
+not maintain a supported-field allowlist for these options. The original Wrangler
+native bundle is authoritative for new configuration translations. If an unknown
+source setting is present, emit it with the original Wrangler configuration using
+`wrangler deploy --dry-run --outfile`; a plain module cannot prove that setting
+was compiled. Account/resource references still require owned mappings; this is
+not a per-user feature switch. User Tail references now resolve an owned xAPI Worker slug/ID (optional preview/production target; default producer environment), preserving the platform metering Tail. Explicit empty tail_consumers clears user Tails. The native Tail CPU settlement remains a local-candidate acceptance gap. Managed DO/Container lifecycle reuploads retain the deployed public/native configuration and frozen physical Tail targets; paused managed runtime does not load tenant code. A real local CF managed-DO Tail active/pause/resume probe passed; Tail-only pause and native CPU ledger acceptance remain open. Service/RPC, Secret Store and log destinations still need verified mappings.
 
-This adapter currently supports the explicitly mapped metadata above, not every
-Wrangler setting. Unmapped metadata fails before artifact upload rather than
-being silently discarded. Cron triggers are separate from the upload bundle
-and must be configured through xAPI schedules. The granular `workers upload`
+The deploy API accepts optional `nativeMetadata`. Omission uses Artifact defaults;
+a nonempty object overlays its ordinary fields; explicit `{}` clears them.
+`placement.mode="off"` is recorded as intent and omitted from the WFP upload, as
+Wrangler does. It does not restore a later environment smart-placement default.
+`version_metadata.binding` becomes the native built-in binding; it does not create
+a managed resource. `keep_vars` maps to public native binding inheritance. User
+tags coexist with the platform deployment tag, which cannot be replaced.
+
+New deployment receipts contain an effective snapshot of metadata, public vars,
+selected resource identities, compatibility settings, aliases and Containers.
+Rollback uses that snapshot rather than current project/environment defaults.
+Historical receipts without a snapshot retain their legacy fallback. This does
+not roll back stored resource data, current Secret values or resources deleted
+since the release. Restore a missing resource explicitly before deploying it.
+Deploy the workers-service backend before the updated CLI; there is no new schema,
+environment variable, periodic job or pricing rule in this change.
+
+Cron triggers are separate from the upload bundle
+and project push/promote map `triggers.crons` to tracked xAPI schedules. The granular `workers upload`
 command is artifact-only; use the project `push` workflow for coordinated
 compatibility, resource, secret and asset handling.
 
-Current xAPI transport limits remain 200 modules / 10 MiB decoded modules and
-12 MiB decoded modules plus assets. These are xAPI limits, not a statement of
-CF's full native capacity. If exceeded, report the unsupported deployment;
-never split a project into unrelated deployments or edit framework output to
-work around the limit.
+Artifact uploads match the backend's 64 MiB decoded Worker module budget,
+100 MiB decoded modules plus assets budget, and 25 MiB per static asset.
+The CLI selects multipart above JSON/base64 transport budgets; the receiver
+record and metadata budgets still apply. Do not split a project into unrelated
+deployments or edit framework output to work around these transfer budgets.
 
 A `PATH_FALLBACK` URL is not a root-hosted Web application URL. Do not rewrite
 application routes or configure GitHub callbacks against an invented host.
@@ -276,8 +333,8 @@ Production promotion first reads the complete production state. Missing
 declared resources appear as `CREATE` and are created only after every budget,
 Secret, compatibility, and extra-resource check passes and the user confirms.
 Any blocked or undeclared production resource stops the command before all
-writes. Use `--retention-price-version <accepted-version>` when a new resource
-requires an accepted freeze quote. Promotion then activates the exact preview
+writes. New resources use the server-calculated environment deposit without
+a separate retention-product choice. Promotion then activates the exact preview
 Artifact and verifies health before reporting success. To restore code:
 
 ```bash
@@ -286,7 +343,7 @@ xapi workers rollback --env production --to previous
 xapi workers rollback --env production --deployment <deployment-id>
 ```
 
-Rollback restores the selected code Artifact and compatibility settings only.
+Rollback restores the selected code Artifact, compatibility settings, and Container configuration. A historical deployment can use the same Artifact with a different Container configuration.
 It does **not** restore or migrate KV, D1, R2, Durable Objects, Queues, Workflows,
 schedule state, or Secret values. Inspect application data compatibility before
 confirming production rollback.
@@ -324,7 +381,7 @@ used by the project workflow, not the recommended first-time deployment path.
 
 ### Create with explicit budgets
 
-The account needs at least $5 available balance. This is a creation guard, not a prepayment. Both environment budgets are required and must be between $0.10 and $100 per day.
+Daily budgets are optional. Omit them or set `dailyBudgetUsd: null` in the project to use the account balance without a user-selected daily cap; actual usage is still billed. An explicit nonnegative budget applies to that environment. Creation has no fixed $5 threshold; real paid deployment/resource operations still require their quoted funds and retain billing evidence.
 
 ```bash
 npx xapi-to workers create \
@@ -365,8 +422,8 @@ npx xapi-to workers upload <worker-id> \
 ```
 
 For code splitting, upload the output directory and name its entrypoint. The
-directory may contain at most 200 supported modules and 10 MiB of decoded
-module content. All modules are sent together in one xAPI Artifact request:
+directory supports the backend 64 MiB decoded module budget. All modules are
+sent together in one xAPI Artifact request; large uploads use multipart:
 
 ```bash
 npx xapi-to workers upload <worker-id> \
@@ -464,8 +521,8 @@ recovery and custom control-plane automation and do not update
 `xapi.worker.json`.
 
 ```bash
-# Inspect the active provider permissions first. A failed item names the exact
-# Cloudflare permission that the platform operator must add.
+# Optional read-only diagnosis. GET success does not prove Edit/Write access;
+# inspect errorCategory, errorCodes and provider headers before blaming permissions.
 npx xapi-to workers capabilities --format pretty
 
 # Recovery-only direct live creation
@@ -480,24 +537,33 @@ After a direct low-level create or delete, run `resources pull` or reconcile the
 project declaration manually before the next deployment. Treat an `ERROR`
 resource as unavailable and surface its provider error.
 
-xAPI Queue creation includes the producer binding, an isolated Cloudflare Queue,
-and an xAPI-managed consumer. The User Worker sends a route envelope; the
-managed consumer delivers it back to the same Worker environment over an
-internal Cloudflare Service Binding:
+xAPI Queues bind an isolated producer Queue and deliver native events to the same owned Worker environment. The platform passes the complete message body to the application's `default.queue(batch, env, ctx)`; it does not route a body `path` to `fetch()`:
 
 ```js
 await env.TASK_QUEUE.send({
-  path: "/tasks/summarize",
-  method: "POST",
-  body: { taskId: "task_123", objectKey: "uploads/report.pdf" },
+  taskId: "task_123", objectKey: "uploads/report.pdf",
 });
+
+export default {
+  async queue(batch, env) {
+    for (const message of batch.messages) {
+      try {
+        const { taskId, objectKey } = message.body;
+        // Initialize this table through the application's migration/setup path.
+        await env.DB.prepare(
+          "INSERT OR IGNORE INTO task_results (id, object_key) VALUES (?, ?)"
+        ).bind(taskId, objectKey).run();
+        message.ack();
+      } catch {
+        message.retry();
+      }
+    }
+  },
+  // Keep the application's fetch handler alongside queue().
+};
 ```
 
-`path` must be a local absolute path. Supported methods are `GET`, `POST`,
-`PUT`, `PATCH`, and `DELETE`; an omitted path uses `/__xapi/queue`. Delivery is
-at least once: a successful `2xx` response is acknowledged, while a failure is
-retried. Tell users to make the target route idempotent by stable task ID and
-to pass resource identifiers instead of secrets in the message body.
+Delivery is at least once. Use a stable task ID for the actual business operation and acknowledge only after its durable result succeeds. Invalid or failed tasks must request retry; a successful send is not completion. Preserve application authentication (the persistent-agent template signs its message payload) and never place platform credentials in message bodies. An existing fetch-only consumer must export a native handler and redeploy; no background replay or implicit HTTP path fallback is provided. Verify the stored business result and delivery receipt, then check metering separately.
 
 Workflow creation installs a managed Workflow host. User code starts an
 instance with `env.AGENT_WORKFLOW.create({ params: { path, method, body } })`,
@@ -609,7 +675,7 @@ npx xapi-to workers domains list <worker-id> --format pretty
 npx xapi-to workers domains retry <worker-id> <domain-id>
 ```
 
-Bindings are risk-tiered. A catalog entry describes product policy; `workers capabilities` is the live Cloudflare token preflight. A failed D1 item, for example, must identify `D1 Edit` and block D1 creation while leaving unrelated resources usable.
+`workers capabilities` probes read access, not resource creation. Its existing `permission` label names the permission normally needed for the resource (for example, `D1 Edit`), while `verifiedPermission=READ_ACCESS` proves only this GET. Do not block creation solely because a cached probe failed: report the actual provisioning response. `AUTHENTICATION` means 401/403; `RATE_LIMITED` means 429; neither by itself proves a missing product entitlement. Safe error codes, Retry-After, rate-limit policy and CF-Ray are returned for diagnosis. Concurrent probes share a cache; credential changes discard it. This does not retry any business write.
 
 ## Delete safely
 
@@ -619,7 +685,7 @@ Only delete when the user asked for it. The CLI requires explicit confirmation:
 npx xapi-to workers delete <worker-id> --yes
 ```
 
-The backend preflights managed resources (for example, R2 must be empty), deletes active upstream scripts and resources, then marks the Worker soft-deleted. Records have a 30-day retention window. A partial upstream failure leaves the Worker in `DELETING`; report the error and do not say the Worker is deleted or active.
+Whole-Worker deletion performs the owned resource cleanup, including disposable R2 objects, deletes upstream scripts/resources and retains the Worker deletion record. A low-level bucket deletion can still require an empty bucket; do not confuse it with the whole-Worker cleanup flow. Records have a 30-day retention window. A partial upstream failure leaves the Worker in `DELETING`; report the error and do not say the Worker is deleted or active. Environment lifecycle actions wait up to 120 seconds. If the response times out, the result is `UNKNOWN`; read `workers retention show <worker-id> --env ENV --format json` before deciding whether to retry. No lifecycle write is automatically replayed.
 
 ## D1 and R2 data location
 
@@ -637,3 +703,86 @@ Choose the expected primary data-access region when a project creates D1 or R2. 
 Supported location hints are `wnam`, `enam`, `weur`, `eeur`, `apac`, and `oc`. `readReplication` is D1-only and accepts `auto` or `disabled`. Omitting these fields preserves the existing compatible behavior.
 
 Location is creation-time placement. Changing it on an existing binding is blocked because Cloudflare cannot move an existing D1 database or R2 bucket in place. Create a new binding, migrate and verify the data, switch the application binding, and retain the old resource for rollback before deleting it.
+
+Native `.bundle` binding declarations for D1, R2, KV, Queue, DO and Workflow map to the owned project resources. Imported physical IDs/scripts are discarded; DO/Workflow exported classes must match the declaration. Artifact uploads automatically use multipart when needed, with backend limits of 64 MiB modules, 100 MiB total decoded content and 25 MiB per static asset. Wrangler Queue consumer batching/retry/concurrency and same-environment dead-letter settings map to owned Queue resources after deployment activation. Native `triggers.crons` use UTC scheduled-handler run receipts through the backend scheduler. Removing declarations preserves remote deliveries, visible as MANUAL; use `workers resources queue-consumer disable` or `schedules pause` to stop them explicitly. User `tail_consumers` are mapped to owned Worker targets while retaining platform metering; unknown consumer fields still report a missing backend mapping instead of being silently discarded. Scheduled-handler cron expressions support CF month/weekday names, L/W/LW, last-day offsets, weekday L/#, start/step and wrapping ranges; they use UTC and preserve the original controller.cron. HTTP schedules keep their existing timezone and 0/7=Sunday convention. This remains platform-scheduler delivery to the native handler, not installation of a CF Cron Trigger on the dispatch script. Configuration and ACTIVE status are separate from actual handler delivery, billing and future timer verification.
+
+
+Remote source builds use a 20 MiB decoded-source and 18 MiB serialized JSON transport budget. Source paths may contain Unicode or spaces while staying relative to the project; symlinks and credential files are excluded. There is no CLI 200-file, 1 MB single-file or 2 MiB project gate. Build locally and upload the artifact with multipart if source cannot fit the JSON-only build endpoint. Artifact budgets and source-build transport are separate.
+
+Project and managed-build commands have no xAPI 1000-character cap; forward the exact nonempty command. Request-body capacity and existing execution deadlines still apply, and the managed-build identity includes the full command. Preserve the original identity when a result is uncertain.
+
+An unchanged source can be retried after a confirmed failed deployment with no dispatched provider writes. The CLI creates a new request identity derived from that terminal journal, keeping it stable during lost-response reconciliation. Unknown or partially confirmed writes recover the original operation journal; they are never reissued as a new deployment automatically. `resources pull` imports ready peers and reports pending/deleting statuses without deleting declarations; plan/push still reject a pending binding actually required by the application.
+
+For deploy/rollback and Secret writes, an explicit `worker_control_operation_pending` admission response with `pendingReason=TARGET_BUSY`, `requestAccepted=false` and `requestDispatched=false` allows the CLI to wait up to 60 seconds. It reads only the blocking operation by ID, then submits the unchanged request when that operation releases its target with a confirmed result. Waiting progress is on stderr; the server has not queued this request. Generic errors, old pending responses without this evidence, unknown writes and transport timeouts are not automatically retried by this waiting mechanism. Cancellation and unavailable status reads stop waiting; no operation is forcibly unlocked. Requires the existing `workers:read` permission for status observation.
+
+Secret names are forwarded exactly as nonempty strings, including names accessed through `env[name]`; there is no xAPI 64-character name limit or 128-item batch limit. Provider validation, ownership and binding-conflict checks still apply. Optional automatic retention does not control resource deposit funding. Both environments prepare protected seven-day retention funds, separately tracked from operating reserves. Duplicate identities reuse their financial receipts; historical funds remain traceable. After at least 168 hours, preservation continues while spendable retention funds remain, with system cleanup on exhaustion. Owner deletion is available at any time.
+
+Container metering `container_location_pricing_gap` preserves independently observed CPU/memory/disk, withholds incomplete egress buckets and keeps source coverage unresolved. Missing egress is not a zero cost or a reason to delete the resource. See `skills/xapi-workers/references/billing.md` for reconciliation.
+
+Binding names remain exact nonempty strings; long, Unicode, dollar, hyphen and prototype-property names are supported. Use bracket access for names such as `env["binding-name"]`. Do not apply the old 64-character binding or 128-character class cap. Exported class names retain JavaScript identifier syntax, including Unicode, for generated deployment/lifecycle code. Physical provider resource names and ownership checks are separate requirements.
+
+The currently used CF `exports` upload path has a native 128-character class-name maximum. Preserve that upstream failure; do not silently rename classes or retry a user write. The legacy `migrations` path has different acceptance behavior.
+
+Completed owner recovery now attempts ordinary postpaid publication immediately. Check `accessPreparation`: `PENDING` means access preparation is still waiting; do not repeat the completed recovery operation. `PUBLISHED` confirms publication and still requires an actual service probe. Balance, fresh billing evidence and fixed expiry remain effective; a publication error does not delete the Worker or replay the user's action.
+
+Artifact uploads continue while bytes move; they use a no-progress timeout, with no automatic write replay. Use `workers push --build-timeout 30m` for local builds or `workers build <id> --build-timeout 30m` for managed builds. Their defaults remain 15 and 10 minutes respectively. See `xapi-workers/references/deployment.md` for stage budgets and recovery, and `xapi-workers/references/billing.md` for protected seven-day retention funds, operating reserves and historical receipts.
+
+
+### Queue producer names and resource identity
+
+Several producer names for the same Wrangler logical Queue use one owned physical Queue and one retention hold. Imported environment `queueBindings` keeps the logical Queue mapped to its existing managed resource through producer/consumer/dead-letter changes; re-import preserves the linked Worker ID. Do not rename user code bindings or provision another Queue merely to add an alias. Bundle/deployment `queueBindingAliases`, including explicit empty production overrides, participate in deployment identity and rollback. Alias names remain occupied by their Queue when checking Secret/resource conflicts.
+
+The adapter does not yet migrate an original primary name to another logical Queue while preserving the original Queue under a new producer name; an explicit mapping error prevents mixing messages. HTTP pull consumers, producer delay and other listed native gaps must be completed and tested rather than described as platform user quotas. Backend support must ship before this CLI alias workflow. Actual native event execution, Queue operation billing and post-delete tail refunds remain separate acceptance checks.
+
+
+### Queue creation and HTTP Pull
+
+Queue resources remain owned by the selected Worker/environment and billed to its account. Creating a Queue no longer creates a default consumer or helper Worker. Producer-only deployments therefore do not require a native `queue()` handler. Declared Worker consumers are configured after deployment activation; existing consumers are preserved unless explicitly changed or disabled.
+
+Configure HTTP Pull with `workers resources queue-consumer configure <worker-id> <resource-id> --env preview --body '{"type":"http_pull","settings":{"batch_size":10,"visibility_timeout_ms":30000}}'`. Use `workers resources queue-messages pull ... --body '{"batch_size":10}'` and `queue-messages ack ... --body '{"acks":[{"lease_id":"<returned-lease>"}],"retries":[]}'`. Messages/options retain native semantics. This uses the Queue management API and does not require a Worker handler or an obsolete Wrangler HTTP Pull declaration. See [resource reference](../../xapi-workers/references/resources.md) for full commands, explicit consumer type changes, lifecycle and billing semantics. Native Queue operations are billed from the existing Queue-ID collector, not from HTTP request count; no new fee or resource-level product is introduced.
+
+Completed pause/delete actions may include `accessPreparation` for publishing a denied runtime state, just as resume publishes an allowed state. `PENDING` publication does not replay or reverse a completed resource action. Native execution admitted during a platform-paused interval keeps usage evidence but incurs zero user charge with `PLATFORM_PAUSED` provenance; this is distinct from an ordinary application's billable 503 response and does not waive storage/retention charges. DO deletion financial close reuses the finalized exact namespace/class proof and preserves the 48-hour running tail.
+
+Public build commands may contain paths such as `xapi-backend/worktrees/...`; that public prefix is not an API credential. Actual embedded credentials and credential fields still belong outside tracked project configuration. Upstream metering quota errors defer the current collection pass without changing unvisited cursors, user permissions, or prices; native usage remains pending until evidenced. Lifecycle status now uses the same seven-day policy for Preview and Production.
+
+Initial deployment access preparation does not wait for the global background billing scan. State publication is coordinated per environment script, so unrelated Workers do not share that wait. A conflicting publication for the same script is ordered within the existing 15-second preparation budget; the service then rechecks the active deployment and real account/window evidence. It never steals a lease, extends the financial permission window, or replays deployment. A pending publication or failed public health check does not delete the ACTIVE deployment or its resources; inspect the recorded state and actual service access before any explicit retry. Provider acceptance still does not prove immediate edge propagation.
+
+Confirmed deletion and cached admission: if both admission time and native execution-start time are at or after the immutable DELETED event, preserve actual request/CPU usage but charge the user zero, with PLATFORM_DELETED and the lifecycle event ID in the receipt/ledger. A request admitted before deletion remains billable even if its Tail arrives later; resource/storage charges keep their existing rules. Historical incorrect charges are corrected by append-only refund entries linked to the original charges, never by rewriting receipts or deleting usage.
+# Activation, public readiness and deletion
+
+The CLI reports code activation separately from public readiness. After an `ACTIVE` deployment, a platform `workers_postpaid_state_unavailable` 503 gets up to 60 seconds of read-only health observation; this never repeats the deployment. Persistent readiness failure keeps the deployment ACTIVE and access UNVERIFIED. Ordinary application errors use the normal health checks.
+
+Whole-Worker deletion waits up to 120 seconds. A timeout is UNKNOWN and does not trigger a repeated write; inspect the existing Worker, retention state and receipts. Confirmed R2 deletion closes the running reserve while preserving the original 48-hour GAP tail and retained event-capture queue. These retained billing records are not evidence that the user bucket still exists, and provisional usage is not free usage.
+
+### Direct upload and deployment pull
+
+With configured R2 artifact storage, `push`/`upload` sends bytes through an owned
+15-minute temporary channel. The xAPI key is never sent to R2. Confirmation seals
+verified immutable content before deployment; upload cancellation does not
+occupy the deployment target. Expiry requires a new upload. Legacy upload remains
+available for other storage modes.
+
+`xapi workers pull --env preview --output deployment-snapshot.json` reads the
+active deployment snapshot and local differences, and saves a separate public
+configuration snapshot. It preserves native metadata without rewriting Wrangler
+or reading Secret values; public vars may contain sensitive application data.
+`--output` accepts an absolute path or a project-root-relative path, including
+`../evidence/deployment.json`. Choose an existing parent directory. Configuration
+files and symbolic-link output endpoints are protected; an existing chosen
+snapshot is replaced atomically. Concurrent change detection is best effort,
+so avoid simultaneous writers to that output file.
+Use `resources pull` for local resource declarations. Historical deployments
+without a saved configuration return an explicit unavailable result.
+In JSON mode, `workers push` and `workers rollback` write one final receipt to
+stdout and build/plan diagnostics to stderr. Keep those streams separate for
+automation; this does not change confirmation behavior. An absent Queue
+binding-alias map or ordinary native metadata map compares equally to an empty map; the saved
+snapshot still retains its original representation.
+
+### Existing project identity and native upload recovery
+
+Link an existing Worker with top-level `workerId` in `xapi.worker.json`; do not use `worker.id` or `worker.workerId`. A new unlinked project is created and linked by push. Wrangler import uses its imported name; template `--name`/`--slug` flags cannot be combined with `--from-wrangler`. Review generated `worker.name`/`worker.slug` before pushing.
+
+After an upload response is lost, the original operation remains UNKNOWN. Recovery reads the exact deployment and operation tags from CF. Only when **all** writes are confirmed and the native observation matches may a later explicit push create a new publication identity. It does not replay the old write. Script tags do not confirm Container or Workflow writes. Conflicting targets require evidence; unrelated targets are not gated. The immutable server execution deadline is capped at 15 minutes and each provider request uses the remaining time; local build and temporary upload deadlines remain separate.
+
+A complete native CF authentication rejection (HTTP 401, parsed failure envelope with code 10000) is recorded as REJECTED, not UNKNOWN. The platform must repair its credentials; this does not blame the user balance, grant new permissions or automatically replay the write. Incomplete bodies, connection loss and unrelated errors remain UNKNOWN. Historical UNKNOWN operations are not silently rewritten by this change.

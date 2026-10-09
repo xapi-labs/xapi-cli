@@ -20,6 +20,7 @@ import {
   WORKER_PROJECT_SCHEMA_URL,
   loadWorkerProject,
 } from "../workers-project.ts";
+import {attachWorkerNativeMetadata,loadWorkerArtifact} from '../workers-artifact.ts';
 
 const roots: string[] = [];
 const workerId = "22222222-2222-4222-8222-222222222222";
@@ -245,6 +246,45 @@ function fakePlatform(
 }
 
 describe("workers push preview", () => {
+  test('returns the uploaded artifact identity after native metadata changes its hash and size',async()=>{
+    const root=fixture({linked:true}),platform=fakePlatform({exists:true});
+    const metadata={observability:{enabled:true,head_sampling_rate:0.25}};
+    const wranglerPath=join(root,'wrangler.jsonc'),wrangler=JSON.parse(readFileSync(wranglerPath,'utf8'));
+    writeFileSync(wranglerPath,JSON.stringify({...wrangler,...metadata}));
+    let uploaded:{id:string;contentSha256:string;sizeBytes:number}|undefined;
+    let baseIdentity:{contentSha256:string;sizeBytes:number}|undefined;
+    platform.client.uploadWorkerArtifact=async(_options,_workerId,input)=>{
+      const base=loadWorkerArtifact(join(root,'dist/worker.mjs'));
+      baseIdentity=base;
+      const expected=attachWorkerNativeMetadata(base,metadata);
+      expect('bundle' in input).toBe(true);
+      expect(input).toMatchObject(expected.upload);
+      expect(expected.contentSha256).not.toBe(base.contentSha256);
+      expect(expected.sizeBytes).not.toBe(base.sizeBytes);
+      uploaded={id:'native-artifact',contentSha256:expected.contentSha256,sizeBytes:expected.sizeBytes};
+      platform.state.artifacts.push({...uploaded,idempotencyKey:input.idempotencyKey});
+      platform.calls.uploadArtifact++;
+      return uploaded;
+    };
+    const result=await pushWorkerProject({cwd:root,environment:'preview',clientOptions:{apiHost:'localhost:3003',apiKey:'test-key'},client:platform.client,
+      confirm:async()=>true,runBuild:async()=>{mkdirSync(join(root,'dist'),{recursive:true});writeFileSync(join(root,'dist/worker.mjs'),"export default {fetch(){return new Response('ok')}};");},
+      fetchPublic:(async()=>Response.json({ok:true})) as unknown as typeof fetch,sleep:async()=>undefined});
+    expect(result.status).toBe('ACTIVE');
+    expect(result.artifact).toEqual(uploaded!);
+    expect(result.artifact.contentSha256).not.toBe(baseIdentity!.contentSha256);
+    expect(result.artifact.sizeBytes).not.toBe(baseIdentity!.sizeBytes);
+    expect(platform.state.deployments[0].artifactId).toBe(uploaded!.id);
+    expect(platform.calls.uploadArtifact).toBe(1);expect(platform.calls.deploy).toBe(1);
+  });
+  test('records configured required Secret names in deployment input',async()=>{
+    const root=fixture({secrets:['APP_TOKEN']}),platform=fakePlatform({secrets:['APP_TOKEN']});
+    const deploy=platform.client.deployWorker.bind(platform.client);let required:unknown;
+    platform.client.deployWorker=async(...args)=>{required=args[2].requiredSecrets;return deploy(...args);};
+    await pushWorkerProject({cwd:root,environment:'preview',clientOptions:{apiHost:'localhost:3003',apiKey:'test-key'},client:platform.client,
+      confirm:async()=>true,runBuild:async()=>{mkdirSync(join(root,'dist'),{recursive:true});writeFileSync(join(root,'dist/worker.mjs'),"export default {fetch(){return new Response('ok')}};");},
+      fetchPublic:(async()=>Response.json({ok:true})) as unknown as typeof fetch,sleep:async()=>undefined});
+    expect(required).toEqual(['APP_TOKEN']);
+  });
   test("passes only the explicit retention quote version to resource creation and deployment", async () => {
     const root=fixture({resources:[{type:"kv_namespace",bindingName:"STATE"}]});
     const platform=fakePlatform();
@@ -304,7 +344,7 @@ describe("workers push preview", () => {
   test("recovers uncertain writes, hides credentials from build, waits ACTIVE, and is repeatable", async () => {
     const root = fixture({
       resources: [{ type: "kv_namespace", bindingName: "STATE" }],
-      buildCommand: "node build.mjs",
+      buildCommand: "node build.mjs # " + "native build option ".repeat(500),
     });
     writeFileSync(
       join(root, "build.mjs"),
@@ -411,7 +451,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(loadWorkerProject(root).config.workerId).toBe(workerId);
   });
 
-  test("refuses to deploy through remote-only resource drift", async () => {
+  test("updates a project without deleting or silently binding unrelated remote-only resources", async () => {
     const root = fixture({ linked: true });
     const platform = fakePlatform({ exists: true });
     platform.state.resources.push({
@@ -421,8 +461,10 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
       status: "ACTIVE",
     });
     let confirmations = 0;
-    await expect(
-      pushWorkerProject({
+    let deployedBindings: string[] | undefined;
+    const deploy = platform.client.deployWorker;
+    platform.client.deployWorker = async (...args) => { deployedBindings = args[2].resourceIds as string[]; return deploy(...args); };
+    await pushWorkerProject({
         cwd: root,
         environment: "preview",
         clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
@@ -431,16 +473,14 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
           confirmations += 1;
           return true;
         },
-      }),
-    ).rejects.toThrow("requires reconciliation");
-    expect(confirmations).toBe(0);
-    expect(platform.calls).toEqual({
-      createWorker: 0,
-      updateBudget: 0,
-      createResource: 0,
-      uploadArtifact: 0,
-      deploy: 0,
+        runBuild: async () => { mkdirSync(join(root, 'dist'), {recursive:true}); writeFileSync(join(root, 'dist/worker.mjs'), "export default {fetch(){return new Response('ok')}};"); },
+        fetchPublic: (async () => Response.json({ok:true})) as unknown as typeof fetch,
+        sleep: async () => undefined,
     });
+    expect(confirmations).toBe(1);
+    expect(platform.calls.deploy).toBe(1);
+    expect(deployedBindings).not.toContain('resource-old-db');
+    expect(platform.state.resources.some(resource => resource.id === 'resource-old-db')).toBe(true);
   });
 
   test("non-interactive mode fails a missing-Secret plan before any mutation", async () => {
@@ -533,7 +573,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(platform.calls.deploy).toBe(1);
   });
 
-  test("reconciles an HTTP 500 and safely retries Artifact and Deployment writes with the same idempotency key", async () => {
+  test("recovers lost Artifact and Deployment responses using reads without replaying writes", async () => {
     const root = fixture({ linked: true });
     const platform = fakePlatform({ exists: true });
     const upload = platform.client.uploadWorkerArtifact.bind(platform.client);
@@ -542,17 +582,15 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     let deployAttempts = 0;
     platform.client.uploadWorkerArtifact = async (...args) => {
       uploadAttempts += 1;
-      if (uploadAttempts === 1) {
-        throw new HttpError(500, "transient artifact failure");
-      }
-      return upload(...args);
+      const result = await upload(...args);
+      if (uploadAttempts === 1) throw new HttpError(500, "lost artifact response");
+      return result;
     };
     platform.client.deployWorker = async (...args) => {
       deployAttempts += 1;
-      if (deployAttempts === 1) {
-        throw new HttpError(500, "transient deployment failure");
-      }
-      return deploy(...args);
+      const result = await deploy(...args);
+      if (deployAttempts === 1) throw new HttpError(500, "lost deployment response");
+      return result;
     };
     const result = await pushWorkerProject({
       cwd: root,
@@ -572,10 +610,51 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
       sleep: async () => undefined,
     });
     expect(result.status).toBe("ACTIVE");
-    expect(uploadAttempts).toBe(2);
-    expect(deployAttempts).toBe(2);
+    expect(uploadAttempts).toBe(1);
+    expect(deployAttempts).toBe(1);
     expect(platform.calls.uploadArtifact).toBe(1);
     expect(platform.calls.deploy).toBe(1);
+  });
+
+  test("a new explicit push follows native confirmation without replaying the failed operation", async () => {
+    const root = fixture({linked:true});
+    const platform = fakePlatform({exists:true});
+    const options = {cwd:root,environment:'preview' as const,
+      clientOptions:{apiHost:'localhost:3003',apiKey:'test-key'},client:platform.client,
+      confirm:async()=>true,runBuild:async()=>{
+        mkdirSync(join(root,'dist'),{recursive:true});
+        writeFileSync(join(root,'dist/worker.mjs'),"export default {fetch(){return new Response('ok')}};");
+      },fetchPublic:(async()=>Response.json({ok:true})) as unknown as typeof fetch,sleep:async()=>undefined};
+    await pushWorkerProject(options);
+    const original=platform.state.deployments[0];
+    original.status='FAILED';
+    original.outcome={operationId:'old-operation',providerEffect:'UNCONFIRMED'};
+    let observed=false;
+    const get=platform.client.getWorker.bind(platform.client);
+    platform.client.getWorker=async(...args)=>{
+      if(platform.calls.deploy===1)platform.state.deploymentReads=-100;
+      return get(...args);
+    };
+    platform.client.recoverWorkerControlOperation=async(_options,_worker,id)=>{
+      expect(id).toBe('old-operation');observed=true;
+      original.outcome={operationId:'old-operation',providerEffect:'ALL_WRITES_CONFIRMED',observation:{status:'MATCH'}};
+      return {};
+    };
+    const deploy=platform.client.deployWorker.bind(platform.client);
+    platform.client.deployWorker=async(...args)=>{
+      expect(observed).toBe(true);
+      const result=await deploy(...args);
+      (result as Record<string,unknown>).id='deployment-new';
+      platform.state.deployments.unshift(platform.state.deployments.pop()!);
+      platform.state.deploymentReads=0;
+      return result;
+    };
+    const next=await pushWorkerProject(options);
+    expect(next.status).toBe('ACTIVE');
+    expect(platform.calls.deploy).toBe(2);
+    expect(platform.calls.uploadArtifact).toBe(1);
+    expect(platform.state.deployments[0].idempotencyKey).not.toBe(original.idempotencyKey);
+    expect(original.status).toBe('FAILED');
   });
 
   test("reports the failed build command and recovery when its executable is missing", async () => {

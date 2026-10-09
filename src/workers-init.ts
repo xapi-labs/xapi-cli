@@ -34,8 +34,8 @@ export interface InitWorkerProjectOptions {
   template?: WorkerStarterTemplate;
   name?: string;
   slug?: string;
-  previewDailyBudgetUsd?: number;
-  productionDailyBudgetUsd?: number;
+  previewDailyBudgetUsd?: number | null;
+  productionDailyBudgetUsd?: number | null;
   force?: boolean;
   compatibilityDate?: string;
   framework?: string;
@@ -129,8 +129,8 @@ function projectFiles(
   slug: string,
   name: string,
   template: WorkerTemplate,
-  previewDailyBudgetUsd: number,
-  productionDailyBudgetUsd: number,
+  previewDailyBudgetUsd: number | null,
+  productionDailyBudgetUsd: number | null,
   compatibilityDate: string,
 ): Record<string, string> {
   const config: WorkerProjectConfig = {
@@ -244,16 +244,16 @@ export function initWorkerProject(
       "compatibilityDate must use YYYY-MM-DD",
     );
   }
-  const previewDailyBudgetUsd = options.previewDailyBudgetUsd ?? 0.25;
-  const productionDailyBudgetUsd = options.productionDailyBudgetUsd ?? 2;
+  const previewDailyBudgetUsd = options.previewDailyBudgetUsd ?? null;
+  const productionDailyBudgetUsd = options.productionDailyBudgetUsd ?? null;
   for (const [environment, amount] of [
     ["preview", previewDailyBudgetUsd],
     ["production", productionDailyBudgetUsd],
   ] as const) {
-    if (!Number.isFinite(amount) || amount < 0.1 || amount > 100) {
+    if (amount !== null && (!Number.isFinite(amount) || amount < 0)) {
       throw new WorkerProjectConfigError(
         "worker_init_invalid_budget",
-        `${environment} daily budget must be between 0.10 and 100 USD`,
+        `${environment} daily budget must be a finite nonnegative USD amount`,
       );
     }
   }

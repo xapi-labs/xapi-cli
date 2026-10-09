@@ -1,0 +1,98 @@
+import {afterEach,describe,expect,it} from 'bun:test';
+import {mkdtempSync,readFileSync,writeFileSync,rmSync,symlinkSync,realpathSync,statSync,readdirSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {basename,join} from 'node:path';
+import {initWorkerProject} from '../workers-init.ts';
+import {pullWorkerDeploymentConfiguration} from '../workers-pull.ts';
+const roots:string[]=[];
+afterEach(()=>{for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
+const options={apiHost:'localhost:3000',apiKey:'test'};
+function fixture(){const parent=mkdtempSync(join(tmpdir(),'worker-pull-'));roots.push(parent);
+  const root=initWorkerProject({cwd:parent,target:'demo'}).rootDir;
+  const configPath=join(root,'xapi.worker.json'),config=JSON.parse(readFileSync(configPath,'utf8'));
+  config.workerId='12345678-1234-4234-8234-123456789abc';writeFileSync(configPath,JSON.stringify(config));
+  const wrangler=join(root,config.wrangler);const source=readFileSync(wrangler,'utf8');
+  const remote={environment:'preview',available:true,activeDeploymentId:'v2',source:'confirmed-deployment-snapshot',
+    configuration:{version:1,compatibilityDate:'2026-10-01',compatibilityFlags:['nodejs_compat'],
+      variables:{vars:{PUBLIC:'remote'}},nativeMetadata:{future_option:{enabled:true}},requiredSecrets:['TOKEN']}};
+  return {root,wrangler,source,remote};
+}
+describe('deployment configuration pull',()=>{
+  it('reads remote once, displays differences and saves unknown native fields without touching Wrangler',async()=>{
+    const f=fixture();let calls=0;
+    const result=await pullWorkerDeploymentConfiguration({cwd:f.root,environment:'preview',clientOptions:options,
+      outputPath:'deployment-snapshot.json',client:async(_options,id,env)=>{calls++;expect(id).toBe('12345678-1234-4234-8234-123456789abc');expect(env).toBe('preview');return f.remote;}});
+    expect(calls).toBe(1);expect(result.differences.some((item:any)=>item.field==='nativeMetadata')).toBe(true);
+    expect(JSON.parse(readFileSync(result.savedPath!,'utf8')).configuration.nativeMetadata).toEqual({future_option:{enabled:true}});
+    expect(readFileSync(f.wrangler,'utf8')).toBe(f.source);
+  });
+  it('never overwrites the project configuration or a symbolic-link output',async()=>{
+    const f=fixture();const base={cwd:f.root,environment:'preview' as const,clientOptions:options,client:async()=>f.remote};
+    await expect(pullWorkerDeploymentConfiguration({...base,outputPath:'xapi.worker.json'})).rejects.toThrow('separate');
+    symlinkSync(f.wrangler,join(f.root,'linked.json'));
+    await expect(pullWorkerDeploymentConfiguration({...base,outputPath:'linked.json'})).rejects.toThrow();
+    expect(readFileSync(f.wrangler,'utf8')).toBe(f.source);
+  });
+  it('exports to explicit parent-relative and absolute destinations with private mode, without changing input boundaries',async()=>{
+    const f=fixture();const base={cwd:f.root,environment:'preview' as const,clientOptions:options,client:async()=>f.remote};
+    for(const outputPath of ['../parent-evidence.json',join(f.root,'..','absolute-evidence.json')]) {
+      const result=await pullWorkerDeploymentConfiguration({...base,outputPath});
+      expect(result.savedPath).toBe(join(realpathSync(join(f.root,'..')),outputPath.includes('absolute')?'absolute-evidence.json':'parent-evidence.json'));
+      expect(JSON.parse(readFileSync(result.savedPath!,'utf8')).configuration).toEqual(f.remote.configuration);
+      expect(statSync(result.savedPath!).mode&0o777).toBe(0o600);
+    }
+    expect(readFileSync(f.wrangler,'utf8')).toBe(f.source);
+    const {loadWorkerProject,resolveWorkerProjectPath}=await import('../workers-project.ts');
+    expect(()=>resolveWorkerProjectPath(loadWorkerProject(f.root),'../outside.mjs','build.output')).toThrow('inside the Worker project');
+  });
+  it('protects configuration through parent directory aliases while allowing ordinary exports through aliases',async()=>{
+    const f=fixture();const alias=join(f.root,'..','project-alias');symlinkSync(f.root,alias,'dir');
+    const config=readFileSync(join(f.root,'xapi.worker.json'),'utf8');
+    const base={cwd:f.root,environment:'preview' as const,clientOptions:options,client:async()=>f.remote};
+    await expect(pullWorkerDeploymentConfiguration({...base,outputPath:join(alias,'xapi.worker.json')})).rejects.toThrow('separate');
+    await expect(pullWorkerDeploymentConfiguration({...base,outputPath:join(alias,basename(f.wrangler))})).rejects.toThrow('separate');
+    const result=await pullWorkerDeploymentConfiguration({...base,outputPath:join(alias,'alias-snapshot.json')});
+    expect(result.savedPath).toBe(join(realpathSync(f.root),'alias-snapshot.json'));
+    expect(readFileSync(join(f.root,'xapi.worker.json'),'utf8')).toBe(config);expect(readFileSync(f.wrangler,'utf8')).toBe(f.source);
+  });
+  it('refuses existing and dangling symbolic-link endpoints outside the project without touching their targets',async()=>{
+    const f=fixture();const parent=join(f.root,'..'),link=join(parent,'linked-output.json'),dangling=join(parent,'dangling-output.json');
+    symlinkSync(f.wrangler,link);symlinkSync(join(parent,'nonexistent.json'),dangling);
+    const base={cwd:f.root,environment:'preview' as const,clientOptions:options,client:async()=>f.remote};
+    await expect(pullWorkerDeploymentConfiguration({...base,outputPath:link})).rejects.toThrow('symbolic-link');
+    await expect(pullWorkerDeploymentConfiguration({...base,outputPath:dangling})).rejects.toThrow('symbolic-link');
+    expect(readFileSync(f.wrangler,'utf8')).toBe(f.source);
+  });
+  it('atomically replaces an explicitly chosen existing snapshot and leaves no temporary file',async()=>{
+    const f=fixture();const parent=join(f.root,'..'),output=join(parent,'existing.json');writeFileSync(output,'old snapshot');
+    const result=await pullWorkerDeploymentConfiguration({cwd:f.root,environment:'preview',clientOptions:options,client:async()=>f.remote,outputPath:output});
+    expect(JSON.parse(readFileSync(result.savedPath!,'utf8')).configuration).toEqual(f.remote.configuration);
+    expect(readdirSync(parent).some(name=>name.endsWith('.tmp'))).toBe(false);
+  });
+  it('reports unavailable legacy snapshots without writing fabricated configuration',async()=>{
+    const f=fixture();const result=await pullWorkerDeploymentConfiguration({cwd:f.root,environment:'preview',clientOptions:options,
+      client:async()=>({environment:'preview',available:false,reason:'historical_configuration_unavailable'})});
+    expect(result.available).toBe(false);expect(result.savedPath).toBeNull();
+  });
+  it('compares absent and empty Queue aliases equally without changing the saved native snapshot',async()=>{
+    const f=fixture();const remote={...f.remote,configuration:{...f.remote.configuration,queueBindingAliases:{}}};
+    const result=await pullWorkerDeploymentConfiguration({cwd:f.root,environment:'preview',clientOptions:options,outputPath:'empty-aliases.json',client:async()=>remote});
+    expect(result.differences.some((difference:any)=>difference.field==='queueBindingAliases')).toBe(false);
+    expect(result.configuration.queueBindingAliases).toEqual({});
+    expect(JSON.parse(readFileSync(result.savedPath!,'utf8')).configuration.queueBindingAliases).toEqual({});
+    const changed=await pullWorkerDeploymentConfiguration({cwd:f.root,environment:'preview',clientOptions:options,client:async()=>({...remote,configuration:{...remote.configuration,queueBindingAliases:{TASKS:'QUEUE'}}})});
+    expect(changed.differences).toContainEqual({field:'queueBindingAliases',local:null,remote:{TASKS:'QUEUE'}});
+  });
+  it('compares absent and empty native metadata equally while retaining real changes and snapshot values',async()=>{
+    const f=fixture();
+    for(const nativeMetadata of [null,{}]) {
+      const remote={...f.remote,configuration:{...f.remote.configuration,nativeMetadata}};
+      const result=await pullWorkerDeploymentConfiguration({cwd:f.root,environment:'preview',clientOptions:options,
+        outputPath:'native-empty.json',client:async()=>remote});
+      expect(result.differences.some((difference:any)=>difference.field==='nativeMetadata')).toBe(false);
+      expect(JSON.parse(readFileSync(result.savedPath!,'utf8')).configuration.nativeMetadata).toEqual(nativeMetadata);
+    }
+    const changed=await pullWorkerDeploymentConfiguration({cwd:f.root,environment:'preview',clientOptions:options,client:async()=>f.remote});
+    expect(changed.differences.some((difference:any)=>difference.field==='nativeMetadata')).toBe(true);
+  });
+});

@@ -15,7 +15,7 @@ npm install -g xapi-to
 cd xapi-cli && bun install
 ```
 
-The published CLI runs on Node.js 18+. Bun is only required for local source development and tests.
+The published CLI runs on Node.js 18.17+ (the Undici 6 transport dependency minimum). Bun is only required for local source development and tests.
 
 ## Teach Your Agent the xAPI Skill
 
@@ -533,9 +533,9 @@ through xAPI as Cloudflare native static assets:
 `workers plan` shows whether the selected environment has a dedicated hostname.
 When `webAppReady` is false, production promotion asks you to review the base
 path, root-relative routes, and OAuth callbacks without blocking applications
-that deliberately support path-prefix hosting. The current JSON Artifact
-transport accepts 12 MiB of decoded Worker modules and static assets per
-deployment.
+that deliberately support path-prefix hosting. The Artifact uploader accepts
+64 MiB of decoded Worker modules and 100 MiB of modules plus static assets per
+deployment, choosing multipart when JSON transport budgets would be exceeded.
 
 Templates are versioned packages shipped with the CLI, not remote code fetched
 during `init`. `persistent-agent` includes buildable source plus KV, D1, R2,
@@ -693,11 +693,9 @@ xapi-to workers resources list <worker-id> --env preview --format table
 xapi-to workers secrets list <worker-id> --env preview --format table
 
 # Persistent schedules remain Worker-scoped rather than project resource declarations.
-# Queue includes an xAPI-managed consumer. Send a local route envelope from
-# Worker code; delivery is at least once, so make /tasks/run idempotent:
-# await env.TASK_QUEUE.send({
-#   path: '/tasks/run', method: 'POST', body: { taskId: 'task_123' }
-# });
+# Queue delivers bodies to this Worker's native default.queue handler;
+# a body path does not route to fetch(). Commit by stable task ID before ack:
+# await env.TASK_QUEUE.send({ taskId: 'task_123' });
 xapi-to workers schedules create <worker-id> \
   --name heartbeat --cron "*/15 * * * *" --timezone UTC \
   --env preview --path /cron --method POST

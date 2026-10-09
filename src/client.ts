@@ -2,12 +2,14 @@
  * HTTP client - thin wrapper around fetch with timeout/retry
  */
 
+import { Agent, fetch as objectFetch, type Dispatcher } from 'undici/index.js';
 import { scheme, assertAllowedHost } from './config.ts';
 import { open, rm } from 'node:fs/promises';
 import { once } from 'node:events';
 import { resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { requestDeadline } from './request-deadline.ts';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const EXECUTE_TIMEOUT_MS = 60_000;
@@ -38,6 +40,7 @@ export class HttpError extends Error {
     public readonly status: number,
     detail: string,
     public readonly retryAfterMs?: number,
+    public readonly responseBody?: unknown,
   ) {
     super(`HTTP ${status}: ${detail}`);
     this.name = 'HttpError';
@@ -131,93 +134,182 @@ function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
   });
 }
 
+// A scoped dispatcher prevents Node's fetch implementation from reintroducing
+// its own 300-second parser deadlines. The request AbortSignal owns the deadline.
+class RequestDeadlineAgent extends Agent {
+  progress?: () => void;
+  constructor() { super({ headersTimeout: 0, bodyTimeout: 0 }); }
+  override dispatch(options: Agent.DispatchOptions, handler: Dispatcher.DispatchHandlers): boolean {
+    const progress = this.progress;
+    const originalBody = options.body;
+    // fetch can serialize JSON as one large chunk. Split only the transport
+    // iterator so socket backpressure can report progress on slow uploads too.
+    const body = progress && originalBody && (
+      typeof originalBody === 'string' || originalBody instanceof Uint8Array ||
+      Symbol.asyncIterator in Object(originalBody)
+    ) ? Readable.from((async function* () {
+      const chunks = typeof originalBody === 'string' || originalBody instanceof Uint8Array
+        ? [originalBody] : originalBody as AsyncIterable<Uint8Array>;
+      for await (const chunk of chunks) {
+        const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        for (let offset = 0; offset < bytes.length; offset += 65_536)
+          yield bytes.subarray(offset, offset + 65_536);
+      }
+    })(), { objectMode: false, highWaterMark: 65_536 }) : originalBody;
+    // Observe bytes actually sent/received by Node's transport, not FormData
+    // construction. Bind original methods: some handlers use private fields.
+    const monitored = progress ? new Proxy(handler, {
+      get(target, key) {
+        const value = Reflect.get(target, key);
+        if (['onBodySent', 'onResponseStarted', 'onHeaders', 'onData'].includes(String(key))) {
+          return (...args: any[]) => {
+            progress();
+            return typeof value === 'function' ? value.apply(target, args) : undefined;
+          };
+        }
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) : handler;
+    return super.dispatch({ ...options, body, headersTimeout: 0, bodyTimeout: 0 }, monitored);
+  }
+}
+
 export async function request<T>(
   url: string,
   options: RequestInit,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   retries = 0,
+  deadlineMode: 'total' | 'idle' = 'total',
+  fetcher: typeof fetch = fetch,
 ): Promise<T> {
   // Enforce the host allowlist before the API key ever leaves the machine.
   assertAllowedHost(url);
 
-  let attempt = 0;
-  while (true) {
-    const controller = new AbortController();
-    const callerSignal = options.signal;
-    const abortFromCaller = () => controller.abort();
-    if (callerSignal?.aborted) controller.abort();
-    else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
-    let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
-    try {
-      // redirect: 'manual' — never auto-follow. fetch forwards custom headers
-      // (including XAPI-Key) across redirects, which would carry the API key to a
-      // host outside the allowlist. The xapi API never legitimately redirects.
-      const res = await fetch(url, { ...options, redirect: 'manual', signal: controller.signal });
-      if (res.status >= 300 && res.status < 400) {
-        throw new Error(
-          `refusing to follow redirect to "${res.headers.get('location') ?? '?'}" `
-          + '(would forward the API key past the host allowlist)',
-        );
-      }
-      if (!res.ok) {
-        const retryAfterMs = isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined;
-        if (isRetryableStatus(res.status) && attempt < retries) {
-          await res.text().catch(() => ''); // drain body so the socket can be reused
-          clearTimeout(timer);
-          await sleep(backoffDelayMs(attempt, retryAfterMs), callerSignal);
-          attempt++;
-          continue;
+  const transport = new RequestDeadlineAgent();
+  try {
+    let attempt = 0;
+    while (true) {
+      const controller = new AbortController();
+      const callerSignal = options.signal;
+      const abortFromCaller = () => controller.abort();
+      if (callerSignal?.aborted) controller.abort();
+      else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
+      let timedOut = false;
+      let finished = false;
+      let timer = requestDeadline(() => { timedOut = true; controller.abort(); }, timeoutMs);
+      transport.progress = deadlineMode === 'idle' ? () => {
+        if (finished || controller.signal.aborted) return;
+        timer.dispose();
+        timer = requestDeadline(() => { timedOut = true; controller.abort(); }, timeoutMs);
+      } : undefined;
+      try {
+        // redirect: 'manual' — never auto-follow. fetch forwards custom headers
+        // (including XAPI-Key) across redirects, which would carry the API key to a
+        // host outside the allowlist. The xapi API never legitimately redirects.
+        const fetchOptions = { ...options, redirect: 'manual', signal: controller.signal, dispatcher: transport } as RequestInit;
+        const res = await fetcher(url, fetchOptions);
+        if (res.status >= 300 && res.status < 400) {
+          throw new Error(
+            `refusing to follow redirect to "${res.headers.get('location') ?? '?'}" `
+            + '(would forward the API key past the host allowlist)',
+          );
+        }
+        if (!res.ok) {
+          const retryAfterMs = isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined;
+          if (isRetryableStatus(res.status) && attempt < retries) {
+            await res.text().catch(() => ''); // drain body so the socket can be reused
+            timer.dispose();
+            await sleep(backoffDelayMs(attempt, retryAfterMs), callerSignal);
+            attempt++;
+            continue;
+          }
+          const text = await res.text();
+          let responseBody: unknown;
+          try { responseBody = JSON.parse(text); } catch { /* Plain upstream errors stay plain. */ }
+          throw new HttpError(res.status, text.slice(0, 300), retryAfterMs, responseBody);
+        }
+        if (res.status === 204) {
+          return undefined as T;
         }
         const text = await res.text();
-        throw new HttpError(res.status, text.slice(0, 300), retryAfterMs);
-      }
-      if (res.status === 204) {
-        return undefined as T;
-      }
-      const text = await res.text();
-      if (!text.trim()) {
-        return undefined as T;
-      }
-      const body = JSON.parse(text) as T;
-      // Detect business-level auth errors (HTTP 200 but unauthorized)
-      if (body && typeof body === 'object' && 'success' in body && (body as any).success === false) {
-        const data = (body as any).data;
-        if (data?.statusCode === 401 || data?.error === 'Unauthorized') {
-          throw new Error(
-            'Authentication failed: ' + (data.message || 'Invalid or missing API key')
-            + '. Run "npx xapi-to config set apiKey=<key>" to update your key.',
-          );
+        if (!text.trim()) {
+          return undefined as T;
         }
-        if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && data?.message?.includes('OAuth'))) {
-          throw new Error(
-            (data.message || 'OAuth authorization required')
-            + '. Run "xapi-to oauth bind" to connect your account.',
-          );
+        const body = JSON.parse(text) as T;
+        // Detect business-level auth errors (HTTP 200 but unauthorized)
+        if (body && typeof body === 'object' && 'success' in body && (body as any).success === false) {
+          const data = (body as any).data;
+          if (data?.statusCode === 401 || data?.error === 'Unauthorized') {
+            throw new Error(
+              'Authentication failed: ' + (data.message || 'Invalid or missing API key')
+              + '. Run "npx xapi-to config set apiKey=<key>" to update your key.',
+            );
+          }
+          if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && data?.message?.includes('OAuth'))) {
+            throw new Error(
+              (data.message || 'OAuth authorization required')
+              + '. Run "xapi-to oauth bind" to connect your account.',
+            );
+          }
         }
-      }
-      return body;
-    } catch (e) {
-      if (timedOut) {
-        const timeoutError = new RequestTimeoutError(timeoutMs);
-        if (attempt < retries) {
+        return body;
+      } catch (e) {
+        if (timedOut) {
+          const timeoutError = new RequestTimeoutError(timeoutMs);
+          if (attempt < retries) {
+            await sleep(backoffDelayMs(attempt), callerSignal);
+            attempt++;
+            continue;
+          }
+          throw timeoutError;
+        }
+        if (isRetryableNetworkError(e) && attempt < retries) {
+          timer.dispose();
           await sleep(backoffDelayMs(attempt), callerSignal);
           attempt++;
           continue;
         }
-        throw timeoutError;
+        throw e;
+      } finally {
+        finished = true;
+        timer.dispose();
+        callerSignal?.removeEventListener('abort', abortFromCaller);
       }
-      if (isRetryableNetworkError(e) && attempt < retries) {
-        clearTimeout(timer);
-        await sleep(backoffDelayMs(attempt), callerSignal);
-        attempt++;
-        continue;
-      }
-      throw e;
-    } finally {
-      clearTimeout(timer);
-      callerSignal?.removeEventListener('abort', abortFromCaller);
     }
+  } finally {
+    await transport.destroy().catch(() => undefined);
+  }
+}
+
+/** A continuing upload has no total-duration cutoff. Never replay the write. */
+export function uploadRequest<T>(url: string, options: RequestInit): Promise<T> {
+  return request<T>(url, options, transferIdleTimeoutMs(), 0, 'idle');
+}
+
+/** A temporary object channel carries bytes and checksum only, never API keys.
+ * Its URL is validated by the Worker upload caller; errors never print it. */
+export async function uploadArtifactObject(url: string, bytes: Uint8Array,
+  headers: Record<string,string>, signal: AbortSignal): Promise<void> {
+  const transport = new RequestDeadlineAgent();
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal.reason);
+  if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});
+  let timer = requestDeadline(()=>controller.abort(),transferIdleTimeoutMs());
+  transport.progress=()=>{
+    timer.dispose();
+    timer=requestDeadline(()=>controller.abort(),transferIdleTimeoutMs());
+  };
+  try {
+    const response=await objectFetch(url,{method:'PUT',body:bytes as BodyInit,headers,
+      redirect:'manual',signal:controller.signal,dispatcher:transport} as any);
+    if(!response.ok)throw new Error(`Worker object upload failed (HTTP ${response.status})`);
+    await response.arrayBuffer();
+  } catch(error) {
+    if(signal.aborted)throw signal.reason instanceof Error?signal.reason:new Error('Worker upload cancelled');
+    if(error instanceof Error && /^Worker object upload failed/.test(error.message))throw error;
+    throw new Error('Worker object upload failed or stalled; no deployment was started');
+  } finally {
+    timer.dispose();signal.removeEventListener('abort',abort);await transport.destroy().catch(()=>undefined);
   }
 }
 

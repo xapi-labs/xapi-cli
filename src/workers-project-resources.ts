@@ -1,3 +1,4 @@
+import { isWorkerBindingName } from './workers-binding-validation.ts';
 import { randomUUID } from "node:crypto";
 import { renameSync, statSync, writeFileSync } from "node:fs";
 import {
@@ -12,6 +13,7 @@ import * as workersClient from "./workers-client.ts";
 import {
   desiredResourceFromRemote,
   remoteWorkerResourceState,
+  resourceReadyForDeployment,
   type WorkerDesiredResource,
 } from "./workers-resource-state.ts";
 
@@ -53,6 +55,7 @@ export interface PullProjectResourcesResult {
     added: string[];
     updated: string[];
     unchanged: string[];
+    pending: Array<{ bindingName: string; status: string; declared: boolean }>;
   }>;
   nextSteps: string[];
 }
@@ -126,10 +129,10 @@ function steps(environments: EnvironmentName[]): string[] {
 }
 
 function bindingName(value: string | undefined): string {
-  if (!value || !/^[A-Z][A-Z0-9_]{0,63}$/.test(value)) {
+  if (!isWorkerBindingName(value)) {
     throw new WorkerProjectConfigError(
       "worker_project_resource_binding_invalid",
-      "Binding name must start with A-Z and contain only A-Z, 0-9, and underscore",
+      "Binding name must be a nonempty string",
     );
   }
   return value;
@@ -161,7 +164,8 @@ function sameOrConflict(
   const comparableLocation = state.requestedLocation || state.effectiveLocation;
   const conflicts =
     local.type !== remote.type ||
-    (local.type === "durable_object" && local.className !== remote.className) ||
+    (["durable_object", "workflow"].includes(local.type) && local.className !== undefined && local.className !== remote.className) ||
+    (local.workflowName !== undefined && local.workflowName !== remote.workflowName) ||
     (local.location && local.location !== comparableLocation) ||
     (local.readReplication &&
       local.readReplication !== state.readReplication);
@@ -176,6 +180,7 @@ function sameOrConflict(
     ...(remote.className && !local.className
       ? { className: remote.className }
       : {}),
+    ...(remote.workflowName && !local.workflowName ? { workflowName: remote.workflowName } : {}),
     ...(remote.location && !local.location ? { location: remote.location } : {}),
     ...(remote.readReplication && !local.readReplication
       ? { readReplication: remote.readReplication }
@@ -218,12 +223,14 @@ export async function pullProjectResources(
     const added: string[] = [];
     const updated: string[] = [];
     const unchanged: string[] = [];
+    const pending: PullProjectResourcesResult["environments"][number]["pending"] = [];
     const desired = config.environments[environment].resources;
     for (const raw of [...resources].sort((left, right) => {
       const leftName = remoteWorkerResourceState(left).bindingName || "";
       const rightName = remoteWorkerResourceState(right).bindingName || "";
       return leftName.localeCompare(rightName);
     })) {
+      if (raw.type === "CONTAINER_APPLICATION") continue;
       const state = remoteWorkerResourceState(raw);
       const remote = desiredResourceFromRemote(state);
       if (!state.bindingName) {
@@ -239,14 +246,10 @@ export async function pullProjectResources(
         );
       }
       seen.add(state.bindingName);
-      const ready =
-        state.status === "ACTIVE" ||
-        (state.type === "durable_object" && state.status === "PROVISIONING");
+      const ready = resourceReadyForDeployment(state);
       if (!ready) {
-        throw new WorkerProjectConfigError(
-          "worker_project_resource_pull_not_ready",
-          `${environment} binding ${state.bindingName} is ${state.status}; repair or wait for it before pulling`,
-        );
+        pending.push({ bindingName: state.bindingName, status: state.status || "UNKNOWN", declared: desired.some(item => item.bindingName === state.bindingName) });
+        continue;
       }
       if (!remote) {
         throw new WorkerProjectConfigError(
@@ -277,7 +280,7 @@ export async function pullProjectResources(
         unchanged.push(remote.bindingName);
       }
     }
-    result.push({ name: environment, added, updated, unchanged });
+    result.push({ name: environment, added, updated, unchanged, pending });
   }
 
   if (changed) writeConfig(project.configPath, config);

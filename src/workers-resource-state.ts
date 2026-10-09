@@ -26,6 +26,8 @@ export interface RemoteWorkerResourceState {
   rawType?: string;
   status: string;
   className?: string;
+  workflowName?: string;
+  nativeWorkflowPrepared?: boolean;
   requestedLocation?: WorkerDesiredResource["location"];
   effectiveLocation?: WorkerDesiredResource["location"];
   readReplication?: WorkerDesiredResource["readReplication"];
@@ -60,13 +62,16 @@ export function remoteWorkerResourceState(
 ): RemoteWorkerResourceState {
   const config = record(value.config) || {};
   const rawType = text(value.type);
+  const nativeWorkflow = record(config.nativeWorkflow);
   const rawReplication = config.readReplication ?? config.read_replication;
   return {
     bindingName: text(value.bindingName),
     type: rawType ? REMOTE_RESOURCE_TYPES[rawType] : undefined,
     rawType,
     status: text(value.status) || "UNKNOWN",
-    className: text(config.className ?? config.class_name ?? value.className),
+    className: text(nativeWorkflow?.className ?? config.className ?? config.class_name ?? value.className),
+    workflowName: text(nativeWorkflow?.workflowName),
+    nativeWorkflowPrepared: nativeWorkflow?.version === 1 && nativeWorkflow?.prepared === true,
     requestedLocation: location(
       config.requestedLocation ?? config.requested_location,
     ),
@@ -93,6 +98,7 @@ export function desiredResourceFromRemote(
     type: state.type,
     bindingName: state.bindingName,
     ...(state.className ? { className: state.className } : {}),
+    ...(state.workflowName ? { workflowName: state.workflowName } : {}),
     ...(state.requestedLocation
       ? { location: state.requestedLocation }
       : {}),
@@ -100,4 +106,9 @@ export function desiredResourceFromRemote(
       ? { readReplication: state.readReplication }
       : {}),
   } as WorkerDesiredResource;
+}
+
+export function resourceReadyForDeployment(state: RemoteWorkerResourceState): boolean {
+  return state.status === "ACTIVE" || (state.status === "PROVISIONING" &&
+    (state.type === "durable_object" || (state.type === "workflow" && Boolean(state.className) && state.nativeWorkflowPrepared === true)));
 }

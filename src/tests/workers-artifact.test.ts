@@ -145,3 +145,37 @@ describe("Worker Artifact loader", () => {
     );
   });
 });
+
+test('accepts a single module beyond the former 1 MiB limit and switches large output to bundle identity', () => {
+  const root = directory(); const path = join(root, 'worker.mjs');
+  writeFileSync(path, `export default {};/*${'x'.repeat(2 * 1024 * 1024)}*/`);
+  expect(loadWorkerArtifact(path).kind).toBe('module');
+  writeFileSync(path, `export default {};/*${'x'.repeat(19 * 1024 * 1024)}*/`);
+  const artifact = loadWorkerArtifact(path);
+  expect(artifact.kind).toBe('bundle');
+  if (!('bundle' in artifact.upload)) throw new Error('expected bundle');
+  const stored = JSON.stringify({ version: 1, mainModule: 'worker.mjs', modules: [{ path: 'worker.mjs', contentBase64: Buffer.from(artifact.upload.bundle.modules[0].content).toString('base64'), contentType: 'application/javascript+module' }] });
+  expect(artifact.contentSha256).toBe(createHash('sha256').update(stored).digest('hex'));
+});
+
+test('accepts more than 200 modules and rejects actual backend module byte overflow', () => {
+  const root = directory(); writeFileSync(join(root, 'worker.js'), 'export default {};');
+  for (let i = 0; i < 201; i++) writeFileSync(join(root, `chunk-${i}.txt`), 'data');
+  const artifact = loadWorkerArtifact(root, 'worker.js');
+  if (!('bundle' in artifact.upload)) throw new Error('expected bundle');
+  expect(artifact.upload.bundle.modules.length).toBe(202);
+  const single = join(directory(), 'oversize.mjs');
+  // A sparse file proves pre-read rejection without allocating a huge string.
+  const { openSync, ftruncateSync, closeSync } = require('node:fs');
+  const fd = openSync(single, 'w'); ftruncateSync(fd, 64 * 1024 * 1024 + 1); closeSync(fd);
+  expect(() => loadWorkerArtifact(single)).toThrow('64 MiB');
+});
+
+test('accepts a native 25 MiB static asset beyond the former combined transport ceiling', () => {
+  const root = directory(); const worker = join(root, 'worker.mjs'); const publicDir = join(root, 'public'); mkdirSync(publicDir);
+  writeFileSync(worker, 'export default {};'); writeFileSync(join(publicDir, 'large.bin'), Buffer.alloc(25 * 1024 * 1024, 1));
+  const artifact = loadWorkerArtifact(worker, undefined, { directory: publicDir });
+  expect(artifact.kind).toBe('bundle');
+  writeFileSync(join(publicDir, 'large.bin'), Buffer.alloc(25 * 1024 * 1024 + 1));
+  expect(() => loadWorkerArtifact(worker, undefined, { directory: publicDir })).toThrow('25 MiB');
+});

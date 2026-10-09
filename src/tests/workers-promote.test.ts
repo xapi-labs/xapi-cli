@@ -365,7 +365,7 @@ describe("workers promote", () => {
       clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
       client: platform.client,
     });
-    expect(prepared.plan.canPromote).toBe(false);
+    expect(prepared.plan.canPromote).toBe(true);
     expect(prepared.plan.production.checks).toContainEqual(
       expect.objectContaining({
         status: "MANUAL",
@@ -390,8 +390,8 @@ describe("workers promote", () => {
           return false;
         },
       }),
-    ).rejects.toThrow("resource drift requires reconciliation");
-    expect(confirmations).toBe(0);
+    ).rejects.toThrow("cancelled");
+    expect(confirmations).toBe(1);
     expect(platform.calls.deploy).toBe(0);
   });
 });

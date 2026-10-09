@@ -43,6 +43,10 @@ export function formatWorkerPushResult(result: WorkerPushResult): string {
       `HTTP ${result.health.status} · ${result.health.attempts} attempt${result.health.attempts === 1 ? "" : "s"}`,
     ),
     metadata("Resources", resources.join(" · ") || "No managed resources"),
+    ...(result.deployment.containerRollout ? [metadata("Containers",
+      result.deployment.containerRollout.status === "PENDING" ? "Rollout pending native confirmation"
+        : result.deployment.containerRollout.status === "COMPLETE" ? "Configuration accepted; check application health"
+          : "Native configuration unconfirmed")] : []),
     "",
     "Next steps",
     `  1. Open: ${result.publicUrl}`,

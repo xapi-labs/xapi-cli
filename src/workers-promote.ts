@@ -1,3 +1,5 @@
+import { applyWorkerNativeEvents, planWorkerNativeEvents, type NativeEventClient } from "./workers-native-events.ts";
+import { remoteWorkerResourceState, resourceReadyForDeployment } from "./workers-resource-state.ts";
 import { createInterface } from "node:readline/promises";
 import type { WorkersClientOptions } from "./workers-client.ts";
 import * as workersClient from "./workers-client.ts";
@@ -10,12 +12,12 @@ import {
   type ManagedResourceClient,
   resourceMatches,
 } from "./workers-push.ts";
-import { loadWorkerProject } from "./workers-project.ts";
+import { loadWorkerProject, workerEnvironmentContainers } from "./workers-project.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
 
 type UnknownRecord = Record<string, unknown>;
 
-export interface PromotionClient extends DeploymentClient, ManagedResourceClient {
+export interface PromotionClient extends DeploymentClient, ManagedResourceClient, NativeEventClient {
   listWorkerResources(
     options: WorkersClientOptions,
     id: string,
@@ -30,13 +32,14 @@ export interface PromotionClient extends DeploymentClient, ManagedResourceClient
 
 export type PromotionCheckStatus =
   | "CREATE"
+  | "UPDATE"
   | "NO_CHANGE"
   | "MANUAL"
   | "BLOCKED";
 
 export interface WorkerPromotionCheck {
   status: PromotionCheckStatus;
-  kind: "budget" | "resource" | "secret" | "routing";
+  kind: "budget" | "resource" | "secret" | "routing" | "event";
   key: string;
   message: string;
   command?: string;
@@ -77,6 +80,7 @@ export interface WorkerPromotionResult {
   workerId: string;
   artifact: { id: string; contentSha256: string; sizeBytes?: number };
   resources: { created: string[]; unchanged: string[] };
+  events?: { queueConsumers: string[]; crons: string[] };
   deployment: { id: string; status: "ACTIVE"; idempotencyKey: string };
   publicUrl: string;
   health: { url: string; status: number; attempts: number };
@@ -166,15 +170,15 @@ function productionChecks(
     );
   }
   if (
-    currentBudget === undefined ||
-    Math.abs(currentBudget - desired.dailyBudgetUsd) > 0.00005
+    !(desired.dailyBudgetUsd === null ? remoteEnvironment.dailyBudgetUsd === null :
+      currentBudget !== undefined && Math.abs(currentBudget - desired.dailyBudgetUsd) <= 0.00005)
   ) {
     checks.push({
       status: "BLOCKED",
       kind: "budget",
       key: "production",
       message: `Production budget is ${currentBudget ?? "unknown"}; desired is ${desired.dailyBudgetUsd}`,
-      command: `xapi workers budget ${workerId} production --daily-usd ${desired.dailyBudgetUsd}`,
+      command: `xapi workers budget ${workerId} production --daily-usd ${desired.dailyBudgetUsd ?? "none"}`,
     });
   } else {
     checks.push({
@@ -213,9 +217,7 @@ function productionChecks(
     }
     remoteResources.delete(resource.bindingName);
     const status = text(current.status) || "UNKNOWN";
-    const statusReady =
-      status === "ACTIVE" ||
-      (resource.type === "durable_object" && status === "PROVISIONING");
+    const statusReady = resourceReadyForDeployment(remoteWorkerResourceState(current));
     if (!resourceMatches(current, resource) || !statusReady) {
       checks.push({
         status: "BLOCKED",
@@ -286,8 +288,8 @@ function productionChecks(
   }
   checks.sort(
     (a, b) =>
-      ({ routing: 0, budget: 1, resource: 2, secret: 3 })[a.kind] -
-        { routing: 0, budget: 1, resource: 2, secret: 3 }[b.kind] ||
+      ({ routing: 0, budget: 1, resource: 2, secret: 3, event: 4 })[a.kind] -
+        { routing: 0, budget: 1, resource: 2, secret: 3, event: 4 }[b.kind] ||
       a.key.localeCompare(b.key),
   );
   return { checks, dataRisk: dataRisk.sort() };
@@ -390,6 +392,7 @@ export async function createWorkerPromotionPlan(
     secrets,
     Boolean(project.config.assets),
   );
+  for (const event of await planWorkerNativeEvents(project,"production",resources,api,options.clientOptions)) checked.checks.push({status:event.operation,kind:"event",key:event.key,message:event.message});
   const plan: WorkerPromotionPlan = {
     schemaVersion: 1,
     workerId,
@@ -411,8 +414,7 @@ export async function createWorkerPromotionPlan(
     production: checked,
     canPromote: !checked.checks.some(
       (item) =>
-        item.status === "BLOCKED" ||
-        (item.status === "MANUAL" && item.kind === "resource"),
+        item.status === "BLOCKED",
     ),
   };
   return { plan, worker, artifact };
@@ -428,8 +430,7 @@ export async function promoteWorkerProject(
   if (!prepared.plan.canPromote) {
     const blockingChecks = prepared.plan.production.checks.filter(
       (item) =>
-        item.status === "BLOCKED" ||
-        (item.status === "MANUAL" && item.kind === "resource"),
+        item.status === "BLOCKED",
     );
     throw new WorkerPushError(
       blockingChecks.some((item) => item.status === "BLOCKED")
@@ -449,7 +450,7 @@ export async function promoteWorkerProject(
       );
     }
   }
-  const compatibility = readWranglerDeploymentSettings(project, "production");
+  const compatibility = readWranglerDeploymentSettings(project, "production", text(prepared.artifact.mediaType));
   const wait =
     options.sleep ||
     ((milliseconds: number) =>
@@ -471,11 +472,17 @@ export async function promoteWorkerProject(
       "production",
       compatibility,
       wait,
+      options.retentionPriceVersion,
+      project.config.environments.production.resources.map(resource => resource.bindingName),
+      workerEnvironmentContainers(project.config, 'production'),
     );
     const deploymentId = text(deployed.deployment.id);
     if (!deploymentId) {
       throw new WorkerPushError("ACTIVE production deployment is missing id");
     }
+    let events;
+    try { events = await applyWorkerNativeEvents(project, "production", prepared.plan.workerId, api, options.clientOptions); }
+    catch (error) { throw new WorkerPushError(`Production deployment is ACTIVE, but native event configuration failed: ${error instanceof Error ? error.message : String(error)}`, {deploymentId, deploymentStatus:"ACTIVE", recovery:`xapi workers plan --env production`}); }
     const finalWorker = record(
       await api.getWorker(options.clientOptions, prepared.plan.workerId),
       "Worker",
@@ -495,6 +502,7 @@ export async function promoteWorkerProject(
       workerId: prepared.plan.workerId,
       artifact: prepared.plan.artifact,
       resources,
+      ...((events.queueConsumers.length || events.crons.length) ? {events} : {}),
       deployment: {
         id: deploymentId,
         status: "ACTIVE",

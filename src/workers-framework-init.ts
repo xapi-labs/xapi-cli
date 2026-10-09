@@ -33,8 +33,8 @@ export interface InitExistingFrameworkOptions {
   name: string;
   slug: string;
   compatibilityDate: string;
-  previewDailyBudgetUsd: number;
-  productionDailyBudgetUsd: number;
+  previewDailyBudgetUsd: number | null;
+  productionDailyBudgetUsd: number | null;
   framework?: string;
 }
 

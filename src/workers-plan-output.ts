@@ -10,6 +10,7 @@ const KIND_LABEL: Record<WorkerPlanAction["kind"], string> = {
   budget: "Budget",
   resource: "Resource",
   secret: "Secret",
+  event: "Event",
   routing: "Routing",
   artifact: "Artifact",
   deployment: "Deployment",
@@ -76,6 +77,7 @@ function actionDetail(action: WorkerPlanAction): string {
   if (action.kind === "budget") {
     const daily = number(desired.dailyBudgetUsd);
     const prior = number(current.dailyBudgetUsd);
+    if (desired.dailyBudgetUsd === null) return "No daily budget limit";
     if (daily === undefined) return action.message;
     return prior === undefined
       ? `$${daily.toFixed(2)}/day`

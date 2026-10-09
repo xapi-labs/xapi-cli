@@ -14,14 +14,24 @@ function canonical(value: unknown): unknown {
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 const sorted = (rows: Row[]) => rows.sort((a, b) => String(a.bindingName).localeCompare(String(b.bindingName)));
 
+export function deploymentBindingResources(resources: Row[], bindingNames?: string[]): Row[] {
+  return resources.filter(row => row.type !== 'CONTAINER_APPLICATION' &&
+    (bindingNames === undefined || bindingNames.includes(String(row.bindingName))));
+}
+
 // Only deployment inputs: polling timestamps, storage size and other changing
 // Provider observations must not cause deployments. No secret plaintext is read.
 export function deploymentPrefix(workerId: string, environment: string, artifactId: string,
-  compatibility: { compatibilityDate?: string; compatibilityFlags?: string[] },
+  compatibility: { compatibilityDate?: string; compatibilityFlags?: string[]; requiredSecrets?: string[]; nativeMetadata?: Record<string,unknown>; containers?: unknown[]; queueBindingAliases?: Record<string, string>; variables?: {vars:Record<string,unknown>;varTypes?:Record<string,string>} },
   environmentState: Row, resources: Row[], secrets: Row[]): string {
   return `v2-${hash({ workerId, environment: environment.toLowerCase(), artifactId,
     compatibilityDate: compatibility.compatibilityDate,
     compatibilityFlags: [...(compatibility.compatibilityFlags || [])].sort(),
+    ...(compatibility.requiredSecrets?.length ? {requiredSecrets:[...compatibility.requiredSecrets].sort()} : {}),
+    ...(compatibility.queueBindingAliases !== undefined ? {queueBindingAliases: Object.fromEntries(Object.entries(compatibility.queueBindingAliases).sort(([a],[b]) => a.localeCompare(b)))} : {}),
+    ...(compatibility.nativeMetadata !== undefined ? {nativeMetadata:compatibility.nativeMetadata} : {}),
+    ...(compatibility.variables !== undefined ? {variables:compatibility.variables} : {}),
+    ...(compatibility.containers !== undefined ? {containers: compatibility.containers} : {}),
     bindings: environmentState.bindings || [],
     resources: sorted(resources.map(r => {
       const config = (r.config || {}) as Row;

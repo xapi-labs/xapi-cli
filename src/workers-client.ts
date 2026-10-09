@@ -1,18 +1,32 @@
-import { request } from "./client.ts";
-import type { WorkerArtifactUploadRequest } from "./workers-artifact.ts";
+import { request, uploadRequest, RequestTimeoutError } from "./client.ts";
+import { MAX_WORKER_JSON_BYTES, workerArtifactNeedsMultipart, workerArtifactMultipart, type WorkerArtifactUploadRequest } from "./workers-artifact.ts";
 import { scheme } from "./config.ts";
+import { withWorkerTargetWait, type WorkerOperationWaitOptions } from './workers-operation-wait.ts';
+import { uploadDirectWorkerArtifact } from './workers-direct-upload.ts';
 
 export interface WorkersClientOptions {
   apiHost: string;
   apiKey: string;
+  operationWait?: WorkerOperationWaitOptions;
+  artifactUploadTimeoutMs?: number;
 }
 
-export function workerRetention(options: WorkersClientOptions, id: string, environment: string, path = "", body?: Record<string, unknown>) {
-  return request<Record<string, any>>(url(options, `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/retention${path}`), {
-    method: body ? "POST" : "GET",
-    headers: headers(options, Boolean(body)),
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  }, 30_000, body ? 0 : 2);
+export async function workerRetention(options: WorkersClientOptions, id: string, environment: string, path = "", body?: Record<string, unknown>) {
+  // These actions synchronously control several upstream resources. A lost
+  // response does not cancel the action and must never trigger a write replay.
+  const lifecycleAction = path === "/actions" && Boolean(body);
+  try {
+    return await request<Record<string, any>>(url(options, `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/retention${path}`), {
+      method: body ? "POST" : "GET",
+      headers: headers(options, Boolean(body)),
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    }, lifecycleAction ? 120_000 : 30_000, body ? 0 : 2);
+  } catch (error) {
+    if (lifecycleAction && error instanceof RequestTimeoutError) {
+      throw new Error(`Worker retention action result is UNKNOWN: ${error.message}. The server may still complete it; no write was retried. Check with: xapi workers retention show ${id} --env ${environment} --format json`, { cause: error });
+    }
+    throw error;
+  }
 }
 
 export type WorkerBillingQueryKind =
@@ -44,6 +58,20 @@ function headers(options: WorkersClientOptions, json = false): HeadersInit {
     Accept: "application/json",
     ...(json ? { "Content-Type": "application/json" } : {}),
   };
+}
+
+function coordinatedWrite(
+  options: WorkersClientOptions, id: string, target: string, init: RequestInit,
+) {
+  // Capture the body/key once: waiting never regenerates deployment identity.
+  return withWorkerTargetWait(
+    () => request<unknown>(target, { ...init, signal: options.operationWait?.signal }, 60_000, 0),
+    (operationId, timeoutMs) => request<unknown>(
+      url(options, `/${encodeURIComponent(id)}/control-operations/${encodeURIComponent(operationId)}`),
+      { headers: headers(options), signal: options.operationWait?.signal }, timeoutMs, 0,
+    ),
+    options.operationWait,
+  );
 }
 
 export function listWorkers(options: WorkersClientOptions) {
@@ -82,14 +110,13 @@ export function deployWorker(
   id: string,
   input: Record<string, unknown>,
 ) {
-  return request<unknown>(
+  return coordinatedWrite(options, id,
     url(options, `/${encodeURIComponent(id)}/deployments`),
     {
       method: "POST",
       headers: headers(options, true),
       body: JSON.stringify(input),
     },
-    60_000,
   );
 }
 
@@ -99,7 +126,7 @@ export function rollbackWorker(
   environment: string,
   input: Record<string, unknown>,
 ) {
-  return request<unknown>(
+  return coordinatedWrite(options, id,
     url(
       options,
       `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/rollback`,
@@ -109,7 +136,6 @@ export function rollbackWorker(
       headers: headers(options, true),
       body: JSON.stringify(input),
     },
-    60_000,
   );
 }
 
@@ -124,19 +150,24 @@ export function listWorkerArtifacts(options: WorkersClientOptions, id: string) {
   );
 }
 
-export function uploadWorkerArtifact(
+export async function uploadWorkerArtifact(
   options: WorkersClientOptions,
   id: string,
   input: WorkerArtifactUploadRequest,
 ) {
-  return request<unknown>(
-    url(options, `/${encodeURIComponent(id)}/artifacts`),
+  const provider=await workerArtifactProviderStatus(options) as {directUpload?:boolean};
+  if(provider?.directUpload===true)
+    return uploadDirectWorkerArtifact(input,url(options,`/${encodeURIComponent(id)}/artifact-uploads`),
+      headers(options,true),options.artifactUploadTimeoutMs,options.operationWait?.signal);
+  const multipart = workerArtifactNeedsMultipart(input);
+  return uploadRequest<unknown>(
+    url(options, `/${encodeURIComponent(id)}/artifacts${multipart ? "/bundle" : ""}`),
     {
       method: "POST",
-      headers: headers(options, true),
-      body: JSON.stringify(input),
+      headers: headers(options, !multipart),
+      body: multipart ? workerArtifactMultipart(input) : JSON.stringify(input),
+      signal: options.operationWait?.signal,
     },
-    60_000,
   );
 }
 
@@ -156,14 +187,20 @@ export function createWorkerBuild(
   id: string,
   input: Record<string, unknown>,
 ) {
+  const seconds = input.buildTimeoutSeconds ?? 600;
+  if (typeof seconds !== 'number' || !Number.isSafeInteger(seconds) || seconds <= 0 || !Number.isSafeInteger(seconds * 1000 + 360_000)) throw new Error('Invalid build timeout');
+  const body = JSON.stringify(input);
+  if (Buffer.byteLength(body, "utf8") > MAX_WORKER_JSON_BYTES) throw new Error("Worker build JSON exceeds the backend 18 MiB transport budget; build locally and upload the resulting artifact through multipart");
   return request<unknown>(
     url(options, `/${encodeURIComponent(id)}/builds`),
     {
       method: "POST",
       headers: headers(options, true),
-      body: JSON.stringify(input),
+      body,
     },
-    960_000,
+    seconds * 1000 + 360_000,
+    0,
+    'idle',
   );
 }
 
@@ -193,7 +230,7 @@ export function updateWorkerBudget(
   options: WorkersClientOptions,
   id: string,
   environment: string,
-  dailyBudgetUsd: number,
+  dailyBudgetUsd: number | null,
 ) {
   return request<unknown>(
     url(
@@ -208,11 +245,18 @@ export function updateWorkerBudget(
   );
 }
 
-export function deleteWorker(options: WorkersClientOptions, id: string) {
-  return request<unknown>(url(options, `/${encodeURIComponent(id)}`), {
-    method: "DELETE",
-    headers: headers(options),
-  });
+export async function deleteWorker(options: WorkersClientOptions, id: string) {
+  try {
+    return await request<unknown>(url(options, `/${encodeURIComponent(id)}`), {
+      method: "DELETE",
+      headers: headers(options),
+    }, 120_000, 0);
+  } catch (error) {
+    if (error instanceof RequestTimeoutError) {
+      throw new Error(`Worker deletion result is UNKNOWN: ${error.message}. The server may still complete it; no write was retried. Check with: xapi workers get ${id} --format json`, { cause: error });
+    }
+    throw error;
+  }
 }
 
 export function workerAuditLogs(options: WorkersClientOptions, id: string) {
@@ -537,6 +581,7 @@ export function createWorkerResource(
     type: string;
     bindingName: string;
     className?: string;
+    workflowName?: string;
     location?: string;
     readReplication?: string;
     retentionPriceVersion?: string;
@@ -595,7 +640,7 @@ export function putWorkerSecret(
   bindingName: string,
   value: string,
 ) {
-  return request<unknown>(
+  return coordinatedWrite(options, id,
     url(
       options,
       `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/secrets/${encodeURIComponent(bindingName)}`,
@@ -605,7 +650,6 @@ export function putWorkerSecret(
       headers: headers(options, true),
       body: JSON.stringify({ value }),
     },
-    60_000,
   );
 }
 
@@ -615,14 +659,13 @@ export function applyWorkerSecrets(
   environment: string,
   secrets: Array<{ name: string; value?: string; delete?: boolean }>,
 ) {
-  return request<unknown>(
+  return coordinatedWrite(options, id,
     url(options,`/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/secrets`),
     {
       method: "PATCH",
       headers: headers(options,true),
       body: JSON.stringify({secrets}),
     },
-    60_000,
   );
 }
 
@@ -645,12 +688,44 @@ export function deleteWorkerSecret(
   environment: string,
   bindingName: string,
 ) {
-  return request<unknown>(
+  return coordinatedWrite(options, id,
     url(
       options,
       `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/secrets/${encodeURIComponent(bindingName)}`,
     ),
     { method: "DELETE", headers: headers(options) },
-    60_000,
   );
+}
+
+
+export function configureWorkerQueueConsumer(options: WorkersClientOptions, id: string, environment: string, resourceId: string, input: Record<string,unknown>) {
+  return request<unknown>(url(options,`/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/resources/${encodeURIComponent(resourceId)}/queue-consumer`),{
+    method:"PUT",headers:headers(options,true),body:JSON.stringify(input),
+  },60_000);
+}
+export function disableWorkerQueueConsumer(options: WorkersClientOptions, id: string, environment: string, resourceId: string) {
+  return request<unknown>(url(options,`/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/resources/${encodeURIComponent(resourceId)}/queue-consumer`),{
+    method:"DELETE",headers:headers(options),
+  },60_000);
+}
+
+/** Pull changes message visibility and ack/retry changes leases; neither retries. */
+export function workerQueueMessages(options:WorkersClientOptions,id:string,environment:string,resourceId:string,
+  action:'pull'|'ack',input:Record<string,unknown>) {
+  return request<unknown>(url(options,`/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/resources/${encodeURIComponent(resourceId)}/queue/messages/${action}`),{
+    method:'POST',headers:headers(options,true),body:JSON.stringify(input),
+  },60_000);
+}
+
+export function workerControlOperations(options: WorkersClientOptions, id: string,query:{cursor?:string;limit?:string}={}) {
+  const search=new URLSearchParams();if(query.cursor)search.set('cursor',query.cursor);if(query.limit)search.set('limit',query.limit);
+  return request<unknown>(url(options, `/${encodeURIComponent(id)}/control-operations`)+(search.size?'?'+search:''), { headers: headers(options) });
+}
+export function recoverWorkerControlOperation(options: WorkersClientOptions, id: string, operationId: string) {
+  return request<unknown>(url(options, `/${encodeURIComponent(id)}/control-operations/${encodeURIComponent(operationId)}/recover`), { method: "POST", headers: headers(options) }, 60_000);
+}
+
+export function workerDeploymentConfiguration(options:WorkersClientOptions,id:string,environment:string) {
+  return request<unknown>(url(options,`/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/deployment-configuration`),
+    {headers:headers(options)},30_000,2);
 }

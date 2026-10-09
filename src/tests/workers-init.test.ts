@@ -364,7 +364,7 @@ describe("workers init", () => {
       initWorkerProject({
         cwd,
         target: "bad-budget",
-        previewDailyBudgetUsd: 0,
+        previewDailyBudgetUsd: -1,
       }),
     ).toThrow("preview daily budget");
     expect(existsSync(join(cwd, "bad-budget", "xapi.worker.json"))).toBe(false);

@@ -77,7 +77,8 @@ describe('bundled xAPI Workers skill guide', () => {
 
   it('preserves key isolation, idempotency, budgets, and terminal status rules', () => {
     expect(guide).toContain('never embedded in a bundle');
-    expect(guide).toContain('between $0.10 and $100 per day');
+    expect(guide).toContain('Daily budgets are optional');
+    expect(guide).toContain('actual usage is still billed');
     expect(guide).toContain('Reuse an upload key only for identical normalized Artifact bytes');
     expect(guide).toContain('`status: ACTIVE`');
   });
