@@ -93,7 +93,7 @@ test("configures consumer and scheduled handler after code, reuses existing sche
     },
     async createWorkerSchedule(_o: any, _id: any, input: any) {
       seen.push(input);
-      return input;
+      return {id:"schedule",...input};
     },
     async updateWorkerSchedule() {
       throw new Error("unexpected update");
@@ -170,6 +170,7 @@ test("an explicit empty Cron list disables only CLI-managed schedules in this en
         { ...schedule, id: "owned" },
         { ...schedule, id: "production", environment: "PRODUCTION" },
         { ...schedule, id: "manual", name: "User task" },
+        { ...schedule, id: "http-manual", handler:"http" },
       ];
     },
     async createWorkerSchedule() {
@@ -208,7 +209,7 @@ test("an explicit empty Cron list disables only CLI-managed schedules in this en
   ]);
 });
 
-test("removed native Queue consumer is disabled once; the Queue and manual consumers remain", async () => {
+test("omitting a Queue consumer declaration preserves native and manual consumers", async () => {
   const calls: string[] = [];
   const remote = [
     { id: "old", type: "QUEUE", bindingName: "OLD", status: "ACTIVE", config: { nativeConsumerHash: "hash" } },
@@ -231,21 +232,22 @@ test("removed native Queue consumer is disabled once; the Queue and manual consu
   const desired = { d1Migrations: [], consumers: [plan.consumers[0]], crons: [], cronsConfigured: false };
   await applyNativeDeploymentPhase(api, options, "worker", "preview", desired, "AFTER_CODE");
   await applyNativeDeploymentPhase(api, options, "worker", "preview", desired, "AFTER_CODE");
-  expect(calls).toEqual(["disable:old", "configure:current", "configure:current"]);
+  expect(calls).toEqual(["configure:current", "configure:current"]);
+  expect(remote.find(row=>row.id==="old")?.config).toEqual({nativeConsumerHash:"hash"});
   expect(remote.find(row => row.id === "manual")?.config).toEqual({});
 });
 
-test("removing all consumer declarations reconciles a previously managed consumer", async () => {
+test("omitting all consumer declarations does not remove an existing native consumer", async () => {
   const disabled: string[] = [];
   await applyNativeDeploymentPhase({
     async listWorkerResources() { return [{ id: "old", type: "QUEUE", bindingName: "OLD", status: "ACTIVE", config: { nativeConsumerHash: "hash" } }]; },
     async disableWorkerQueueConsumer(_o, _w, _e, id) { disabled.push(id); return { status: "DISABLED" }; },
   }, options, "worker", "preview", { d1Migrations: [], consumers: [], crons: [], cronsConfigured: false }, "AFTER_CODE");
-  expect(disabled).toEqual(["old"]);
+  expect(disabled).toEqual([]);
 });
 
 import { validNativeCron } from "../workers-native-deployment.ts";
-test("validates CF numeric Cron ranges before any remote deployment phase", () => {
+test("retains numeric Cron prediction helper without using it as native deployment admission", () => {
   for (const cron of ["*/5 * * * *", "0 12 * * 1", "0 0 1-31/2 * 7"])
     expect(validNativeCron(cron)).toBe(true);
   for (const cron of [
@@ -261,4 +263,15 @@ test("validates CF numeric Cron ranges before any remote deployment phase", () =
     "- * * * *",
   ])
     expect(validNativeCron(cron)).toBe(false);
+});
+
+test("backend Cron rejection is returned without altering its expression or replaying the mutation",async()=>{
+ const sent: string[]=[];
+ const api={listWorkerResources:async()=>[],listWorkerSchedules:async()=>[],
+  createWorkerSchedule:async(_o:any,_id:string,input:any)=>{sent.push(input.cron);throw Error('CF cron invalid expression');},
+  updateWorkerSchedule:async()=>{throw Error('unexpected update');}};
+ await expect(applyNativeDeploymentPhase(api,options,'worker','preview',{
+  d1Migrations:[],consumers:[],crons:['0 18 * * MON#2'],cronsConfigured:true,
+ },'AFTER_CODE')).rejects.toThrow('CF cron invalid expression');
+ expect(sent).toEqual(['0 18 * * MON#2']);
 });

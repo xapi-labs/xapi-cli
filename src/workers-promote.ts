@@ -1,3 +1,4 @@
+import { planWorkerNativeEvents } from "./workers-native-events.ts";
 import { planWorkerVariables, readWorkerVariableState, readWorkerArtifactVariableConfiguration, type WorkerVariableDecision } from "./workers-variable-plan.ts";
 import { remoteWorkerResourceState, resourceReadyForDeployment } from "./workers-resource-state.ts";
 import { nativeDeploymentPlan, publicNativeDeploymentPlan, applyNativeDeploymentPhase, NativeDeploymentError, type NativeDeploymentClient, type NativeDeploymentPlan } from './workers-native-deployment.ts';
@@ -13,7 +14,7 @@ import {
   type ManagedResourceClient,
   resourceMatches,
 } from "./workers-push.ts";
-import { loadWorkerProject } from "./workers-project.ts";
+import { workerEnvironmentContainers, loadWorkerProject } from "./workers-project.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
 
 type UnknownRecord = Record<string, unknown>;
@@ -35,13 +36,14 @@ export interface PromotionClient extends DeploymentClient, ManagedResourceClient
 
 export type PromotionCheckStatus =
   | "CREATE"
+  | "UPDATE"
   | "NO_CHANGE"
   | "MANUAL"
   | "BLOCKED";
 
 export interface WorkerPromotionCheck {
   status: PromotionCheckStatus;
-  kind: "budget" | "placement" | "resource" | "secret" | "routing";
+  kind: "budget" | "placement" | "resource" | "secret" | "routing" | "event";
   key: string;
   message: string;
   command?: string;
@@ -87,6 +89,7 @@ export interface WorkerPromotionResult {
   resources: { created: string[]; unchanged: string[] };
   deployment: { id: string; status: "ACTIVE"; idempotencyKey: string };
   nativeReceipts: unknown[];
+  events: {queueConsumers:string[]; crons:string[]};
   publicUrl: string;
   health: { url: string; status: number; attempts: number };
   commands: { logs: string; rollback: string };
@@ -155,7 +158,7 @@ function productionChecks(
   const dataRisk: string[] = [
     "Promotion deploys the selected Worker Artifact and the displayed local Wrangler event plan; it does not snapshot, copy, or roll back production data",
   ];
-  const currentBudget = amount(remoteEnvironment.dailyBudgetUsd);
+  const currentBudget = remoteEnvironment.dailyBudgetUsd === null ? null : amount(remoteEnvironment.dailyBudgetUsd);
   if (hasStaticAssets) {
     checks.push(
       remoteEnvironment.webAppReady === true
@@ -176,14 +179,14 @@ function productionChecks(
   }
   if (
     currentBudget === undefined ||
-    Math.abs(currentBudget - desired.dailyBudgetUsd) > 0.00005
+    (desired.dailyBudgetUsd === null ? currentBudget !== null : currentBudget === null || Math.abs(currentBudget - desired.dailyBudgetUsd) > 0.00005)
   ) {
     checks.push({
       status: "BLOCKED",
       kind: "budget",
       key: "production",
-      message: `Production budget is ${currentBudget ?? "unknown"}; desired is ${desired.dailyBudgetUsd}`,
-      command: `xapi workers budget ${workerId} production --daily-usd ${desired.dailyBudgetUsd}`,
+      message: `Production budget is ${currentBudget ?? "unknown"}; desired is ${desired.dailyBudgetUsd === null ? "none" : desired.dailyBudgetUsd}`,
+      command: `xapi workers budget ${workerId} production --daily-usd ${desired.dailyBudgetUsd === null ? "none" : desired.dailyBudgetUsd}`,
     });
   } else {
     checks.push({
@@ -319,8 +322,8 @@ function productionChecks(
   }
   checks.sort(
     (a, b) =>
-      ({ routing: 0, budget: 1, placement: 2, resource: 3, secret: 4 })[a.kind] -
-        { routing: 0, budget: 1, placement: 2, resource: 3, secret: 4 }[b.kind] ||
+      ({ routing: 0, budget: 1, placement: 2, resource: 3, secret: 4, event: 5 })[a.kind] -
+        { routing: 0, budget: 1, placement: 2, resource: 3, secret: 4, event: 5 }[b.kind] ||
       a.key.localeCompare(b.key),
   );
   return { checks, dataRisk: dataRisk.sort() };
@@ -334,7 +337,7 @@ async function terminalConfirm(): Promise<boolean> {
   }
   const prompt = createInterface({
     input: process.stdin,
-    output: process.stdout,
+    output: process.stderr,
   });
   try {
     const answer = await prompt.question(
@@ -429,6 +432,8 @@ export async function createWorkerPromotionPlan(
     Boolean(project.config.assets),
   );
   const nativePlan = nativeDeploymentPlan(project, "production");
+  for (const event of await planWorkerNativeEvents(project,"production",resources,api,options.clientOptions))
+    checked.checks.push({status:event.operation,kind:"event",key:event.key,message:event.message});
   checked.dataRisk.push("D1 SQL is not executed by promotion. Apply database migrations explicitly when needed; Queue/Cron configuration runs after code. Code rollback does not roll back SQL.");
   const plan: WorkerPromotionPlan = {
     schemaVersion: 1,
@@ -528,6 +533,8 @@ export async function promoteWorkerProject(
       options.retentionPriceVersion,
       project.config.environments.production.resources.map(resource => resource.bindingName),
       prepared.plan.production.activeDeploymentId,
+      false,
+      workerEnvironmentContainers(project.config,"production"),
     );
     releasedDeploymentId = text(deployed.deployment.id);
     nativeReceipts.push(...await applyNativeDeploymentPhase(api, options.clientOptions, prepared.plan.workerId, "production", prepared.nativePlan, "AFTER_CODE"));
@@ -552,6 +559,7 @@ export async function promoteWorkerProject(
       status: "ACTIVE",
       plan: prepared.plan,
       nativeReceipts,
+      events: {queueConsumers:prepared.nativePlan.consumers.map(item=>item.bindingName),crons:prepared.nativePlan.crons},
       workerId: prepared.plan.workerId,
       artifact: prepared.plan.artifact,
       resources,

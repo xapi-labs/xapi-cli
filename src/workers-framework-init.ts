@@ -34,8 +34,8 @@ export interface InitExistingFrameworkOptions {
   name: string;
   slug: string;
   compatibilityDate: string;
-  previewDailyBudgetUsd: number;
-  productionDailyBudgetUsd: number;
+  previewDailyBudgetUsd: number | null;
+  productionDailyBudgetUsd: number | null;
   defaultResourceLocation?: "wnam" | "enam" | "weur" | "eeur" | "apac" | "oc";
   placementMode?: "off" | "smart";
   framework?: string;

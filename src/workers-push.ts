@@ -20,6 +20,7 @@ import {
   type LoadedWorkerProject,
   WorkerProjectConfigError,
   loadWorkerProject,
+  workerEnvironmentContainers,
   workerProjectConfigSchema,
 } from "./workers-project.ts";
 import {
@@ -34,7 +35,7 @@ import {
   r2ReadinessPending,
   r2CreationRetryable,
 } from "./workers-resource-state.ts";
-import { deploymentPrefix, deploymentKey, currentMatchingDeployment, safeDeploymentRetryKey } from "./workers-deployment-state.ts";
+import { deploymentPrefix, deploymentKey, currentMatchingDeployment, safeDeploymentRetryKey, deploymentBindingResources } from "./workers-deployment-state.ts";
 import {
   inspectWorker,
   type WorkerInspection,
@@ -57,6 +58,8 @@ const POSTPAID_STATE_UNAVAILABLE = "workers_postpaid_state_unavailable";
 type UnknownRecord = Record<string, unknown>;
 
 export interface DeploymentClient {
+  recoverWorkerControlOperation?: typeof workersClient.recoverWorkerControlOperation;
+  workerControlOperations?: typeof workersClient.workerControlOperations;
   listWorkerResources(options: WorkersClientOptions, id: string, environment: string): Promise<unknown>;
   listWorkerSecrets(options: WorkersClientOptions, id: string, environment: string): Promise<unknown>;
   getWorker(options: WorkersClientOptions, id: string): Promise<unknown>;
@@ -87,7 +90,7 @@ export interface PushClient extends PlanClient, DeploymentClient, NativeDeployme
     options: WorkersClientOptions,
     id: string,
     environment: string,
-    input: { dailyBudgetUsd?: number; defaultResourceLocation?: string; placementMode?: string },
+    input: { dailyBudgetUsd?: number | null; defaultResourceLocation?: string; placementMode?: string },
   ): Promise<unknown>;
   createWorkerResource(
     options: WorkersClientOptions,
@@ -146,6 +149,7 @@ export interface PushWorkerProjectOptions {
   onPlan?: (plan: WorkerDeploymentPlan) => void;
   onProgress?: (message: string) => void;
   runBuild?: WorkerProjectBuildRunner;
+  buildTimeoutMs?: number;
   fetchPublic?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
 }
@@ -156,8 +160,9 @@ export interface WorkerPushResult {
   initialPlan: WorkerDeploymentPlan;
   worker: { id: string; created: boolean; configLinked: boolean };
   resources: { created: string[]; unchanged: string[] };
+  events?: {queueConsumers:string[]; crons:string[]};
   artifact: { id: string; contentSha256: string; sizeBytes: number };
-  deployment: { id: string; status: "ACTIVE"; idempotencyKey: string };
+  deployment: { id: string; status: "ACTIVE"; idempotencyKey: string; containerRollout?: Record<string,unknown> };
   nativeReceipts: unknown[];
   publicUrl: string;
   routing?: { mode?: string; webAppReady: boolean; publicOrigin?: string; publicBasePath?: string };
@@ -235,7 +240,7 @@ async function terminalConfirm(): Promise<boolean> {
   }
   const prompt = createInterface({
     input: process.stdin,
-    output: process.stdout,
+    output: process.stderr,
   });
   try {
     const answer = await prompt.question("Apply this preview plan? [y/N] ");
@@ -381,7 +386,7 @@ async function ensureEnvironment(
   let worker = record(await api.getWorker(options, workerId), "Worker");
   let environment = environmentOf(worker, "preview");
   const matches = () =>
-    Math.abs((amount(environment.dailyBudgetUsd) ?? NaN) - desired.dailyBudgetUsd) <= 0.00005 &&
+    (desired.dailyBudgetUsd === null ? environment.dailyBudgetUsd === null : Math.abs((amount(environment.dailyBudgetUsd) ?? NaN) - desired.dailyBudgetUsd) <= 0.00005) &&
     (!desired.defaultResourceLocation || text(environment.defaultResourceLocation) === desired.defaultResourceLocation) &&
     (!desired.placementMode || (text(environment.placementMode) || "off") === desired.placementMode);
   if (matches()) {
@@ -412,6 +417,7 @@ export function resourceMatches(
   return (
     state.type === desired.type &&
     (!["durable_object", "workflow"].includes(String(desired.type)) || state.className === desired.className) &&
+    (desired.workflowName === undefined || state.workflowName === desired.workflowName) &&
     (!desired.location || remoteLocation === desired.location) &&
     (!desired.readReplication ||
       state.readReplication === desired.readReplication)
@@ -582,76 +588,6 @@ export async function ensureManagedResources(
   return { created: created.sort(), unchanged: unchanged.sort() };
 }
 
-/** Quotes are checked before any resource write. The backend still owns atomic
- * balance admission; this read is an early, actionable preflight, not a lock. */
-async function checkRetentionQuotes(
-  api: PushClient,
-  options: WorkersClientOptions,
-  workerId: string,
-  plan: WorkerDeploymentPlan,
-  priceVersion?: string,
-): Promise<void> {
-  const types = plan.actions
-    .filter(action => action.kind === "resource" && action.operation === "CREATE")
-    .map(action => String(action.desired?.type || "").toUpperCase());
-  const firstRelease = !plan.remote.activeDeploymentId;
-  const r2Retries = plan.actions.filter(action =>
-    action.kind === "resource" && action.operation === "UPDATE" &&
-    action.desired?.type === "r2_bucket",
-  );
-  if ((!types.length && !firstRelease && !r2Retries.length) || !api.workerRetention) return;
-
-  const summary = await api.workerRetention(options, workerId, "preview");
-  if (summary.enabled === false) return;
-  const holds = records(summary.holds, "retention holds");
-  for (const retry of r2Retries) {
-    if (!holds.some(hold =>
-      hold.resourceKey === retry.current?.resourceId && !hold.releasedAt,
-    )) types.push("R2_BUCKET");
-  }
-  if (firstRelease && !holds.some(hold => hold.resourceType === "WORKER" && !hold.releasedAt)) {
-    types.push("WORKER");
-  }
-  const uniqueTypes = [...new Set(types)].sort();
-  if (!uniqueTypes.length) return;
-  const quotes = await Promise.all(uniqueTypes.map(async type => {
-    const quote = await api.workerRetention!(options, workerId, "preview", `/quote/${type}`);
-    if (!text(quote.priceVersion) || typeof quote.freezeUsd !== "string" || !/^\d+(?:\.\d+)?$/.test(quote.freezeUsd)) {
-      throw new WorkerPushError("Invalid retention quote; no resource was provisioned", {
-        workerId,
-        resourceType: type,
-      });
-    }
-    return {
-      resourceType: type,
-      count: types.filter(item => item === type).length,
-      freezeUsdPerResource: quote.freezeUsd,
-      priceVersion: quote.priceVersion as string,
-    };
-  }));
-  if (priceVersion && quotes.every(quote => quote.priceVersion === priceVersion)) return;
-  const versions = [...new Set(quotes.map(quote => quote.priceVersion))];
-  // Quote values from the server are data, not shell syntax.
-  const versionArg = versions.length === 1
-    ? "'" + versions[0].replace(/'/g, "'\"'\"'") + "'"
-    : "<matching-quote-version>";
-  throw new WorkerPushError(
-    priceVersion
-      ? "Retention quote changed; review the current quote before provisioning"
-      : "Retention quote required before provisioning; no resource or deployment was created",
-    {
-      workerId,
-      configLinked: true,
-      resourcesProvisioned: false,
-      quotes,
-      next: `Review refundable freezes (not consumption charges), then rerun xapi workers push --env preview --retention-price-version ${versionArg}`,
-      commands: uniqueTypes.map(type =>
-        `xapi workers retention quote ${workerId} --env preview --type ${type} --format json`,
-      ),
-    },
-  );
-}
-
 async function missingSecrets(
   api: PushClient,
   options: WorkersClientOptions,
@@ -791,6 +727,7 @@ export async function ensureActiveDeployment(
   desiredBindings?: string[],
   expectedActiveDeploymentId?: string | null,
   retrySafeFailures = false,
+  containerOverrides?: import("./workers-artifact.ts").WorkerContainerInput[],
 ): Promise<{ deployment: UnknownRecord; idempotencyKey: string }> {
   const currentWorker = record(
     await api.getWorker(options, workerId),
@@ -807,9 +744,9 @@ export async function ensureActiveDeployment(
     if (matches.length !== 1 || !text(matches[0].id))
       throw new WorkerPushError(`Resource binding ${name} is missing or ambiguous; rerun plan`);
     return matches[0];
-  }) : resourceRows;
+  }) : deploymentBindingResources(resourceRows);
   const resourceIds = selected.filter(row => row.type !== "CONTAINER_APPLICATION").map(row => text(row.id)!);
-  const prefix = deploymentPrefix(workerId, environment, artifactId, compatibility,
+  const prefix = deploymentPrefix(workerId, environment, artifactId, {...compatibility, ...(containerOverrides !== undefined ? {containers:containerOverrides} : {})},
     environmentState, selected, records(secretState, "Secrets"));
   const alreadyActive = currentMatchingDeployment(records(currentWorker.deployments || [], "Deployments"),
     environmentState, artifactId, prefix);
@@ -839,6 +776,29 @@ export async function ensureActiveDeployment(
         item.environmentId === environmentState.id && item.artifactId === artifactId);
     }
   }
+  if (deployment?.status === "FAILED") {
+    const outcome = deployment.outcome as UnknownRecord | undefined;
+    const provider = deployment.providerResult as UnknownRecord | undefined;
+    const operationId = text(outcome?.operationId) || text(provider?.controlOperationId);
+    if (operationId && api.recoverWorkerControlOperation) {
+      // Observation reconciles the original operation; it never replays its write.
+      await api.recoverWorkerControlOperation(options, workerId, operationId);
+      deployment = await deploymentFromWorker(api, options, workerId, idempotencyKey);
+      if (!deployment) throw new WorkerPushError("The original deployment journal could not be reconciled; no new deployment was sent", {
+        workerId, operationId, idempotencyKey, automaticReplay: false,
+      });
+      const observed = deployment.outcome as UnknownRecord | undefined;
+      if (retrySafeFailures && deployment.status === "FAILED" &&
+          observed?.providerEffect === "ALL_WRITES_CONFIRMED" &&
+          (observed.observation as UnknownRecord | undefined)?.status === "MATCH") {
+        idempotencyKey = `${baseKey}-r${createHash("sha256").update(JSON.stringify([
+          deployment.id, operationId, "native-confirmed-explicit-publish",
+        ])).digest("hex").slice(0, 24)}`;
+        deployment = deployments.find(item => item.idempotencyKey === idempotencyKey &&
+          item.environmentId === environmentState.id && item.artifactId === artifactId);
+      }
+    }
+  }
   // At most one POST per invocation, even if it returns another safe failure.
   if (!deployment) {
     try {
@@ -851,6 +811,11 @@ export async function ensureActiveDeployment(
           idempotencyKey,
           compatibilityDate: compatibility.compatibilityDate,
           compatibilityFlags: compatibility.compatibilityFlags,
+          ...(compatibility.requiredSecrets !== undefined ? {requiredSecrets:compatibility.requiredSecrets} : {}),
+          ...(compatibility.nativeMetadata !== undefined ? {nativeMetadata:compatibility.nativeMetadata} : {}),
+          ...(compatibility.variables !== undefined ? {variables:compatibility.variables} : {}),
+          ...(compatibility.queueBindingAliases !== undefined ? {queueBindingAliases:compatibility.queueBindingAliases} : {}),
+          ...(containerOverrides !== undefined ? {containers:containerOverrides} : {}),
           ...(retentionPriceVersion ? { retentionPriceVersion } : {}),
         }),
         "Deployment",
@@ -1043,6 +1008,7 @@ export async function pushWorkerProject(
       clientOptions: options.clientOptions,
       client: api,
       runBuild: options.runBuild,
+      buildTimeoutMs: options.buildTimeoutMs,
     });
   } catch (error) {
     if (error instanceof WorkerProjectBuildError) {
@@ -1117,7 +1083,6 @@ export async function pushWorkerProject(
   const nativeReceipts: unknown[] = [];
   let releasedDeploymentId: string | undefined;
   try {
-    await checkRetentionQuotes(api, options.clientOptions, workerState.id, initialPlan, options.retentionPriceVersion);
     await ensureEnvironment(
       api,
       options.clientOptions,
@@ -1186,6 +1151,7 @@ export async function pushWorkerProject(
       linkedProject.config.environments.preview.resources.map(resource => resource.bindingName),
       initialPlan.remote.activeDeploymentId,
       true,
+      workerEnvironmentContainers(linkedProject.config,"preview"),
     );
     releasedDeploymentId = text(deployed.deployment.id);
     nativeReceipts.push(...await applyNativeDeploymentPhase(api, options.clientOptions, workerState.id, "preview", nativePlan, "AFTER_CODE"));
@@ -1219,6 +1185,7 @@ export async function pushWorkerProject(
       status: "ACTIVE",
       initialPlan,
       nativeReceipts,
+      events: {queueConsumers:nativePlan.consumers.map(item=>item.bindingName),crons:nativePlan.crons},
       worker: {
         id: workerState.id,
         created: workerState.created,
@@ -1231,6 +1198,7 @@ export async function pushWorkerProject(
         sizeBytes: bundle.sizeBytes,
       },
       deployment: {
+        ...(deployed.deployment.containerRollout ? {containerRollout:deployed.deployment.containerRollout as Record<string,unknown>} : {}),
         id: deploymentId,
         status: "ACTIVE",
         idempotencyKey: deployed.idempotencyKey,

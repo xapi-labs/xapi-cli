@@ -140,7 +140,7 @@ test("rejects stale native vars and collisions with declared Secrets before publ
     }),
   );
   await expect(loadWorkerProjectBundle(native, "preview")).rejects.toThrow(
-    "vars differ",
+    "variables differ",
   );
   const module = project(false, false);
   module.config.environments.preview.secrets = ["PRIVATE_TOKEN"];

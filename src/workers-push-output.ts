@@ -44,6 +44,10 @@ export function formatWorkerPushResult(result: WorkerPushResult): string {
     ),
     metadata("Resources", resources.join(" · ") || "No managed resources"),
     ...(result.nativeReceipts.length ? [metadata("Native steps", `${result.nativeReceipts.length} deployment receipts; event execution still needs verification`)] : []),
+    ...(result.deployment.containerRollout ? [metadata("Containers",
+      result.deployment.containerRollout.status === "PENDING" ? "Rollout pending native confirmation"
+        : result.deployment.containerRollout.status === "COMPLETE" ? "Configuration accepted; check application health"
+          : "Native configuration unconfirmed")] : []),
     "",
     "Next steps",
     `  1. Open: ${result.publicUrl}`,

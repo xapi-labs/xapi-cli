@@ -21,6 +21,18 @@ interface QueueBinding {
   send(message: unknown): Promise<void>;
 }
 
+interface QueueMessage {
+  id: string;
+  body: unknown;
+  ack(): void;
+  retry(): void;
+}
+interface QueueBatch { messages: QueueMessage[]; }
+interface SignedQueueTask {
+  payload?: { taskId?: string; task?: unknown };
+  signature?: string;
+}
+
 interface WorkflowBinding {
   create(options: { id?: string; params: unknown }): Promise<{ id: string }>;
 }
@@ -381,6 +393,17 @@ async function record(env: Env, kind: string, payload: unknown): Promise<void> {
     .run();
 }
 
+async function consumeQueueTask(env: Env, envelope: SignedQueueTask): Promise<void> {
+  if (!await verifiedEnvelope(env.APP_TOKEN, envelope) || typeof envelope.payload?.taskId !== "string" || !envelope.payload.taskId) {
+    throw new Error("Invalid Queue task signature or taskId");
+  }
+  // Queue delivery can repeat. The producer's stable task ID makes the outcome
+  // idempotent, including a lost acknowledgement after a successful D1 write.
+  await env.DB.prepare("INSERT OR IGNORE INTO agent_events (id, kind, payload, created_at) VALUES (?, ?, ?, ?)")
+    .bind(envelope.payload.taskId, "queue", JSON.stringify(envelope.payload), new Date().toISOString())
+    .run();
+}
+
 export class AgentState {
   constructor(
     private readonly state: DurableObjectState,
@@ -410,6 +433,19 @@ function sessionStub(env: Env, session: string): DurableObjectStub {
 }
 
 export default {
+  async queue(batch: QueueBatch, env: Env): Promise<void> {
+    for (const message of batch.messages) {
+      try {
+        const value = message.body as SignedQueueTask & { body?: SignedQueueTask };
+        // Accept this template's former signed route envelope during rollout;
+        // its path never selects an arbitrary HTTP route.
+        await consumeQueueTask(env, value?.payload ? value : value?.body || {});
+        message.ack();
+      } catch {
+        message.retry();
+      }
+    }
+  },
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/" && request.method === "GET") {
@@ -554,18 +590,13 @@ export default {
       const task = await body<Record<string, unknown>>(request);
       const taskId = crypto.randomUUID();
       const payload = { taskId, task };
-      await env.TASK_QUEUE.send({
-        path: "/queue-consume",
-        body: { payload, signature: await hmac(env.APP_TOKEN!, payload) },
-      });
+      await env.TASK_QUEUE.send({ payload, signature: await hmac(env.APP_TOKEN!, payload) });
       return json({ accepted: true, taskId }, 202);
     }
 
     if (url.pathname === "/queue-consume" && request.method === "POST") {
-      const envelope = await body<{
-        payload?: { taskId?: string; task?: unknown };
-      }>(request);
-      await record(env, "queue", envelope.payload || {});
+      const envelope = await body<SignedQueueTask>(request);
+      await consumeQueueTask(env, envelope);
       return json({ processed: true });
     }
 
@@ -595,13 +626,7 @@ export default {
         taskId,
         task: { kind: "cron", at: new Date().toISOString() },
       };
-      await env.TASK_QUEUE.send({
-        path: "/queue-consume",
-        body: {
-          payload,
-          signature: await hmac(env.APP_TOKEN, payload),
-        },
-      });
+      await env.TASK_QUEUE.send({ payload, signature: await hmac(env.APP_TOKEN, payload) });
       return json({ accepted: true, taskId }, 202);
     }
 

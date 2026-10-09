@@ -238,13 +238,30 @@ describe("workers plan", () => {
     );
   });
 
+  test('does not require adopting or destroying deployment-owned Container records to update a project', async () => {
+    const root = project({ linked: true, bundle: "export default {fetch(){return new Response('updated')}}" });
+    const resources = [
+      { id: 'state', bindingName: 'STATE', type: 'KV_NAMESPACE', status: 'ACTIVE' },
+      { id: 'container', bindingName: 'CONTAINER_generated', type: 'CONTAINER_APPLICATION', status: 'ACTIVE' },
+      { id: 'extra', bindingName: 'EXTRA', type: 'R2_BUCKET', status: 'ACTIVE' },
+    ];
+    const result = await createWorkerPlan({ cwd: root, environment: 'preview',
+      clientOptions: { apiHost: 'localhost:3148', apiKey: 'test' }, client: {
+        getWorkerVariableState: async()=>({environment:'preview',exists:false,activeDeploymentId:null,variables:[]}), listWorkers: unexpected('listWorkers'), listWorkerResources: async () => resources,
+        listWorkerSecrets: async () => [{ bindingName: 'MODEL_KEY', version: 1 }],
+        getWorker: async () => ({ id: workerId, slug: 'plan-agent', environments: [{ id: 'env', name: 'PREVIEW', dailyBudgetUsd: 0.25 }], artifacts: [], deployments: [] }),
+      } });
+    expect(result.actions.some(action => action.key === 'CONTAINER_generated')).toBe(false);
+    expect(result.actions.find(action => action.key === 'STATE')?.operation).toBe('NO_CHANGE');
+    expect(result.actions.find(action => action.key === 'EXTRA')?.operation).toBe('NO_CHANGE');
+  });
   test("plan compares the current remote binding snapshot, not only code", async () => {
     const bundle = "export default {fetch(){return new Response('ok')}}";
     const root = project({ linked: true, bundle });
     const resources = [{ id: "resource", bindingName: "STATE", type: "KV_NAMESPACE", status: "ACTIVE", providerResourceId: "first" }];
     const secrets = [{ bindingName: "MODEL_KEY", version: 1 }];
     const environment = { id: "env-preview", name: "PREVIEW", dailyBudgetUsd: 0.25, activeDeploymentId: "live", bindings: [{ name: "ENV_CONFIG", type: "json", json: "private-marker" }] };
-    const prefix = deploymentPrefix(workerId, "preview", "artifact", {}, environment, resources, secrets);
+    const prefix = deploymentPrefix(workerId, "preview", "artifact", {compatibilityFlags:[],requiredSecrets:['MODEL_KEY']}, environment, resources, secrets);
     const client = {
       getWorkerVariableState: async () => ({ environment: "preview", activeDeploymentId: "live", exists: true, variables: [{ name: "EXTERNAL_VAR", type: "plain_text" }] }),
       listWorkers: unexpected("listWorkers"),
@@ -572,6 +589,7 @@ describe("workers plan", () => {
       if (url.endsWith("/secrets")) {
         return Response.json([{ bindingName: "MODEL_KEY", version: 1 }]);
       }
+      if (url.endsWith("/schedules")) return Response.json([]);
       return Response.json({ error: "unexpected" }, { status: 500 });
     }) as typeof fetch;
     const plan = await createWorkerPlan({
@@ -580,7 +598,7 @@ describe("workers plan", () => {
       clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
     });
     expect(plan.canApply).toBe(true);
-    expect(methods).toEqual(["GET", "GET", "GET", "GET", "GET"]);
+    expect(methods).toEqual(["GET", "GET", "GET", "GET", "GET", "GET"]);
   });
 
   test("propagates a safe hidden-instance 404 and performs no fallback lookup", async () => {
@@ -720,7 +738,7 @@ describe("resource recovery guidance", () => {
       if ("className" in extra) expect(action?.message).toContain(`--class-name '${extra.className}'`);
       if ("location" in extra) expect(action?.message).toContain(`--location ${extra.location}`);
       if ("readReplication" in extra) expect(action?.message).toContain(`--read-replication ${extra.readReplication}`);
-      expect(action?.message).toContain("--retention-price-version <current-quote-version>");
+      expect(action?.message).not.toContain("--retention-price-version <current-quote-version>");
       expect(action?.message).toContain("Preserve the existing resource ID");
       expect(plan.canApply).toBe(false);
       expect(plan.costImpact.notes.join(" ")).toContain("risk-control target, not a hard spending cap");

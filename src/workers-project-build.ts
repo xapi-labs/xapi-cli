@@ -1,3 +1,4 @@
+import { requestDeadline } from "./request-deadline.ts";
 import { spawn } from "node:child_process";
 import type { LoadedWorkerArtifact } from "./workers-artifact.ts";
 import {
@@ -6,9 +7,12 @@ import {
   withNativeWorkerOptions,
   WorkerArtifactError,
   withWorkerVars,
+  attachWorkerPublicVariables,
+  attachWorkerNativeMetadata,
+  attachWorkerObservability,
 } from "./workers-artifact.ts";
 import type { LoadedWorkerProject } from "./workers-project.ts";
-import { resolveWorkerProjectPath } from "./workers-project.ts";
+import { workerEnvironmentContainers, resolveWorkerProjectPath } from "./workers-project.ts";
 import {
   readWranglerDeploymentSettings,
   readWranglerPublicVars,
@@ -19,6 +23,7 @@ const BUILD_TIMEOUT_MS = 15 * 60_000;
 export type WorkerProjectBuildRunner = (
   command: string,
   cwd: string,
+  timeoutMs?: number,
 ) => Promise<void>;
 
 export class WorkerProjectBuildError extends Error {
@@ -45,6 +50,7 @@ function sanitizedBuildEnvironment(): NodeJS.ProcessEnv {
 export async function runWorkerProjectBuild(
   command: string,
   cwd: string,
+  timeoutMs = BUILD_TIMEOUT_MS,
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, {
@@ -58,17 +64,17 @@ export async function runWorkerProjectBuild(
     // remain visible without corrupting `--format json` output.
     child.stdout?.pipe(process.stderr);
     child.stderr?.pipe(process.stderr);
-    const timer = setTimeout(() => {
+    const timer = requestDeadline(() => {
       child.kill("SIGTERM");
       reject(
         new WorkerProjectBuildError(
-          `Build exceeded the ${BUILD_TIMEOUT_MS / 60_000} minute timeout`,
+          `Build exceeded the ${timeoutMs / 60_000} minute timeout`,
           { buildCommand: command, projectRoot: cwd },
         ),
       );
-    }, BUILD_TIMEOUT_MS);
+    }, timeoutMs);
     child.once("error", (error) => {
-      clearTimeout(timer);
+      timer.dispose();
       reject(
         new WorkerProjectBuildError(`Unable to start build: ${error.message}`, {
           buildCommand: command,
@@ -77,7 +83,7 @@ export async function runWorkerProjectBuild(
       );
     });
     child.once("exit", (code, signal) => {
-      clearTimeout(timer);
+      timer.dispose();
       if (code === 0) {
         resolve();
         return;
@@ -112,7 +118,7 @@ export async function loadWorkerProjectBundle(
     "build.output",
   );
   try {
-    const settings = readWranglerDeploymentSettings(project, environment);
+    const settings = readWranglerDeploymentSettings(project, environment, project.config.build.output.endsWith(".bundle") ? "application/vnd.xapi.worker-bundle+json" : undefined);
     const built = await loadWorkerArtifactInput(
       path,
       project.config.build.main,
@@ -126,13 +132,13 @@ export async function loadWorkerProjectBundle(
             ),
           }
         : undefined,
-      project.config.containers,
+      workerEnvironmentContainers(project.config, environment),
       settings.uploadSourceMaps,
     );
-    const bundle = withWorkerVars(
-      withNativeWorkerOptions(built, settings),
-      readWranglerPublicVars(project, environment),
-    );
+    const decorated = attachWorkerNativeMetadata(attachWorkerObservability(withNativeWorkerOptions(built, settings), settings.observability, settings.queueBindingAliases), settings.nativeMetadata);
+    const bundle = settings.variables !== undefined
+      ? attachWorkerPublicVariables(decorated, settings.variables)
+      : withWorkerVars(decorated, readWranglerPublicVars(project, environment));
     const vars =
       "bundle" in bundle.upload ? bundle.upload.bundle.vars : undefined;
     const occupied = new Set([
@@ -183,7 +189,8 @@ export async function prepareWorkerProjectBundle(
   project: LoadedWorkerProject,
   environment: "preview" | "production",
   runner: WorkerProjectBuildRunner = runWorkerProjectBuild,
+  timeoutMs = BUILD_TIMEOUT_MS,
 ): Promise<LoadedWorkerArtifact> {
-  await runner(project.config.build.command, project.rootDir);
+  await runner(project.config.build.command, project.rootDir, timeoutMs);
   return loadWorkerProjectBundle(project, environment);
 }

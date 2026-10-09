@@ -11,6 +11,7 @@ const KIND_LABEL: Record<WorkerPlanAction["kind"], string> = {
   placement: "Placement",
   resource: "Resource",
   secret: "Secret",
+  event: "Event",
   routing: "Routing",
   artifact: "Artifact",
   deployment: "Deployment",
@@ -77,6 +78,7 @@ function actionDetail(action: WorkerPlanAction): string {
   if (action.kind === "budget") {
     const daily = number(desired.dailyBudgetUsd);
     const prior = number(current.dailyBudgetUsd);
+    if (desired.dailyBudgetUsd === null) return "No daily budget limit";
     if (daily === undefined) return action.message;
     return prior === undefined
       ? `$${daily.toFixed(2)}/day`
@@ -247,7 +249,9 @@ export function formatWorkerPlan(plan: WorkerDeploymentPlan): string {
     : "Not linked · a new Worker will be created";
   const budget = plan.costImpact;
   const budgetChange =
-    budget.currentDailyBudgetUsd === undefined
+    budget.desiredDailyBudgetUsd === null
+      ? "No user-selected daily budget"
+      : budget.currentDailyBudgetUsd === undefined
       ? `$${budget.desiredDailyBudgetUsd.toFixed(2)}/day target`
       : `$${budget.currentDailyBudgetUsd.toFixed(2)} → $${budget.desiredDailyBudgetUsd.toFixed(2)}/day (${budget.dailyBudgetDeltaUsd! >= 0 ? "+" : "-"}$${Math.abs(budget.dailyBudgetDeltaUsd!).toFixed(2)})`;
   const priceBook = budget.priceBook

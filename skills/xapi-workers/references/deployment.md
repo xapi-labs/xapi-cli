@@ -1,5 +1,34 @@
 # Deployment and CI
 
+### Wrangler environments and public variables
+
+When `env.preview` or `env.production` exists, its bindings, `vars`, and required
+Secret names come from that named environment; root bindings and vars are not
+inherited. Ordinary inheritable settings retain Wrangler semantics. If the named
+environment is absent, the existing default Wrangler configuration maps to the
+xAPI slot. Review and re-import an older generated project with `--force` to
+correct its declarations; this preserves its linked Worker ID and does not delete
+already-created resources.
+
+Wrangler `vars` are public configuration. Strings become `plain_text`; other
+JSON values become `json`. They are included in the immutable Artifact and in
+environment deployment identity. Promotion uses production vars even when it
+reuses the preview Artifact. The deploy API also accepts
+`variables: {vars: {...}, varTypes?: {...}}`: omission uses the Artifact defaults;
+`variables: {vars: {}}` explicitly clears its public vars. Rollback restores the
+recorded override, while resource data and independently managed Secret values
+remain current. Explicit `varTypes: {NAME: "json"}` preserves a native JSON string.
+
+Do not copy credentials into `vars`: Artifact/deployment configuration records
+are not secret storage. Use the Secret commands for credentials. The importer
+reads `secrets.required` as Secret names, not values. Secret Store bindings still
+need an owned store/secret mapping and are reported as an adaptation gap; they
+must not be replaced with ordinary Secrets without an explicit application change.
+
+CF upload acceptance and edge propagation are separate. Read native settings
+and observe application behavior before claiming that new configuration is serving;
+do not replay deployment writes merely because one immediate request sees old values.
+
 ## Project workflow
 
 Use one command layer for one task. For normal application deployment, stay in
@@ -98,6 +127,8 @@ Renames, deletions, regular-class migrations, repeated classes, and partial
 class sets remain blocked because they need an explicit state migration plan.
 `preview_urls` is also not copied: xAPI assigns the environment hostname.
 
+When importing Wrangler, `--name` and `--slug` are template flags and cannot be combined with `--from-wrangler`; the imported name initializes the project. Review `worker.name` and `worker.slug` in the generated file if you need different xAPI names. To link an existing owned Worker, set the **top-level** `workerId` in `xapi.worker.json`, for example `"workerId": "<owned-worker-id>"`, and keep the other generated fields. Neither `worker.id` nor `worker.workerId` is a valid field. A fresh project without `workerId` is created and linked by `push`; a separate `workers create` is not required.
+
 `xapi.worker.json` holds desired xAPI state and Worker ID; Wrangler holds entrypoint, compatibility and binding declarations. The persistent-agent template declares the six ordinary managed binding types so it can demonstrate the platform; Containers remain deployment-owned and must be declared explicitly. An ordinary application should declare only the resources its business logic uses. Do not add unrelated bindings merely to complete an acceptance checklist. Test the full resource matrix in a separate disposable Worker or environment, then clean up only that isolated test state. Install/build according to the generated project instructions. Inspect plans for missing permissions, prices, secrets, budget, and policy requirements.
 
 ```sh
@@ -108,9 +139,11 @@ xapi workers get <worker-id> --format json
 xapi workers logs <worker-id> --env preview --since 10m
 ```
 
-If provisioning requires an accepted retention quote, follow lifecycle.md and pass its exact `--retention-price-version VERSION`; do not invent a version. Configure public vars and credentials with [secrets.md](secrets.md), including its interactive bootstrap and non-interactive first-project setup. Public vars take effect with the Artifact deployment; Secret writes and retention are independent. Never report a blocked preflight as successful deployment.
+Plan displays the server funding estimate. The server performs atomic funding checks; the CLI does not require a separate per-resource quote or mandatory price-version argument. An explicitly selected `--retention-price-version VERSION` is forwarded unchanged; do not invent a version. Configure public vars and credentials with [secrets.md](secrets.md), including its interactive bootstrap and non-interactive first-project setup. Public vars take effect with the Artifact deployment; Secret writes and retention are independent. Never report a blocked preflight as successful deployment.
 
 Use the Node and package-manager version required by the application before `plan` or `push`; the CLI runs the configured build command unchanged. If the project declares `engines.node`, activate a compatible runtime first. A build-runtime failure is an application build failure and must occur before any deployment write; rerun the same push only after correcting the local runtime.
+
+Build commands remain exact nonempty strings, with no xAPI 1000-character cap in project configuration or the managed-build request. Existing request-body capacity and build execution deadlines still apply. Command changes participate in managed-build idempotency; do not replay an uncertain build under a different identity.
 
 For SSR frameworks that generate a complete Wrangler bundle, preserve that native bundle rather than uploading source files one at a time. For vinext/Next.js, a typical build command is:
 
@@ -123,7 +156,7 @@ npx wrangler deploy --dry-run \
 
 This example assumes the generated Wrangler config represents the target environment at its root. If it defines `env.preview`, add `--env preview` to the dry-run command; use the matching environment for the framework build too. The CLI runs `build.command` as written, so it does not automatically add Wrangler's environment flag. Never package root vars while planning a named environment, and never pass a nonexistent environment just to follow an example.
 
-Set `build.output` to the generated `.worker.bundle`, omit `build.main`, and set `assets.directory` to the generated client directory. `--dry-run` only creates the local Cloudflare upload artifact; `xapi workers push` remains the only publisher. The CLI sends the complete modules/assets set in one authenticated multipart Artifact request. The import report must show every unmapped Wrangler field; never split a framework application into per-file API uploads to work around an import problem.
+Set `build.output` to the generated `.worker.bundle`, omit `build.main`, and set `assets.directory` to the generated client directory. `--dry-run` only creates the local Cloudflare upload artifact; `xapi workers push` remains the only publisher. The CLI sends the complete modules/assets set as one immutable Artifact: direct checksummed R2 upload and server sealing when available, otherwise the authenticated legacy multipart channel. The import report must show every unmapped Wrangler field; never split a framework application into per-file API uploads to work around an import problem.
 
 The complete-project upload channel accepts up to 64 MiB of uncompressed
 Worker modules and 100 MiB of combined module/static-asset content; each static
@@ -211,17 +244,46 @@ verification only after a real deployment and appropriate runtime checks.
 Cloudflare Containers are part of the Worker deployment, not an ordinary binding created with `workers resources create`. Keep the native relationship explicit:
 
 1. Wrangler declares a Durable Object binding and `containers[].class_name` for the same class in the same Worker.
-2. `xapi workers init --from-wrangler ...` imports the Container settings into `xapi.worker.json` and writes separate desired DO declarations for preview and production. Init is local only; push creates the remote resources for the selected environment.
-3. `xapi workers plan --env preview` must show the DO creation and an Artifact change. Verify `workers capabilities` reports `container_application` available before applying.
-4. `xapi workers push --env preview` uploads the Worker, resolves the exact preview DO namespace, creates or updates the Container Application, submits the required rollout, records its application ID and receipt for metering, and only then marks the deployment ACTIVE. Native rollout convergence remains separately observable; xAPI keeps both old and new risk capacity counted until Cloudflare confirms it.
+2. `xapi workers init --from-wrangler ...` imports shared or environment-specific Container settings into `xapi.worker.json` and writes separate desired DO declarations for preview and production. Init is local only; push creates the remote resources for the selected environment.
+3. `xapi workers plan --env preview` must show the DO creation and an Artifact change. `workers capabilities` is optional read-only diagnosis, not a provisioning gate. The actual deployment reports upstream permissions and native validation errors.
+4. `xapi workers push --env preview` uploads the Worker, resolves the exact preview DO namespace, creates or updates the Container Application, starts the rollout, and records the application ID for metering. Worker deployment `ACTIVE` confirms code publication; a Container rollout can still be pending. Confirm its actual native configuration and rollout completion before reporting that the new Container size/image is serving.
 
-Before the first Provider mutation, xAPI also requires a complete active price book and account-level five-minute Container risk capacity. This check does not freeze or deduct wallet funds and does not run on application requests. If push returns `worker_container_risk_policy_missing`, `worker_container_prices_incomplete`, `worker_container_egress_risk_not_accepted`, or `worker_container_risk_capacity_exceeded`, report the exact code and stop; do not bypass xAPI with Wrangler or reinterpret the amount as a customer charge. The first three require an xAPI operator to correct platform policy or pricing. The last requires reducing the deployment's instance size/count or adding balance/risk capacity.
+Deployment responses and `workers get --format json` can report
+`containerRollout.status` as `PENDING`, `COMPLETE` or `UNCONFIRMED`.
+`PENDING` means native confirmation has not been recorded yet; it does not
+require another deployment. `confirmation` and `confirmedAt` distinguish
+provider acceptance from a later observed native configuration. This is
+configuration progress, not an application health or persistent-file guarantee.
+Repeating a completed deployment with the same idempotency key reports the
+original deployment and its observed Container progress. It does not submit a
+new rollout or freeze funds again. Use the detail read to observe progress;
+do not redeploy solely because the Container is still pending.
 
 xAPI v1 accepts prebuilt images from Cloudflare Registry, Docker Hub, Amazon ECR, and Google Artifact Registry. Push the image before deployment and use a tag or immutable digest. A Wrangler `image: "./Dockerfile"` is intentionally reported as unsupported: the CLI does not silently build or publish registry credentials. Never put registry tokens in `xapi.worker.json`, the Artifact, or Worker secrets.
 
-Preview and production use distinct Worker scripts, DO namespaces, and physical Container Application names even though the same immutable Artifact is promoted. A Container rollout is a second Cloudflare mutation after Worker upload; failure leaves the deployment non-ACTIVE and retryable. Do not bypass the failed step with direct Wrangler deployment.
+`instanceType` accepts a preset (including the native `dev` → `lite` and
+`standard` → `standard-1` compatibility aliases) or a custom object, for example
+`{"vcpu":1,"memory_mib":3072,"disk_mb":5500}`. Wrangler's `instance_type`
+object is imported unchanged. Memory is in MiB; disk is in decimal MB. The
+backend expands custom sizes into the native API fields and compares actual
+resolved sizes for updates and rollbacks. Native account/size/ratio limits are
+reported by Cloudflare; do not invent a smaller xAPI ceiling. CPU, memory and
+disk use the existing rates and five-minute capacity envelope. This envelope
+is an estimate of exposure, not a charge for every allocated CPU second.
+The retention scope preserves code, configuration and native persistent data
+(such as DO/R2); it does not promise recovery of ephemeral Container disk files.
+Native filesystem snapshots are a separate capability requiring the provider's
+`durable_object` scheduling policy; this local default-policy integration has
+not yet completed that adaptation.
 
-Removing a Container declaration is also a deployment operation. Push the new immutable manifest; xAPI deletes only the exact Container Application no longer declared and releases its risk capacity after Provider deletion is confirmed. Do not delete the associated Durable Object or unrelated R2/D1/KV resources unless the application declaration and business migration require it.
+Container compute coverage and seven-day retention funding serve different
+purposes. Use the server-returned resource funding quote and preserve existing
+Worker/DO protection. Sleeping compute does not prove that persistent storage,
+backup, image retention and cleanup are free; do not claim an ephemeral root
+filesystem is a seven-day persistent volume. The server remains responsible for funding and financial receipts; the CLI does
+not request a generic independent Container retention-product quote.
+
+Preview and production use distinct Worker scripts, DO namespaces, and physical Container Application names even though the same immutable Artifact is promoted. A Container rollout is a separate Cloudflare mutation after Worker upload. A rejected required write is a deployment failure; an accepted rollout awaiting convergence is observed through read-only status, not automatically redeployed. Do not bypass a failed managed deployment with direct Wrangler deployment.
 
 Repository maintainers can run `npm run test:workers:container-local` after building the CLI. It starts a loopback xAPI service, invokes the packaged CLI process, creates the declared DO, uploads the normalized Container Artifact, deploys it, and performs the public health request. This validates protocol wiring without consuming Cloudflare resources; a real preview deployment is still required before release when an account token with Containers Edit is available.
 
@@ -261,7 +323,9 @@ xapi workers rollback --env production --to previous
 xapi workers rollback --env production --deployment <deployment-id>
 ```
 
-Rollback re-deploys the selected Artifact and its release compatibility settings and required Secret **names**. It does not restore data, schema, resource bindings, Secret **values**, schedules, or Queue/Workflow state. Explicit public vars come from the target Artifact; omitted public vars follow that Artifact's retention types against the current environment, not a snapshot of historical values. A missing Secret required by the target Workflow must be set through the independent Secret workflow; do not borrow requirements from the latest release or replay old values. Preview and production each have their own current deployment; an old deployment reference is not proof an environment is still serving.
+Rollback re-deploys the selected immutable Artifact and the recorded release snapshot: compatibility settings, required Secret **names**, selected resource bindings, native metadata, aliases and Container settings, including configuration-only changes using the same Artifact. It does not recreate deleted resources or restore resource data, SQL schema, Secret **values**, schedules or Queue/Workflow state. Explicit public vars come from the target Artifact and recorded override; omitted public vars follow the target Artifact's retention types against the current environment, not a snapshot of historical values. Set a missing required Secret through the independent Secret workflow. Preview and production have separate active deployments; a historical receipt is not evidence of what is currently serving.
+
+Wrangler `triggers.crons` map to tracked xAPI schedules invoking `scheduled()` through the platform scheduler; this is not a native Cron registration on the dispatch-namespace script. See the [native configuration contract](#native-configuration-and-application-deployment-prerequisites) for supported syntax and explicit update/removal behavior. Verify actual delivery and metering separately from configuration acceptance.
 
 ## CI runner
 
@@ -270,7 +334,7 @@ Use the project's installed/pinned CLI, lockfile installation, and a scoped secr
 Run plan, push, inspect, active-status and business checks in order. Both plan
 and push prepare the local Artifact; push performs that work before any Worker,
 budget, resource, Artifact, or Deployment write. `--non-interactive` suppresses
-prompts; it does not bypass quote, balance or preflight checks. A separate retention-policy acceptance call is not required:
+prompts; it does not bypass server funding checks or the reviewed deployment plan. A separate retention-policy acceptance call is not required:
 
 ```sh
 xapi workers plan --env preview --format json
@@ -278,7 +342,9 @@ xapi workers push --env preview --non-interactive
 xapi workers inspect --env preview --format json
 ```
 
-Promote in the already authorized release job after preview acceptance. Follow repository AGENTS.md and branch/PR rules; do not infer release authorization from a successful preview push. On uncertain results inspect deployments/logs and retry unchanged inputs so stable idempotency keys can recover the same operation. Do not change IDs or clear deletion flags to force deployment through.
+For xAPI platform maintainers, keep this Worker implementation on one Worker feature branch; Sandbox changes stay separate. Integrate the authorized release through `dev → staging → main`, completing the checks at each stage. This repository rollout is distinct from a customer's preview-to-production Worker promotion. Local source/tests are not evidence that the platform has been deployed or that a CLI package is published; package version/tag/publication remains governed by Release Please.
+
+Promote in the already authorized release job after preview acceptance. Follow repository AGENTS.md and branch/PR rules; do not infer release authorization from a successful preview push. On uncertain results inspect deployments/logs and read the original operation before choosing an explicit retry with unchanged inputs; stable idempotency keys preserve its identity without automatic write replay. Do not change IDs or clear deletion flags to force deployment through.
 
 Inspect the exact `worker_control_*` code and operation status. A conflict can mean an overlapping change to the same script/resource, an unknown native result, a changed resource identity, or incompatible server configuration. There is one management path; users do not select an internal execution mode. Preserve IDs and receipts; inspect `workers audit` and current deployment/resource state. On an explicitly requested retry, reuse unchanged inputs: the server may continue steps that have not been sent or repair known-success local state. Do not loop on UNKNOWN, clear operation records, switch modes, or bypass xAPI with Wrangler. Scope/configuration mismatches require platform investigation; ordinary in-progress operations require status inspection.
 
@@ -381,25 +447,18 @@ Queue consumers invoke queue(batch, env, ctx) through the platform event adapter
 CF owns ack/retry/delay/DLQ delivery. The adapter preserves message IDs, attempts,
 timestamps, logical names, binary bodies and waitUntil failure. It does not claim
 exactly-once or every possible V8 serialized type. Cron invokes scheduled() with
-scheduledTime, cron, noRetry and waitUntil. Only UTC numeric five-field expressions
-are currently supported, with CF weekdays 1=Sunday through 7=Saturday. Named fields,
-L/W/# and singleton steps are rejected before deployment. Do not delete unsupported
-settings or use --accept-partial to claim full compatibility.
+scheduledTime, cron, noRetry and waitUntil. The CLI checks the UTC five-field shape and forwards the original expression;
+the matching backend validates Cloudflare syntax, including names and L/W/#,
+with CF weekdays 1=Sunday through 7=Saturday. It does not rewrite advanced
+expressions or attempt local next-run prediction. Manual HTTP schedules retain
+their separate timezone/parser contract. Verify the matching backend before use;
+configuration acceptance alone is not evidence of future timer delivery.
 
-On a later push or promotion, removing a Wrangler Queue consumer declaration
-stops only that environment's previously CLI-configured consumer. The Queue
-resource and its stored messages remain; independent/manual consumers are left
-alone. Re-adding the declaration configures a consumer again. Check the returned
-consumer receipt before treating the deployment as complete. Queue storage may
-continue to incur charges while no consumer is attached.
+Queue consumer omission preserves the existing consumer and Queue messages. To stop Worker delivery, first run `workers resources queue-consumer disable` for the owned Queue, then remove its Wrangler declaration. This follows [Cloudflare's explicit consumer-removal workflow](https://developers.cloudflare.com/queues/reference/how-queues-works/). Declaring a consumer configures it after confirmed code activation; check its receipt. Storage can remain billable without a consumer.
 
-These are platform mappings over the existing metered Dispatcher path, not direct
-namespace native trigger registrations. Scheduler waiting is currently at most
-120 seconds; existing Dispatcher CPU/subrequest limits still apply. Configuration
-probes require the deployed signed adapter and real handlers; an HTML 200 is not
-readiness. Explicit crons:[] disables only CLI-owned schedules in the target
-environment; absent triggers preserves them. Independently created user schedules
-are not removed.
+Cron uses [Wrangler's update intent](https://developers.cloudflare.com/workers/configuration/cron-triggers/): omitted `triggers` or `crons` preserves current triggers; an explicit `crons` array synchronizes this project's CLI-owned scheduled-handler triggers in the selected environment, and `crons: []` clears them. Independently created platform HTTP schedules remain unchanged. Do not treat Queue omission as Cron removal intent.
+
+These are platform mappings over the existing metered Dispatcher path, not direct namespace native trigger registrations. Scheduler waiting is currently at most 120 seconds; existing Dispatcher CPU/subrequest limits still apply. Configuration probes require the signed adapter and real handlers; an HTML 200 is not readiness.
 
 A successful push proves deployment/configuration receipts and the configured
 HTTP health probe, not live Queue/Cron or financial acceptance. Before reporting
@@ -412,3 +471,63 @@ Wrangler cloud deployment to manufacture a successful result.
 ## Plan freshness
 
 The CLI freezes the project configuration and the target environment's active deployment ID when preparing the plan. If the JSON changes during build/confirmation, or another deployment becomes active before submission, rerun the plan and review its effects. Do not retry the old plan by changing its IDs. The API checks `expectedActiveDeploymentId` again when claiming deployment; `null` means the environment had no active deployment. This is a check at deployment submission, not a long-lived environment lock. Independent resources that are omitted from bindings are retained and may still incur storage costs.
+
+For an explicit subsequent user retry, preserve the application source. A failed current push stops; it is never automatically replayed. For `push`, a confirmed terminal FAILED journal with a matching operation ID and `providerEffect=NOT_DISPATCHED`, `NO_WRITES` or `REJECTED` permits an explicit later retry with a derived request identity only when no step contains successful/uncertain write evidence. `REJECTED` additionally requires at least one rejected step. Lost responses keep the same retry identity. This does not promise the same fresh-retry path for `promote`, and it never automatically repeats a failed write. Unknown or partially confirmed provider effects must recover the original recorded operation and must not replay provider writes under a fresh key. Recovery uses an authenticated native tags read to confirm the exact upload operation, not just the deployment ID. If all writes are confirmed and the current native observation matches, a subsequent explicit `push` may create a new publication identity; it does not replay the old UNKNOWN operation. A script observation cannot confirm a separate Container or Workflow write. Unknown or missing tags remain unconfirmed. Same-target new writes are held until there is evidence; unrelated targets remain usable. Older unknown uploads without the operation tag require other exact native evidence rather than guessed success. A current matching ACTIVE deployment is reused. Resource pulls report pending/deleting status while importing ready peers. A live pending resource retains its prior remote observation for the three-way merge; it is not treated as a remote deletion and does not erase the existing declaration. Inspect the plan before applying it.
+
+Same-target admission is different from a failed deployment. For deploy/rollback and Secret writes, the CLI waits up to 60 seconds only when HTTP 409 explicitly includes `code=worker_control_operation_pending`, `pendingReason=TARGET_BUSY`, `requestAccepted=false` and `requestDispatched=false`. That response means this request has not started or been queued. The CLI reads the blocking operation through `GET /api/v1/workers/:id/control-operations/:operationId` (requires `workers:read`), then submits exactly the same body and deployment key only when the target is released and the result is confirmed. Progress goes to stderr. Poll intervals grow from 1 to 2, 4 and 5 seconds; each read is at most 5 seconds and does not recover or write anything.
+
+Waiting ends on cancellation, an unconfirmed result, a failed/invalid status read or the client wait budget. Old pending responses without explicit unsent evidence remain errors. Do not retry a generic 409/503, network loss or timeout as though it were an unsent admission conflict. No server queue or strict FIFO across independent clients is promised. The 60-second wait is separate from the normal three-minute deployment HTTP budget and does not change the server operation deadline or billing. The internal Workers client accepts `operationWait.timeoutMs=0` to disable waiting and an AbortSignal for cancellation; no new CLI configuration is required.
+
+Remote source builds have a 20 MiB decoded-source and 18 MiB serialized JSON transport budget, while local builds can upload larger resulting artifacts through multipart. Unicode and spaces in safe relative source paths are preserved. Source transfer does not impose a 200-file, 1 MB single-file, or 2 MiB project gate.
+
+Project pushes retain the selected Wrangler environment’s `observability` configuration in the uploaded artifact, including `enabled`, sampling, logs and traces. It participates in artifact identity, so an observability-only update is deployed. Configure Container process logging with Worker observability; xAPI runtime Tail events alone do not prove Container stderr was captured.
+
+Container configuration resolves in this order: the selected environment's `containers`, shared top-level `containers`, then no Containers when only another environment declares them. Explicit `[]` means no Container declaration in that environment; promotion never copies preview-only overrides into production. Removing a resource from the project declaration changes the deployment bindings and leaves the resource and its data intact. Delete it separately when it is no longer needed.
+
+### Upload and build deadlines
+
+Artifact uploads use a 60-second no-progress budget rather than a 60-second total duration. Continuing multipart/JSON transmission is allowed; `XAPI_TRANSFER_IDLE_TIMEOUT_MS` adjusts the CLI idle budget. The receiver ends an incomplete body after 60 seconds with no socket activity, keeps its existing 20 MiB JSON and 100 MiB multipart content budgets, and shares a physical memory budget between JSON parsing and multipart receivers. This is platform capacity protection, not a user quota. No upload is automatically replayed. Inspect artifacts using the original idempotency key after a lost response.
+
+`workers push --build-timeout 30m` selects the local build-command deadline (default 15 minutes). `workers build <id> --build-timeout 30m` forwards 1800 seconds to the Sandbox command (default 10 minutes), includes the selected deadline in build identity and extends the account-scoped temporary credential when needed. The CLI allows the command budget plus six minutes for other stages, reset by actual upload/response progress; large projects can still exceed that preparation allowance. A lost response does not cancel or replay the remote build: inspect `workers builds <id>` and the tracked Sandbox before retrying the identical idempotency key. Native Gateway/provider timeout validation is returned unchanged. Provisioning has its existing operator-selected overall deadline and each status read uses the remaining time; build execution has 30 seconds of transport headroom. No new service environment variables are required.
+
+## Native configuration and release identity
+
+Ordinary native upload configuration is retained in `nativeMetadata`, including
+placement, user-selected limits, logpush and observability extensions; xAPI does
+not maintain a supported-field allowlist for these options. The original Wrangler
+native bundle is authoritative for new configuration translations. If an unknown
+source setting is present, emit it with the original Wrangler configuration using
+`wrangler deploy --dry-run --outfile`; a plain module cannot prove that setting
+was compiled. Account/resource references still require owned mappings; this is
+not a per-user feature switch. User Tail references now resolve an owned xAPI Worker slug/ID (optional preview/production target; default producer environment), preserving the platform metering Tail. Explicit empty tail_consumers clears user Tails. Managed DO/Container lifecycle reuploads retain deployed public/native configuration and frozen physical Tail targets. Verify actual Tail execution, pause behavior and native CPU ledger attribution separately; configuration receipts alone do not establish those outcomes. Service/RPC, Secret Store and log destinations still need verified mappings.
+
+The deploy API accepts optional `nativeMetadata`. Omission uses Artifact defaults;
+a nonempty object overlays its ordinary fields; explicit `{}` clears them.
+`placement.mode="off"` is recorded as intent and omitted from the WFP upload, as
+Wrangler does. It does not restore a later environment smart-placement default.
+`version_metadata.binding` becomes the native built-in binding; it does not create
+a managed resource. `keep_vars` maps to public native binding inheritance. User
+tags coexist with the platform deployment tag, which cannot be replaced.
+
+New deployment receipts contain an effective snapshot of metadata, public vars,
+selected resource identities, compatibility settings, aliases and Containers.
+Rollback uses that snapshot rather than current project/environment defaults.
+Historical receipts without a snapshot retain their legacy fallback. This does
+not roll back stored resource data, current Secret values or resources deleted
+since the release. Restore a missing resource explicitly before deploying it.
+Deploy the matching workers-service backend before using these CLI contracts;
+follow that backend release’s migration and rollout instructions. CLI configuration
+forwarding does not introduce a new user pricing rule.
+
+Initial deployment access preparation does not wait for the global background billing scan. State publication is coordinated per environment script, so unrelated Workers do not share that wait. A conflicting publication for the same script is ordered within the existing 15-second preparation budget; the service then rechecks the active deployment and real account/window evidence. It never steals a lease, extends the financial permission window, or replays deployment. A pending publication or failed public health check does not delete the ACTIVE deployment or its resources; inspect the recorded state and actual service access before any explicit retry. Provider acceptance still does not prove immediate edge propagation.
+### Public readiness after activation
+
+`ACTIVE` records code activation. The CLI checks the public health URL separately. A platform `workers_postpaid_state_unavailable` 503 after activation may reflect permission propagation; the CLI observes with read-only GETs within the 75-second total health window, without uploading or deploying again. Ordinary application failures retain the usual health checks. If readiness remains unverified, the CLI keeps `deploymentStatus=ACTIVE` and `publicAccessStatus=UNVERIFIED`; inspect the existing deployment and public URL rather than repeating a push automatically.
+
+### Native execution deadlines and trace tags
+
+Each accepted server operation has one immutable total deadline, currently capped at 15 minutes. Ordinary small operations keep their shorter step-based budget; each actual provider request uses the smaller of its transfer budget and the remaining operation time. This does not limit local builds or grant a new upload session. Static asset transfer shares the same deadline. A timeout does not prove a native write failed, and the server never automatically repeats that write.
+
+The platform appends `xapi-deployment:` and `xapi-operation:` tags for exact native result tracing. Other string tags remain available; user metadata cannot replace these two platform identity prefixes. This is proof integrity, not a supported-feature allowlist.
+
+Pull comparison treats absent and empty ordinary native metadata equally. Nonempty native settings still produce real differences; saved snapshots and explicit deployment clearing semantics are unchanged.

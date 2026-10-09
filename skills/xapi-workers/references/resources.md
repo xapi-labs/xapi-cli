@@ -1,6 +1,6 @@
 # Resources and real acceptance
 
-Run `workers capabilities` and `workers resources list <worker-id> --env preview --format json`. Permissions, availability, and price configuration are independent: provisioned alone does not mean priced or exercised.
+Use `workers capabilities` as optional read-only diagnosis and `workers resources list <worker-id> --env preview --format json` to inspect ownership. Permissions, availability, and price configuration are independent: provisioned alone does not mean priced or exercised.
 
 Keep resource declarations driven by application behavior. R2, D1, KV, Durable Objects, Queues, Workflows, and Container Applications are independent bindings and resources; none must be added or deleted just because another resource is used. A Container Application is the one exception to the generic create command: it is deployment-owned and must reference a Durable Object class in the same Worker. When the goal is to verify every platform resource, use a separate disposable acceptance Worker so those checks cannot change a real application's storage or lifecycle.
 
@@ -10,7 +10,7 @@ An R2 bucket can already exist while xAPI is confirming its metering event deliv
 
 `workers push --env preview` continues this known pending phase on the same binding, waits up to 600 seconds between bounded API calls, and only proceeds to upload and publication when the resource is ready. It keeps the bucket identity and existing reserve. If its wait expires, rerun the same push command; do not remove the resource or change the binding to get past it. This wait does not change Artifact upload timeouts.
 
-For standalone resource creation (or an older CLI that blocks push on pending R2), explicitly repeat `workers resources create <worker-id> --env <environment> --type r2 --binding <same-binding>`, preserving the original placement options and supplying the current retention quote version when requested. Inspect the returned status. Stop and report transport/unknown-operation errors or `automaticProbeRetry: false`; do not loop indiscriminately on all failures. `ACTIVE` means initialization completed, not that final usage settlement has been verified.
+For standalone resource creation (or an older CLI that blocks push on pending R2), explicitly repeat `workers resources create <worker-id> --env <environment> --type r2 --binding <same-binding>`, preserving the original placement options and any explicitly selected price version. Inspect the returned status. Stop and report transport/unknown-operation errors or `automaticProbeRetry: false`; do not loop indiscriminately on all failures. `ACTIVE` means initialization completed, not that final usage settlement has been verified.
 
 Prefer declarations plus plan/push. For granular provisioning:
 
@@ -20,14 +20,14 @@ xapi workers resources create <worker-id> --env preview --type d1 --binding DB
 xapi workers resources create <worker-id> --env preview --type r2 --binding FILES
 xapi workers resources create <worker-id> --env preview --type do --binding COORDINATOR --class-name Coordinator
 xapi workers resources create <worker-id> --env preview --type queue --binding JOBS
-xapi workers resources create <worker-id> --env preview --type workflow --binding PIPELINE --class-name Pipeline
+xapi workers resources create <worker-id> --env preview --type workflow --binding PIPELINE --class-name Pipeline --workflow-name pipeline
 ```
 
 Do not run `resources create` for a Container. Declare it in Wrangler and `xapi.worker.json`, then deploy. After deployment, `resources list` exposes a read-only `CONTAINER_APPLICATION` record containing the physical application ID, image, instance type, maximum instances, placement, and rollout receipt. Its binding-like `CONTAINER_<hash>` key is an internal stable identity, not a Worker `env` binding.
 
 Exercise a Container through the application route that causes its controlling Durable Object to start or contact an instance. Verify the business response, Container status, DO coordination state, and four Container usage dimensions separately. Do not conclude that an image runs merely because the application resource exists.
 
-Supply the explicitly accepted retention price version when required. Redeploy after binding changes. Use `env.<BINDING>`; no provider API/S3 credentials belong in application code. D1 resource creation does not create application tables; initialize schema with the explicit migration commands below.
+The server validates and prepares resource funds; an explicitly selected price version is optional. Redeploy after binding changes. Use `env.<BINDING>`; no provider API/S3 credentials belong in application code. D1 resource creation does not create application tables; initialize schema with the explicit migration commands below.
 
 ### D1 binding and schema initialization
 
@@ -47,8 +47,8 @@ xapi workers push --env preview
 ```
 
 Skip creation if the binding already exists. For creation, preserve desired
-`--location`/`--read-replication` options and supply the quoted
-`--retention-price-version VERSION` when required. See
+`--location`/`--read-replication` options. Forward an explicitly selected
+`--retention-price-version VERSION` only when intended; no per-type CLI quote step is required. See
 [explicit D1 migrations](deployment.md#explicit-d1-migrations) for the alternative
 push-first sequence, environment/config selection, receipts, and failure handling.
 
@@ -64,21 +64,21 @@ push-first sequence, environment/config selection, receipts, and failure handlin
 | Workflow | Start and poll the instance to terminal state | Instance ID, final status and durable result |
 | Schedule | Trigger an immediate run and inspect run history | Schedule/run ID and resulting business change |
 
-For a native Workflow, declare `workflows: [{ binding: "PIPELINE", name: "pipeline", class_name: "Pipeline" }]` in Wrangler, export `Pipeline extends WorkflowEntrypoint` from your Worker, and import the configuration with `workers init --from-wrangler`. The xAPI resource declaration must retain `type: "workflow"`, `bindingName: "PIPELINE"`, and `className: "Pipeline"`. The original physical workflow name is remapped to this environment's managed resource. A declaration can be prepared before its first code deployment; it is not yet a completed running Workflow. A binding to another script is not silently imported as a local class.
+For a native Workflow, declare `workflows: [{ binding: "PIPELINE", name: "pipeline", class_name: "Pipeline" }]` in Wrangler, export `Pipeline extends WorkflowEntrypoint` from your Worker, and import the configuration with `workers init --from-wrangler`. The xAPI resource declaration must retain `type: "workflow"`, `bindingName: "PIPELINE"`, and `className: "Pipeline"`. The original physical workflow name is remapped to this environment's managed resource. A declaration can be prepared before its first code deployment; it is not yet a completed running Workflow. An explicit external `script_name` is preserved as a reference to another script, never stripped to classify it as a local class. External Workflow/DO references require verified owned mapping; unresolved mappings remain explicit adaptation gaps.
 
 Start it through `env.PIPELINE.create({ params: { taskId } })`, then poll `env.PIPELINE.get(id).status()` through an authenticated application endpoint and verify its durable output. The same Worker holds the application's bindings and Secret values. A normal new deployment is allowed while an instance waits; Cloudflare owns how the running instance resumes. Do not promise that every step stays on the original application version, and do not add a deployment block for active instances.
 
 For imported native Queue consumers, the managed adapter invokes `queue(batch, env, ctx)` and returns ack/retry decisions to Cloudflare. For an existing compatibility Workflow created without a class declaration, the HTTP adapter instead routes the following envelope to the same Worker environment; do not mistake that route for a native handler:
 
 ```js
-await env.JOBS.send({ path: "/tasks/report", method: "POST", body: { taskId } });
+await env.JOBS.send({ taskId, objectKey: "uploads/report.pdf" });
 const job = await env.PIPELINE.create({ params: {
   path: "/tasks/report", method: "POST", body: { taskId }
 } });
 const state = await (await env.PIPELINE.get(job.id)).status();
 ```
 
-Use local absolute paths and idempotent task IDs. Queue delivery can repeat; a successful enqueue isn't task completion. Workflow instance creation isn't completion either: poll to `complete`, `errored`, or `terminated`, with a bounded deadline. Don't expose a public administrative test route without application authentication.
+Workflow HTTP callback paths must be local absolute paths. Use stable task IDs for Queue writes and commit the outcome before `message.ack()`; on failure use `message.retry()` or let the native handler fail. Queue delivery can repeat; a successful enqueue isn't task completion. Workflow instance creation isn't completion either: poll to `complete`, `errored`, or `terminated`, with a bounded deadline. Don't expose a public administrative test route without application authentication.
 
 ```sh
 xapi workers schedules create <worker-id> --env preview --name daily-report --cron '0 8 * * *' --timezone Asia/Shanghai --path /tasks/report --method POST --body '{"source":"schedule"}'
@@ -104,3 +104,69 @@ Use the original binding and environment; do not rename it to bypass a pending o
 | CF lookup also fails | Report the uncertainty and stop this attempt; the user can retry. Do not blindly create another bucket. |
 
 `push` accepts an explicit retry of an R2 creation with its original operation record, including ERROR or PROVISIONING. Only a recognized metering wait permits bounded automatic continuation within that push. Ordinary timeouts and failed lookups do not. Pending responses with `automaticProbeRetry=false` require delivery investigation; preserve the bucket and report the reason rather than automatically resubmitting. The server remains authoritative for ownership, deletion conflicts and retained funds.
+
+## Apply a newly created binding
+
+Creation records the managed resource; a deployment selects which resource IDs are bound. `workers push` refreshes eligible resource IDs and includes them in the deployment request. For granular `workers deploy`, pass `resourceIds` explicitly when changing bindings; an omitted list preserves the previous deployment selection. Creating a resource and re-deploying the same artifact without selecting it does not attach it automatically. Verify the binding with an actual read/write, not only ACTIVE.
+
+Native Workflow project declarations may include `className` and optional `workflowName`. `plan` and `push` accept a native Workflow in `PROVISIONING` only after the platform confirms its host is prepared; deployment then activates the declaration. `resources pull` preserves these requirements and skips Container application records derived from deployments. Wrangler import preserves Workflow `class_name` while provisioning a new platform-owned identity. Native multipart binding declarations support D1/R2/KV/Queue/DO/Workflow; platform resource IDs and target scripts are resolved from owned project resources, and DO/Workflow classes must match.
+
+Artifact uploads use the backend 64 MiB module and 100 MiB decoded-content budgets, including static assets limited to 25 MiB per file. The CLI automatically selects multipart when JSON/base64 transport or per-module JSON limits would be exceeded; large single files become bundle artifacts with the corresponding canonical bundle identity. The receiver record and metadata budgets still apply.
+
+
+## Queue identity and producer binding aliases
+
+Several Wrangler producer bindings can refer to one logical Queue. Keep the user binding names unchanged; xAPI creates one owned Queue and one retention hold, with each name pointing to that Queue. Import saves environment `queueBindings` (logical queue name → managed resource binding) for producers, consumers and dead-letter targets. Keep this mapping when producer names are added, removed or renamed; `--force` re-import preserves the linked Worker ID and still-referenced Queue identity. The logical name is not a provider resource ID and does not attach an external account's Queue.
+
+Bundle `queueBindingAliases` survives multipart/manifest uploads. Deployments can override it, including explicit `{}` to clear immutable defaults; promotion of historical v1/v2 bundles explicitly clears missing production aliases. Rollback restores the target configuration without replacing the physical Queue or freezing another alias hold. Deploy the supporting workers-service backend before distributing this CLI capability.
+
+An alias name cannot simultaneously be a Secret or a different resource. The current adapter still lacks migration for reassigning the old primary binding to a different logical Queue while retaining the original Queue under a new name. It reports an explicit mapping error to prevent silently merging the two Queues; record this as an incomplete adapter path, not a user quota. Producer `delivery_delay` needs further adaptation. HTTP Pull consumer management is available through the scoped resource API below; obsolete Wrangler HTTP Pull consumer declarations are not silently converted. Configuration success does not establish actual message delivery, final Queue operation settlement or the CF invoice.
+
+## Native Queue and scheduled handlers
+
+Creating an owned Queue creates only the Queue. It remains associated with the selected Worker/environment and its billing account, running reserve and retention hold; creation does not add a helper Worker or select a consumer. Existing consumers are preserved. `push`/`promote` configure Worker delivery after activation only when the desired project declares `queues.consumers`. A producer-only Queue does not need a `queue()` handler.
+
+### HTTP Pull consumers
+
+HTTP Pull does not require a Worker `queue()` handler or a delivery bridge. Configure it using the Queue management API, not obsolete Wrangler `type: "http_pull"` configuration:
+
+```sh
+xapi workers resources queue-consumer configure <worker-id> <resource-id> --env preview \
+  --body '{"type":"http_pull","settings":{"batch_size":10,"visibility_timeout_ms":30000,"max_retries":3}}'
+xapi workers resources queue-messages pull <worker-id> <resource-id> --env preview \
+  --body '{"batch_size":10,"visibility_timeout_ms":30000}'
+xapi workers resources queue-messages ack <worker-id> <resource-id> --env preview \
+  --body '{"acks":[{"lease_id":"<lease-from-pull>"}],"retries":[]}'
+```
+
+The returned messages, bodies and leases follow CF's native response. Do not assume the platform decoded the body; inspect its native encoding. Ordinary `settings` and message options are forwarded as JSON and CF validates them. Raw provider account, Queue ID and script targeting remain server-owned; dead-letter references use an owned Queue binding in the same environment.
+
+Changing an existing consumer type requires deleting the old consumer then creating the new one, because CF rejects an in-place type update. This is an explicit user configuration change, not a step imposed on ordinary deployment. A partial failure is recorded and returned; the platform does not automatically replay the change. Disable removes the consumer and preserves the Queue, data and funds. Paused environments stop new pulls; acknowledgement of an already leased message remains available.
+
+Queue operations are collected by native Queue ID from `queueMessageOperationsAdaptiveGroups`, independently of the consumer type. Do not bill by the number of pull/ack HTTP requests or duplicate this collector's charge. Handler execution uses the existing Worker invocation accounting. A successful pull/ack response does not establish final Queue settlement or the CF invoice.
+
+
+Import Wrangler `queues.consumers` and `triggers.crons`, then review `workers plan` before `push` or `promote`. Producer Queue names identify logical bindings; consumer-only and dead-letter Queues receive stable generated binding names. xAPI creates its own physical Queues and resolves both consumer and dead-letter targets only from declared resources in the selected owned environment. Native `max_batch_size`, `max_batch_timeout`, `max_retries`, `retry_delay`, and `max_concurrency` values, including zero, are forwarded to the tracked Queue configuration API. Queue configuration runs after confirmed Worker activation. Runtime Queue support and backend parameter validation must succeed; a configuration receipt does not prove actual delivery or metering.
+
+Worker consumption requires native `queue(batch, env, ctx)`; scheduled events require `scheduled(controller, env, ctx)`. HTTP Pull requires neither handler. Cron declarations become UTC `scheduled` triggers through the backend scheduler, with run receipts and normal dispatch funding. Native weekday values are 1–7. The CLI checks the UTC five-field shape and forwards the original expression to the matching backend’s Cloudflare parser, including names and L/W/#, without local next-run prediction. Manual HTTP schedules retain their separate timezone/parser contract. Keep unsupported expressions unchanged and report the API error instead of silently rewriting their meaning. An immediate run does not prove future timer firing.
+
+Omitted Queue consumers remain unchanged and appear as manual state when absent from the desired plan. To stop Worker delivery, explicitly disable the consumer first, then remove its Wrangler declaration, matching [Cloudflare's Queue lifecycle](https://developers.cloudflare.com/queues/reference/how-queues-works/):
+
+```sh
+xapi workers resources queue-consumer disable <worker-id> <resource-id> --env preview
+```
+
+Cron intent follows [Wrangler semantics](https://developers.cloudflare.com/workers/configuration/cron-triggers/): omission preserves triggers; an explicit `crons` array synchronizes this project's owned scheduled-handler triggers, including `[]` to clear them. Manual platform HTTP schedules are separate and remain unchanged; pause those explicitly by schedule ID only when intended.
+
+`tail_consumers` maps an owned xAPI Worker slug or ID to its physical script in the platform dispatch namespace. `environment` may explicitly select preview or production; omission selects the producer's xAPI environment. Cross-environment references within the same owner are supported. The calling API key's existing Worker scope also applies to the target. The platform metering Tail is retained; `tail_consumers: []` clears only user Tail consumers. Referencing a Worker creates no duplicate resource or retention hold. Rollback snapshots capture the target Worker ID so later slug reuse does not redirect logs. Verify native Tail CPU settlement and pause behavior separately; a binding/configuration receipt does not establish actual execution or billing. Service/RPC, Secret Store and observability destinations still need their own verified ownership mapping.
+
+
+When a Worker only exports `fetch()` and handles an envelope's `path`, that does not establish native Queue compatibility. Add the native handler and redeploy under existing authorization; preserve producer payload semantics in application code rather than adding platform HTTP route replay. Confirm an actual persisted result keyed by the producer task ID, retry behavior and delivery receipts separately. A successful send/configuration or default acknowledgement is not evidence that D1 or another business store changed. The persistent-agent template contains a signed native handler and an idempotent D1 implementation for this pattern.
+
+## Binding and class names
+
+Binding names are preserved as nonempty strings, including long, Unicode, dollar, hyphen and prototype-property names. Do not shorten, uppercase or sanitize them; access non-identifier names with `env["binding-name"]`. xAPI does not impose the previous 64-character binding or 128-character class limit. Class names must be valid JavaScript identifiers because platform lifecycle modules refer to exported classes; Unicode identifiers are supported. Resource ownership, duplicate-binding checks and platform credential bindings still apply. Physical upstream resource names (Queue/Workflow/Container application) are separate from binding names and retain their own native validation.
+
+The current native `exports` upload API limits class names to 128 characters; the legacy `migrations` API can behave differently. Preserve the upstream error and correct the exported class name explicitly. A legacy native-upload success does not prove the current managed deployment path accepts the same class length.
+
+Capability GET success verifies READ_ACCESS only, not Edit/Write permissions. A cached capability failure is not a provisioning gate: actual creation reports its own upstream result. Inspect AUTHENTICATION (401/403), RATE_LIMITED (429), provider error codes, Retry-After, rate-limit policy and CF-Ray. Credential changes invalidate diagnostics; concurrent probes merge. The 60-second diagnostic cache may respect a 429 Retry-After up to 300 seconds; no business operation is blocked or replayed by this cache. Durable Object availability is a declarative statement, not a live permission probe.

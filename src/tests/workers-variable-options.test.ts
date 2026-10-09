@@ -9,6 +9,7 @@ import {
   normalizeWorkerVariableOptions,
   withNativeWorkerOptions,
   withWorkerVars,
+  workerArtifactMultipart,
 } from "../workers-artifact.ts";
 import { uploadWorkerArtifact } from "../workers-client.ts";
 import { loadWorkerProjectBundle } from "../workers-project-build.ts";
@@ -184,17 +185,23 @@ test("invalid root keep_vars blocks import before writing even when env supplies
   expect(result.report.entries.some(entry => entry.category === "UNSUPPORTED" && entry.message.includes("Top-level keep_vars must be a boolean"))).toBe(true);
 });
 
-test("upload manifest carries canonical retention and JSON-string types without private retention", async () => {
+test("inline upload and multipart manifest carry canonical retention and JSON-string types without private retention", async () => {
   const artifact = await native({ keep_bindings: ["secret_text", "json", "plain_text"], bindings: [
     { name: "STRING", type: "json", json: "hello" },
     { name: "TEXT", type: "plain_text", text: "hi" },
   ] });
-  const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200, headers: { "content-type": "application/json" } }));
+  const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async () => Response.json({directUpload:false})) as unknown as typeof fetch);
   try {
     await uploadWorkerArtifact({ apiHost: "test.xapi.to", apiKey: "test-only" }, "worker/id", { ...artifact.upload, idempotencyKey: "variable-options" });
-    const [target, init] = fetchSpy.mock.calls[0];
-    expect(target).toBe("https://test.xapi.to/api/v1/workers/worker%2Fid/artifacts/bundle");
-    const form = init!.body as FormData;
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls[0][0]).toBe("https://test.xapi.to/api/v1/workers/artifact-provider/status");
+    const [target, init] = fetchSpy.mock.calls[1];
+    expect(target).toBe("https://test.xapi.to/api/v1/workers/worker%2Fid/artifacts");
+    expect(init!.method).toBe("POST");
+    const inline = JSON.parse(init!.body as string);
+    expect(inline.bundle).toMatchObject({keepBindings:["plain_text","json"],varTypes:{STRING:"json"},vars:{STRING:"hello",TEXT:"hi"}});
+    expect(JSON.stringify(inline)).not.toContain("secret_text");
+    const form = workerArtifactMultipart({...artifact.upload,idempotencyKey:"variable-options"});
     const manifest = JSON.parse(String(form.get("manifest")));
     expect(manifest).toMatchObject({ keepBindings: ["plain_text", "json"], varTypes: { STRING: "json" }, vars: { STRING: "hello", TEXT: "hi" } });
     expect(JSON.stringify(manifest)).not.toContain("secret_text");
