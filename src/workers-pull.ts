@@ -9,6 +9,17 @@ const canonical=(value:unknown):string=>JSON.stringify(value&&typeof value==='ob
   Array.isArray(value)?value.map(v=>JSON.parse(canonical(v))):Object.fromEntries(
     Object.entries(value).sort(([a],[b])=>a.localeCompare(b)).map(([key,v])=>[key,JSON.parse(canonical(v))])):value??null);
 
+// Compare only the empty public-vars envelope as absent. Keep all actual values
+// and future envelope fields; the saved native snapshot remains untouched.
+const comparable=(field:string,value:unknown):unknown=>{
+  if(field==='queueBindingAliases'||field==='nativeMetadata')return value??{};
+  if(field!=='variables')return value;
+  if(value==null)return {};
+  if(typeof value!=='object'||Array.isArray(value))return value;
+  return Object.fromEntries(Object.entries(value).filter(([key,item])=>
+    !(key==='vars'&&item!==null&&typeof item==='object'&&!Array.isArray(item)&&Object.keys(item).length===0)));
+};
+
 /** Pull is read-only remotely. A chosen output saves the complete public
  * deployment snapshot, including unknown native metadata, without rewriting
  * Wrangler build/resource declarations into the different upload-API format. */
@@ -26,8 +37,7 @@ export async function pullWorkerDeploymentConfiguration(options:{cwd?:string;con
   const comparison={compatibilityDate:local.compatibilityDate,compatibilityFlags:local.compatibilityFlags,
     variables:local.variables,nativeMetadata:local.nativeMetadata,queueBindingAliases:local.queueBindingAliases};
   const differences=Object.entries(comparison).filter(([key,value])=>
-    canonical(key==='queueBindingAliases'||key==='nativeMetadata' ? value??{} : value)!==
-    canonical(key==='queueBindingAliases'||key==='nativeMetadata' ? remote[key]??{} : remote[key]))
+    canonical(comparable(key,value))!==canonical(comparable(key,remote[key])))
     .map(([field,local])=>({field,local:local??null,remote:remote[field]??null}));
   let savedPath:string|null=null;
   if(options.outputPath){

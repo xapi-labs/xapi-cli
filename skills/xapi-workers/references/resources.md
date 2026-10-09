@@ -139,6 +139,15 @@ xapi workers resources queue-messages ack <worker-id> <resource-id> --env previe
   --body '{"acks":[{"lease_id":"<lease-from-pull>"}],"retries":[]}'
 ```
 
+To restore Worker delivery explicitly, use the Worker-consumer declaration shape (the logical `queue` name and native Wrangler batch options), rather than the HTTP Pull `settings` shape:
+
+```sh
+xapi workers resources queue-consumer configure <worker-id> <resource-id> --env preview \
+  --body '{"type":"worker","queue":"<logical-name-from-queues.consumers>","max_batch_size":1,"max_batch_timeout":1}'
+```
+
+The physical Queue and its funds are retained across this explicit switch. `push` still handles declared Worker consumers after code activation; producer-only projects are unchanged.
+
 The returned messages, bodies and leases follow CF's native response. Do not assume the platform decoded the body; inspect its native encoding. Ordinary `settings` and message options are forwarded as JSON and CF validates them. Raw provider account, Queue ID and script targeting remain server-owned; dead-letter references use an owned Queue binding in the same environment.
 
 Changing an existing consumer type requires deleting the old consumer then creating the new one, because CF rejects an in-place type update. This is an explicit user configuration change, not a step imposed on ordinary deployment. A partial failure is recorded and returned; the platform does not automatically replay the change. Disable removes the consumer and preserves the Queue, data and funds. Paused environments stop new pulls; acknowledgement of an already leased message remains available.

@@ -95,4 +95,22 @@ describe('deployment configuration pull',()=>{
     const changed=await pullWorkerDeploymentConfiguration({cwd:f.root,environment:'preview',clientOptions:options,client:async()=>f.remote});
     expect(changed.differences.some((difference:any)=>difference.field==='nativeMetadata')).toBe(true);
   });
+  it('compares absent and empty public vars equally without altering native snapshots',async()=>{
+    const f=fixture();
+    for(const variables of [undefined,null,{}, {vars:{}}]) {
+      const remote={...f.remote,configuration:{...f.remote.configuration,variables}};
+      const result=await pullWorkerDeploymentConfiguration({cwd:f.root,environment:'preview',clientOptions:options,
+        outputPath:'vars-empty.json',client:async()=>remote});
+      expect(result.differences.some((difference:any)=>difference.field==='variables')).toBe(false);
+      expect(JSON.parse(readFileSync(result.savedPath!,'utf8')).configuration.variables).toEqual(variables);
+    }
+    for(const variables of [{vars:{EMPTY:''}},{vars:{ZERO:0}},{vars:{FLAG:false}},{vars:{NIL:null}},
+      {vars:{},future_field:false},{vars:null}]) {
+      const remote={...f.remote,configuration:{...f.remote.configuration,variables}};
+      const result=await pullWorkerDeploymentConfiguration({cwd:f.root,environment:'preview',clientOptions:options,
+        outputPath:'vars-real.json',client:async()=>remote});
+      expect(result.differences).toContainEqual({field:'variables',local:null,remote:variables});
+      expect(JSON.parse(readFileSync(result.savedPath!,'utf8')).configuration.variables).toEqual(variables);
+    }
+  });
 });

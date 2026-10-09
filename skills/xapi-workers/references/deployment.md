@@ -530,4 +530,4 @@ Each accepted server operation has one immutable total deadline, currently cappe
 
 The platform appends `xapi-deployment:` and `xapi-operation:` tags for exact native result tracing. Other string tags remain available; user metadata cannot replace these two platform identity prefixes. This is proof integrity, not a supported-feature allowlist.
 
-Pull comparison treats absent and empty ordinary native metadata equally. Nonempty native settings still produce real differences; saved snapshots and explicit deployment clearing semantics are unchanged.
+Pull comparison treats absent and empty ordinary native metadata, Queue aliases, and the empty public-vars envelope `{vars:{}}` equally. Actual values (including empty strings, zero, false and null inside vars) and future envelope fields still produce real differences. Saved snapshots and explicit deployment clearing semantics are unchanged.
