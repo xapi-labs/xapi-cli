@@ -255,6 +255,32 @@ describe("workers plan", () => {
     expect(result.actions.find(action => action.key === 'STATE')?.operation).toBe('NO_CHANGE');
     expect(result.actions.find(action => action.key === 'EXTRA')?.operation).toBe('NO_CHANGE');
   });
+  test("plan recognizes a matching successful rollback without fetching its historical target separately", async () => {
+    const bundle = "export default {fetch(){return new Response('ok')}}";
+    const root = project({ linked: true, bundle });
+    const resources = [{ id: "resource", bindingName: "STATE", type: "KV_NAMESPACE", status: "ACTIVE", providerResourceId: "kv" }];
+    const secrets = [{ bindingName: "MODEL_KEY", version: 1 }];
+    const environment = { id: "env-preview", name: "PREVIEW", dailyBudgetUsd: 0.25, activeDeploymentId: "rollback-current" };
+    const prefix = deploymentPrefix(workerId, "preview", "artifact", { compatibilityFlags: [], requiredSecrets: ["MODEL_KEY"] }, environment, resources, secrets);
+    const current = { id: "rollback-current", environmentId: environment.id, artifactId: "artifact", status: "ACTIVE", idempotencyKey: "rollback:successful", providerResult: { rollbackTargetDeploymentId: "target" } };
+    const target = { id: "target", environmentId: environment.id, artifactId: "artifact", status: "ACTIVE", idempotencyKey: prefix + "original" };
+    let reads = 0;
+    const client = {
+      getWorkerVariableState: async () => ({ environment: "preview", activeDeploymentId: current.id, exists: true, variables: [] }),
+      listWorkers: unexpected("listWorkers"),
+      listWorkerResources: async () => resources,
+      listWorkerSecrets: async () => secrets,
+      getWorker: async () => { reads++; return { id: workerId, slug: "plan-agent", environments: [environment],
+        artifacts: [{ id: "artifact", contentSha256: createHash("sha256").update(bundle).digest("hex") }], deployments: [current, target] }; },
+    };
+    const run = () => createWorkerPlan({ cwd: root, environment: "preview", clientOptions: { apiHost: "localhost:3148", apiKey: "test" }, client });
+    expect((await run()).actions).toContainEqual(expect.objectContaining({ kind: "deployment", operation: "NO_CHANGE", key: current.id }));
+    expect(reads).toBe(1);
+    current.providerResult.rollbackTargetDeploymentId = "missing-target";
+    expect((await run()).actions).toContainEqual(expect.objectContaining({ kind: "deployment", operation: "CREATE" }));
+    expect(reads).toBe(2);
+  });
+
   test("plan compares the current remote binding snapshot, not only code", async () => {
     const bundle = "export default {fetch(){return new Response('ok')}}";
     const root = project({ linked: true, bundle });

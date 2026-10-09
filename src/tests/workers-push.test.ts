@@ -262,6 +262,32 @@ function fakePlatform(
 }
 
 describe("workers push preview", () => {
+  test("ordinary push after a matching successful rollback retains the current activation without a deployment write", async () => {
+    const root = fixture({ resources: [{ type: "kv_namespace", bindingName: "STATE" }] });
+    const platform = fakePlatform();
+    const fetchPublic = (async () => Response.json({ ok: true })) as unknown as typeof fetch;
+    const options = { cwd: root, environment: "preview" as const,
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" }, client: platform.client,
+      confirm: async () => true, fetchPublic, sleep: async () => undefined,
+      runBuild: async () => {
+        mkdirSync(join(root, "dist"), { recursive: true });
+        writeFileSync(join(root, "dist/worker.mjs"), "export default {fetch(){return new Response('ok')}};");
+      } };
+    const first = await pushWorkerProject(options);
+    const target = platform.state.deployments[0];
+    const rollback = { ...target, id: "rollback-current", status: "ACTIVE", idempotencyKey: "rollback:successful",
+      providerResult: { rollbackTargetDeploymentId: first.deployment.id } };
+    platform.state.deployments.unshift(rollback);
+    const plans: unknown[] = [];
+    const result = await pushWorkerProject({ ...options, onPlan: plan => plans.push(plan) });
+    expect(result.deployment.id).toBe(rollback.id);
+    expect(platform.calls).toEqual({ createWorker: 1, updateBudget: 0, createResource: 1, uploadArtifact: 1, deploy: 1 });
+    expect(platform.state.deployments).toHaveLength(2);
+    expect(plans).toContainEqual(expect.objectContaining({ actions: expect.arrayContaining([
+      expect.objectContaining({ kind: "deployment", operation: "NO_CHANGE", key: rollback.id }),
+    ]) }));
+  });
+
   test("push creates and binds D1 without touching missing migrations or the migration API", async () => {
     const root = fixture({ resources: [{ type: "d1_database", bindingName: "DB" }] });
     const config = JSON.parse(readFileSync(join(root, "wrangler.jsonc"), "utf8"));

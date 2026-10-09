@@ -70,6 +70,10 @@ local changes on a best-effort basis; coordinate simultaneous writers yourself.
 Snapshots contain public variable values, but only Secret names; protect local
 snapshot files. A legacy deployment without a recorded snapshot reports that
 configuration is unavailable. Pull does not force a subsequent deployment.
+Plan and push reuse a matching current ACTIVE deployment, including a successful
+rollback whose recorded target proves the same Artifact and deployment inputs.
+Missing target evidence or changed configuration requires normal deployment;
+this no-op does not promise that every edge has instantly converged.
 For `workers push` and `workers rollback`, JSON-mode stdout contains one final
 result. Build logs and intermediate plan diagnostics go to stderr; capture the
 streams separately when parsing receipts. Confirmation requirements are

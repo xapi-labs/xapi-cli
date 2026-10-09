@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { ensureActiveDeployment } from "../workers-push.ts";
-import { deploymentPrefix, deploymentKey, safeDeploymentRetryKey } from "../workers-deployment-state.ts";
+import { currentMatchingDeployment, deploymentPrefix, deploymentKey, safeDeploymentRetryKey } from "../workers-deployment-state.ts";
 import { RequestTimeoutError } from "../client.ts";
 
 function platform() {
@@ -25,6 +25,78 @@ function platform() {
     "preview", { compatibilityDate: date, compatibilityFlags: [] }, async () => {},undefined,undefined,undefined,true);
   return { api, run, resources, secrets, deployments, environment, uncertain: () => { failOnce = true; } };
 }
+
+function rollbackSnapshot() {
+  const environment = { id: "env", activeDeploymentId: "rollback-current", bindings: [], placementMode: "off" };
+  const prefix = deploymentPrefix("worker", "preview", "artifact", { variables: { vars: { MODE: "restored" } } }, environment, [], []);
+  const target: Record<string, unknown> = { id: "target", environmentId: "env", artifactId: "artifact", status: "ACTIVE", idempotencyKey: prefix + "original" };
+  const current: Record<string, unknown> = { id: "rollback-current", environmentId: "env", artifactId: "artifact", status: "ACTIVE", idempotencyKey: "rollback:explicit-operation", providerResult: { rollbackTargetDeploymentId: "target" } };
+  return { environment, prefix, target, current, deployments: [current, target] };
+}
+
+test("matches the current successful rollback using only its exact server-recorded target configuration", () => {
+  const p = rollbackSnapshot();
+  expect(currentMatchingDeployment(p.deployments, p.environment, "artifact", p.prefix)).toBe(p.current);
+  const changed = deploymentPrefix("worker", "preview", "artifact", { variables: { vars: { MODE: "changed" } } }, p.environment, [], []);
+  expect(currentMatchingDeployment(p.deployments, p.environment, "artifact", changed)).toBeUndefined();
+  expect(currentMatchingDeployment(p.deployments, p.environment, "changed-artifact", p.prefix)).toBeUndefined();
+});
+
+test("preserves direct v3 matching without requiring rollback provenance", () => {
+  const p = rollbackSnapshot();
+  p.current.idempotencyKey = p.prefix + "active";
+  p.current.providerResult = { rollbackTargetDeploymentId: "unknown" };
+  expect(currentMatchingDeployment([p.current], p.environment, "artifact", p.prefix)).toBe(p.current);
+});
+
+for (const [name, change] of [
+  ["current activation points elsewhere", (p: ReturnType<typeof rollbackSnapshot>) => { p.environment.activeDeploymentId = "unlisted"; }],
+  ["current activation absent", (p: ReturnType<typeof rollbackSnapshot>) => { delete (p.environment as Record<string, unknown>).activeDeploymentId; delete p.current.id; }],
+  ["current belongs to another environment", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.environmentId = "foreign"; }],
+  ["current artifact differs", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.artifactId = "other"; }],
+  ["current DEPLOYING", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.status = "DEPLOYING"; }],
+  ["current FAILED", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.status = "FAILED"; }],
+  ["current UNKNOWN", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.status = "UNKNOWN"; }],
+  ["not a rollback key", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.idempotencyKey = "other-operation"; }],
+  ["missing current key", (p: ReturnType<typeof rollbackSnapshot>) => { delete p.current.idempotencyKey; }],
+  ["missing provider metadata", (p: ReturnType<typeof rollbackSnapshot>) => { delete p.current.providerResult; }],
+  ["non-string target", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.providerResult = { rollbackTargetDeploymentId: { id: "target" } }; }],
+  ["target ID does not identify matching history", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.providerResult = { rollbackTargetDeploymentId: "unknown" }; }],
+  ["target missing from bounded snapshot", (p: ReturnType<typeof rollbackSnapshot>) => { p.deployments.pop(); }],
+  ["target belongs to another environment", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.environmentId = "foreign"; }],
+  ["target artifact differs", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.artifactId = "other"; }],
+  ["target DEPLOYING", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.status = "DEPLOYING"; }],
+  ["target FAILED", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.status = "FAILED"; }],
+  ["target UNKNOWN", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.status = "UNKNOWN"; }],
+  ["target configuration prefix differs", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.idempotencyKey = "v3-other-config-original"; }],
+  ["target key missing", (p: ReturnType<typeof rollbackSnapshot>) => { delete p.target.idempotencyKey; }],
+  ["self-reference", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.providerResult = { rollbackTargetDeploymentId: p.current.id }; }],
+  ["target is another rollback, not a direct configuration proof", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.idempotencyKey = "rollback:previous"; p.target.providerResult = { rollbackTargetDeploymentId: "matching-grandparent" }; p.deployments.push({ ...p.target, id: "matching-grandparent", idempotencyKey: p.prefix + "historical" }); }],
+] as const) {
+  test(`rollback match fails closed: ${name}`, () => {
+    const p = rollbackSnapshot();
+    change(p);
+    expect(currentMatchingDeployment(p.deployments, p.environment, "artifact", p.prefix)).toBeUndefined();
+  });
+}
+
+test("push reuses the current successful rollback without another deploy or history read", async () => {
+  const p = platform();
+  const first = await p.run();
+  const rollback = { ...first.deployment, id: "rollback-current", idempotencyKey: "rollback:explicit-operation", providerResult: { rollbackTargetDeploymentId: first.deployment.id } };
+  p.deployments.push(rollback);
+  p.environment.activeDeploymentId = rollback.id;
+  let reads = 0;
+  const get = p.api.getWorker;
+  p.api.getWorker = async () => { reads++; return get(); };
+  const result = await p.run();
+  expect(result.deployment).toBe(rollback);
+  expect(result.idempotencyKey).toBe(rollback.idempotencyKey);
+  expect(p.deployments).toHaveLength(2);
+  expect(reads).toBe(1);
+  expect((await p.run("2026-09-06")).deployment.id).not.toBe(rollback.id);
+  expect(p.deployments).toHaveLength(3);
+});
 
 test("same code: add, replace and explicitly remove bindings deploy; unchanged repeats do not", async () => {
   const p = platform();
