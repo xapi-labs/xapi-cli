@@ -61,11 +61,15 @@ describe('bundled xAPI Workers skill guide', () => {
     expect(guide).toContain('XAPI_API_HOST=api.test.xapi.to');
   });
 
-  it('uses Artifact upload as the default and Sandbox only as an option', () => {
+  it('uses Artifact upload and user-owned execution without enabling managed builds', () => {
     expect(guide).toContain('workers upload <worker-id>');
     expect(guide).toContain('workers deploy <worker-id>');
     expect(guide).toContain('--artifact <artifact-id>');
-    expect(guide).toContain('### Optional Sandbox build');
+    expect(guide).toContain('### Build in your execution environment');
+    expect(guide).toContain('user-owned xAPI');
+    expect(guide).toContain('worker_cloud_build_disabled');
+    expect(guide).toContain('USER_BUILD_BUDGET_NOT_IMPLEMENTED');
+    expect(guide).toContain('has its own billing/lifecycle');
     expect(guide).toContain('"main": "worker.js"');
     expect(guide).toContain('--file dist/');
     expect(guide).toContain('--main worker.js');
