@@ -48,6 +48,20 @@ test('imports native Queue settings, same-environment dead-letter binding and de
   expect(readFileSync(join(root,'xapi.worker.json'),'utf8')).not.toContain('providerResourceId');
 });
 
+test('plan treats an explicit default Worker consumer type as unchanged but keeps real differences',async()=>{
+  const {root}=workspace();const project=loadWorkerProject(root);
+  const client={listWorkerResources:async()=>resources(),listWorkerSchedules:async()=>[]};
+  const plan=async(current:Record<string,unknown>)=> (await planWorkerNativeEvents(project,'preview',
+    [{...resources()[0],config:{nativeConsumer:current}},resources()[1]],client,options)).find(row=>row.key==='queue:JOBS');
+  for(const current of [consumerBody,{type:'worker',...consumerBody}])
+    expect((await plan(current))?.operation).toBe('NO_CHANGE');
+  const {max_retries:_removed,...withoutRetries}=consumerBody;
+  for(const current of [{type:'http_pull',...consumerBody},{...consumerBody,max_retries:1},
+    withoutRetries,{...consumerBody,future_setting:false}])
+    expect((await plan(current))?.operation).toBe('UPDATE');
+  expect((await plan({type:'worker',...consumerBody}))?.current).toEqual({type:'worker',...consumerBody});
+});
+
 test('imports and sends named and calendar cron expressions without normalizing user intent', async () => {
   const crons = ['* * * oct thu', '59 23 LW * *', '0 18 * * friL', '5/10 * * JAN-MAR MON#2'];
   const { root, imported } = workspace({ ...wrangler, queues: {}, triggers: { crons } });

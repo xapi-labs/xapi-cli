@@ -48,9 +48,12 @@ export async function planWorkerNativeEvents(
     const resource = resources.find(row => row.type === 'QUEUE' && row.bindingName === consumer.bindingName);
     const current = object(object(resource?.config).nativeConsumer);
     const input = consumerBody(consumer);
-    // Removing a previously explicit parameter restores the provider default.
+    // Worker is the native default when type is omitted. Other removed
+    // parameters still restore the provider default and remain real changes.
     const same = [...new Set([...Object.keys(input), ...Object.keys(current)])]
-      .every(key => input[key] === current[key]);
+      .every(key => key === 'type'
+        ? (input[key] ?? 'worker') === (current[key] ?? 'worker')
+        : input[key] === current[key]);
     changes.push({
       operation: same ? 'NO_CHANGE' : resource ? 'UPDATE' : 'CREATE',
       key: `queue:${consumer.bindingName}`,
