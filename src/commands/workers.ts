@@ -97,7 +97,7 @@ ADVANCED ARTIFACT PRIMITIVES (custom CI and recovery only)
   deploy <worker-id> --artifact ARTIFACT_ID --env preview|production
 
 RESOURCES, BILLING, AND LIFECYCLE
-  budget <worker-id> <environment> --daily-usd USD
+  budget <worker-id> <environment> --daily-usd USD|none
   environment <worker-id> <environment> [--daily-usd USD] [--data-location apac] [--placement smart]
   billing-status
   billing ledger <worker-id> --env ENV [--all] [--snapshot-time ISO] [--json]
@@ -1209,16 +1209,17 @@ export async function workersCommand(
       assertFlags(flags, ["daily-usd"]);
       if (rest.length !== 2)
         err(
-          "usage: xapi-to workers budget <worker-id> <preview|production> --daily-usd USD",
+          "usage: xapi-to workers budget <worker-id> <preview|production> --daily-usd USD|none",
         );
       if (!["preview", "production"].includes(rest[1]))
         err("environment must be preview or production");
+      const dailyBudgetUsd = budget(required(flags["daily-usd"], "--daily-usd"), "--daily-usd");
       output(
         await client.updateWorkerBudget(
           options(),
           rest[0],
           rest[1],
-          budget(flags["daily-usd"], "--daily-usd"),
+          dailyBudgetUsd,
         ),
       );
       return;

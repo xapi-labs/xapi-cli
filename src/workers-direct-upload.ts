@@ -30,6 +30,42 @@ type UploadStatus = {
 const CONFIRM_STATUS_ATTEMPTS = 5;
 const CONFIRM_STATUS_INTERVAL_MS = 1_000;
 
+// Presigned object headers may include provider extensions. Reject credentials
+// and routing/framing overrides rather than allowlisting signing headers.
+const UNSAFE_OBJECT_HEADERS = new Set([
+  'authorization', 'cookie', 'cookie2', 'set-cookie', 'xapi-key', 'x-api-key', 'xapi-api-key',
+  'host', 'connection', 'keep-alive', 'transfer-encoding', 'content-length',
+  'te', 'trailer', 'upgrade', 'expect', 'forwarded', 'via',
+  'origin', 'referer', 'x-real-ip', 'cf-connecting-ip', 'true-client-ip',
+]);
+
+function objectUploadHeaders(value: unknown, checksum: string): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('Invalid Worker object authorization headers');
+  const result: Record<string, string> = Object.create(null);
+  let size = 0;
+  for (const [name, content] of Object.entries(value)) {
+    const key = name.toLowerCase();
+    if (
+      name.length > 256 || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ||
+      typeof content !== 'string' || Buffer.byteLength(content) > 8192 ||
+      /[\x00-\x08\x0a-\x1f\x7f]|[^\x00-\xff]/.test(content) ||
+      UNSAFE_OBJECT_HEADERS.has(key) || /^(proxy-|sec-|x-forwarded-)/.test(key) ||
+      Object.hasOwn(result, key)
+    )
+      throw new Error('Invalid Worker object authorization headers');
+    size += Buffer.byteLength(name) + Buffer.byteLength(content) + 4;
+    if (size > 65536)
+      throw new Error('Invalid Worker object authorization headers');
+    result[key] = content;
+  }
+  if (result['x-amz-checksum-sha256'] !== checksum)
+    throw new Error('Worker upload checksum authorization mismatch');
+  if (!Object.hasOwn(result, 'content-type'))
+    result['content-type'] = 'application/octet-stream';
+  return result;
+}
+
 /** A sent confirmation can still commit; preparing another upload is not recovery. */
 export class WorkerArtifactConfirmationPendingError extends Error {
   readonly recovery: Record<string, unknown>;
@@ -226,25 +262,21 @@ export async function uploadDirectWorkerArtifact(
         if ((!native && !test) || target.username || target.password)
           throw new Error('Invalid temporary Worker object channel');
         const checksum = Buffer.from(item.sha256, 'hex').toString('base64');
-        if (item.headers?.['x-amz-checksum-sha256'] !== checksum)
-          throw new Error('Worker upload checksum authorization mismatch');
+        const uploadHeaders = objectUploadHeaders(item.headers, checksum);
         authorizedHashes.add(item.sha256);
-        return { item, bytes, checksum };
+        return { item, bytes, uploadHeaders };
       });
       let next = 0,
         failed: unknown;
       await Promise.all(
         Array.from({ length: Math.min(8, authorized.length) }, async () => {
           while (next < authorized.length && !failed) {
-            const { item, bytes, checksum } = authorized[next++];
+            const { item, bytes, uploadHeaders } = authorized[next++];
             try {
               await objectTransport.upload(
                 item.url,
                 bytes,
-                {
-                  'content-type': 'application/octet-stream',
-                  'x-amz-checksum-sha256': checksum,
-                },
+                uploadHeaders,
                 signal,
               );
               sent.add(item.sha256);

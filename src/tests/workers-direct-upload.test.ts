@@ -1,5 +1,5 @@
 import {afterAll,afterEach,describe,expect,it} from 'bun:test';
-import {createServer,type Server} from 'node:http';
+import {createServer,type Server,type IncomingHttpHeaders} from 'node:http';
 import {createHash} from 'node:crypto';
 import {uploadDirectWorkerArtifact} from '../workers-direct-upload.ts';
 import {workerArtifactDirectUpload,type WorkerArtifactUploadRequest} from '../workers-artifact.ts';
@@ -18,14 +18,14 @@ afterEach(async()=>{
 const bytes=Buffer.from('export default {fetch(){return new Response("test")}}');
 const sha=createHash('sha256').update(bytes).digest('hex');
 const input={idempotencyKey:'direct-test-artifact',moduleCode:bytes.toString('utf8')};
-async function fixture(mode:'normal'|'bad-channel'|'bad-checksum'|'reject'|'reject-confirm'|'redirect'|'stall'|'lost-confirm'='normal') {
-  const calls:Array<{method:string,path:string,key?:string,body:Buffer}>=[];
+async function fixture(mode:'normal'|'bad-channel'|'bad-checksum'|'reject'|'reject-confirm'|'redirect'|'stall'|'lost-confirm'='normal', authorizationHeaders:unknown={'x-amz-checksum-sha256':Buffer.from(sha,'hex').toString('base64')}) {
+  const calls:Array<{method:string,path:string,key?:string,body:Buffer,headers:IncomingHttpHeaders}>=[];
   let host='';let upload=0;
   const server=createServer(async(req,res)=>{
     res.setHeader('connection','close');
       const chunks:Buffer[]=[];for await(const chunk of req)chunks.push(Buffer.from(chunk));
     const body=Buffer.concat(chunks);
-    const path=req.url!;calls.push({method:req.method!,path,key:req.headers['xapi-key'] as string,body});
+    const path=req.url!;calls.push({method:req.method!,path,key:req.headers['xapi-key'] as string,body,headers:req.headers});
     if(path.startsWith('/object/')){
       if(mode==='stall')return;
       if(mode==='reject'){res.writeHead(403);res.end('bad authorization');return;}
@@ -42,7 +42,7 @@ async function fixture(mode:'normal'|'bad-channel'|'bad-checksum'|'reject'|'reje
     res.setHeader('content-type','application/json');res.end(JSON.stringify({uploadId:id,
       expiresAt:new Date(Date.now()+900000).toISOString(),nextCursor:null,
       files:[{sha256:sha,size:bytes.length,url:mode==='bad-channel'?'https://attacker.example/upload':host+'/object/'+id,
-        headers:{'x-amz-checksum-sha256':mode==='bad-checksum'?'wrong':Buffer.from(sha,'hex').toString('base64')}}]}));
+        headers:mode==='bad-checksum'?{'x-amz-checksum-sha256':'wrong'}:authorizationHeaders}]}));
   });servers.push(server);
   await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
   host='http://127.0.0.1:'+(server.address() as any).port;
@@ -102,6 +102,47 @@ async function recoveryFixture(mode:RecoveryMode,requestInput:WorkerArtifactUplo
   return {apiUrl:host+'/api/v1/workers/w/artifact-uploads',calls,artifact};
 }
 describe('Worker direct upload with real HTTP channels',()=>{
+  it('forwards additional signed headers and signed content type exactly over the shipped Node HTTP transport',async()=>{
+    const signed={
+      'X-Amz-Checksum-Sha256':Buffer.from(sha,'hex').toString('base64'),
+      'X-Amz-Content-Sha256':'UNSIGNED-PAYLOAD',
+      'X-Amz-Meta-Artifact':'signed  metadata',
+      'X-Amz-Security-Token':'synthetic-r2-session-token',
+      'X-Custom-Signed-Header':'extension-value',
+      'Content-Type':'application/custom-worker',
+    };
+    const f=await fixture('normal',signed);
+    expect(await nativeWorkerUpload(input,f.apiUrl,{...headers,Authorization:'Bearer synthetic-control-token',Cookie:'synthetic=control'})).toHaveProperty('id');
+    const put=f.calls.find(call=>call.method==='PUT')!;
+    for(const [name,value] of Object.entries(signed))expect(put.headers[name.toLowerCase()]).toBe(value);
+    for(const name of ['xapi-key','authorization','cookie'])expect(put.headers[name]).toBeUndefined();
+    expect(f.calls.map(call=>call.method)).toEqual(['POST','PUT','POST']);
+  });
+  const checksumHeaders={'x-amz-checksum-sha256':Buffer.from(sha,'hex').toString('base64')};
+  for(const [label,invalid] of [
+    ['null',null],['array',[]],['string','headers'],['missing checksum',{}],
+    ['numeric value',{...checksumHeaders,'x-signed':42}],
+    ['null value',{...checksumHeaders,'x-signed':null}],
+    ['array value',{...checksumHeaders,'x-signed':['value']}],
+    ['invalid name',{...checksumHeaders,'bad name':'value'}],
+    ['newline name',{...checksumHeaders,'x-signed\r\nInjected':'value'}],
+    ['newline value',{...checksumHeaders,'x-signed':'value\r\nInjected: yes'}],
+    ['control character',{...checksumHeaders,'x-signed':'value\u0000'}],
+    ['oversized name',{...checksumHeaders,['x'.repeat(257)]:'value'}],
+    ['oversized value',{...checksumHeaders,'x-signed':'x'.repeat(8193)}],
+    ['oversized aggregate',{...checksumHeaders,...Object.fromEntries(Array.from({length:9},(_,i)=>[`x-meta-${i}`,'x'.repeat(8192)]))}],
+    ['duplicate checksum',{...checksumHeaders,'X-Amz-Checksum-Sha256':'wrong'}],
+    ['duplicate content type',{...checksumHeaders,'Content-Type':'text/plain','content-type':'application/octet-stream'}],
+    ...['XAPI-KEY','x-api-key','xapi-api-key','Authorization','Cookie','Cookie2','Set-Cookie','Host','Proxy-Authorization','Connection','Keep-Alive',
+      'Transfer-Encoding','Content-Length','TE','Trailer','Upgrade','Expect','Forwarded','X-Forwarded-Host']
+      .map(name=>[name,{...checksumHeaders,[name]:'synthetic-sensitive-value'}]),
+  ] as Array<[string,unknown]>) {
+    it(`refuses malformed or sensitive authorization headers (${label}) before PUT`,async()=>{
+      const f=await fixture('normal',invalid);
+      await expect(nativeWorkerUpload(input,f.apiUrl,headers)).rejects.toThrow();
+      expect(f.calls.map(call=>call.method)).toEqual(['POST']);
+    });
+  }
   it.each([128,129,257])('uploads %s unique blobs across full authorization pages, including duplicate paths and zero bytes',async count=>{
     const modules=Array.from({length:count},(_,i)=>({path:`module-${i}.mjs`,content:i===0?'':`export const value=${i};`,encoding:'utf8' as const,contentType:'application/javascript+module' as const}));
     modules.push({...modules[0],path:'duplicate-empty.mjs'},{...modules[1],path:'duplicate-content.mjs'});
@@ -183,6 +224,7 @@ describe('Worker direct upload with real HTTP channels',()=>{
     const f=await fixture();expect(await uploadDirectWorkerArtifact(input,f.apiUrl,headers)).toMatchObject({id:'artifact',contentSha256:sha,sizeBytes:bytes.length});
     expect(f.calls.map(c=>c.method)).toEqual(['POST','PUT','POST']);
     expect(f.calls[0].key).toBe(headers['XAPI-KEY']);expect(f.calls[1].key).toBeUndefined();
+    expect(f.calls[1].headers['content-type']).toBe('application/octet-stream');
     expect(f.calls[2].key).toBe(headers['XAPI-KEY']);
     expect(f.calls[0].body.toString()).not.toContain(bytes.toString());
   });

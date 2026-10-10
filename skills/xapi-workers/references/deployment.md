@@ -204,6 +204,16 @@ accepted confirmation published the application. Confirmation does not reserve
 funds or initiate a deployment. A service restart can recover accepted verification
 work; it does not automatically replay a publication.
 
+For custom HTTP clients, `POST /api/v1/workers/{workerId}/artifact-uploads/{uploadId}/confirm`
+with JSON `{"async":true}` accepts the verification task and returns the upload ID
+and status. Read `GET /api/v1/workers/{workerId}/artifact-uploads/{uploadId}/status`
+using the same authenticated owner. `QUEUED` and `CONFIRMING` are pending;
+`READY` includes `artifact`; `FAILED` includes sanitized `error.code` and, when
+available, `error.status` and `error.type`. Progress can show `WAITING_CAPACITY`
+while local scratch is busy; this does not trigger a deployment or charge.
+Verification's processing budget begins when work starts, not while it waits.
+Omitting `async` preserves the synchronous confirmation response for existing clients.
+
 The complete-project upload channel accepts up to 64 MiB of uncompressed
 Worker modules and 100 MiB of combined module/static-asset content; each static
 asset is limited to 25 MiB. There is no 200-module cutoff. A single-file build
