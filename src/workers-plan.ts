@@ -681,7 +681,7 @@ function planSummary(
 function planCostImpact(
   actions: WorkerPlanAction[],
   desiredDailyBudgetUsd: number | null,
-  currentDailyBudgetUsd: number | undefined,
+  currentDailyBudgetUsd: number | null | undefined,
   priceResponse: unknown,
 ): WorkerDeploymentPlan["costImpact"] {
   const envelope = record(priceResponse);
@@ -709,6 +709,11 @@ function planCostImpact(
     "Worker and managed-resource charges depend on measured usage; plan does not invent traffic or storage assumptions.",
     "The server calculates refundable retention reserves and checks available funds atomically. A client price quote is informational, not a prerequisite product selection. READY is not balance or provider admission.",
   ];
+  if (currentDailyBudgetUsd === null) {
+    notes.push("The current environment has no user-selected daily budget (unlimited); no numeric budget delta is available.");
+  }
+  // Cost fields describe finite targets; an unlimited budget has no numeric delta.
+  const finiteCurrentBudget = currentDailyBudgetUsd ?? undefined;
   if (!rates) {
     notes.push(
       "The active price book could not be read for this environment; inspect billing before production promotion.",
@@ -716,18 +721,18 @@ function planCostImpact(
   }
   return {
     status: rates
-      ? currentDailyBudgetUsd === undefined
+      ? finiteCurrentBudget === undefined
         ? "PARTIAL"
         : "AVAILABLE"
-      : currentDailyBudgetUsd === undefined
+      : finiteCurrentBudget === undefined
         ? "UNKNOWN"
         : "PARTIAL",
     desiredDailyBudgetUsd,
-    ...(currentDailyBudgetUsd !== undefined
+    ...(finiteCurrentBudget !== undefined
       ? {
-          currentDailyBudgetUsd,
+          currentDailyBudgetUsd: finiteCurrentBudget,
           ...(desiredDailyBudgetUsd !== null ? {dailyBudgetDeltaUsd:
-            Math.round((desiredDailyBudgetUsd - currentDailyBudgetUsd) * 1_000_000) / 1_000_000} : {}),
+            Math.round((desiredDailyBudgetUsd - finiteCurrentBudget) * 1_000_000) / 1_000_000} : {}),
         }
       : {}),
     ...(rates
@@ -850,7 +855,8 @@ export async function createWorkerPlan(
     }
   }
 
-  const currentBudget = number(remoteEnvironmentState?.dailyBudgetUsd);
+  const currentBudget = remoteEnvironmentState?.dailyBudgetUsd === null
+    ? null : number(remoteEnvironmentState?.dailyBudgetUsd);
   if (!remoteEnvironmentState) {
     add(
       actions,
@@ -860,12 +866,12 @@ export async function createWorkerPlan(
       "Set the environment budget during Worker creation",
       { dailyBudgetUsd: desired.dailyBudgetUsd },
     );
-  } else if (currentBudget === undefined && remoteEnvironmentState.dailyBudgetUsd !== null) {
+  } else if (currentBudget === undefined) {
     throw new WorkerProjectConfigError(
       "worker_plan_invalid_response",
       "xAPI returned an environment without dailyBudgetUsd",
     );
-  } else if (!(desired.dailyBudgetUsd === null ? remoteEnvironmentState.dailyBudgetUsd === null : currentBudget !== undefined && Math.abs(currentBudget - desired.dailyBudgetUsd) <= 0.00005)) {
+  } else if (!(desired.dailyBudgetUsd === null ? currentBudget === null : currentBudget !== null && Math.abs(currentBudget - desired.dailyBudgetUsd) <= 0.00005)) {
     add(
       actions,
       "UPDATE",

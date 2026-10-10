@@ -230,9 +230,10 @@ describe("workers promote", () => {
     });
   }
 
-  test("uses selected immutable Artifact vars against production state, independent of local preview vars", async () => {
+  test("uses selected immutable Artifact vars when production variables override is undefined", async () => {
     const root = fixture();
-    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify({ name: "promote-agent", vars: { LOCAL_ONLY: "private-marker" }, keep_vars: false }));
+    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify({ name: "promote-agent", keep_vars: false,
+      env: { preview: { vars: { LOCAL_ONLY: "private-marker" } } } }));
     const platform = fakePlatform({ bindings: [{ name: "ENV_CONFIG", type: "plain_text", text: "private-env-marker" }] });
     const calls: string[] = [];
     platform.client.getWorkerVariableState = async (_options, id, environment) => {
@@ -260,6 +261,75 @@ describe("workers promote", () => {
     expect(JSON.stringify(plan)).not.toContain("private-env-marker");
     expect(plan.canPromote).toBe(true);
     expect(platform.calls.deploy).toBe(0);
+  });
+
+  test("keeps explicit empty variable decisions when production clears Artifact vars and has no current vars", async () => {
+    const root = fixture();
+    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify({ name: "promote-agent", env: { production: { vars: {} } } }));
+    const platform = fakePlatform();
+    platform.client.getWorkerArtifactVariableConfiguration = async () => ({ artifactId: "artifact-latest",
+      contentSha256: "a".repeat(64), keepBindings: [], variables: [{ name: "PREVIEW_ONLY", type: "plain_text" }], bindingNames: [] });
+    const { plan } = await createWorkerPromotionPlan({ cwd: root, to: "production",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test" }, client: platform.client });
+    expect(JSON.parse(JSON.stringify(plan)).variables).toEqual([]);
+    expect(plan.canPromote).toBe(true);
+    expect(platform.calls.deploy).toBe(0);
+  });
+
+  test.each([
+    { label: "different production vars", production: { vars: { PROD_ONLY: "production-value-marker", CHANGED: { enabled: true } } },
+      variables: [{ name: "CHANGED", decision: "REPLACE", type: "json" }, { name: "PREVIEW_ONLY", decision: "REMOVE" }, { name: "PROD_ONLY", decision: "SET", type: "plain_text" }] },
+    { label: "explicit empty production vars", production: { vars: {} },
+      variables: [{ name: "CHANGED", decision: "REMOVE" }, { name: "PREVIEW_ONLY", decision: "REMOVE" }] },
+    { label: "omitted vars in named production environment", production: {},
+      variables: [{ name: "CHANGED", decision: "REMOVE" }, { name: "PREVIEW_ONLY", decision: "REMOVE" }] },
+  ])("confirmation plan matches the deployed variables override: $label", async ({ production, variables }) => {
+    const root = fixture();
+    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify({ name: "promote-agent",
+      env: { preview: { vars: { PREVIEW_ONLY: "preview-value-marker" } }, production } }));
+    const platform = fakePlatform();
+    platform.client.getWorkerVariableState = async () => ({ environment: "production", activeDeploymentId: null,
+      exists: true, variables: [{ name: "PREVIEW_ONLY", type: "plain_text" }, { name: "CHANGED", type: "plain_text" }] });
+    platform.client.getWorkerArtifactVariableConfiguration = async () => ({ artifactId: "artifact-latest",
+      contentSha256: "a".repeat(64), keepBindings: [], variables: [{ name: "PREVIEW_ONLY", type: "plain_text" }], bindingNames: [] });
+    const requests: Array<Parameters<PromotionClient["deployWorker"]>[2]> = [];
+    const deploy = platform.client.deployWorker;
+    platform.client.deployWorker = async (api, id, request) => { requests.push(request); return deploy(api, id, request); };
+    const result = await promoteWorkerProject({ cwd: root, to: "production",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test" }, client: platform.client,
+      confirm: async plan => {
+        expect(plan.variables?.map(({ name, decision, type }) => ({ name, decision, ...(type ? { type } : {}) }))).toEqual([...variables]);
+        expect(JSON.stringify(plan)).not.toContain("production-value-marker");
+        expect(JSON.stringify(plan)).not.toContain("preview-value-marker");
+        if ("PROD_ONLY" in (production.vars || {}))
+          expect(plan.variables?.find(variable => variable.name === "PROD_ONLY")?.message).toContain("production configuration");
+        return true;
+      }, sleep: async () => undefined, fetchPublic: (async () => Response.json({ ok: true })) as unknown as typeof fetch });
+    expect(result.status).toBe("ACTIVE");
+    expect(requests).toHaveLength(1);
+    expect(requests[0].variables).toEqual({ vars: production.vars || {} });
+  });
+
+  test.each(["STATE", "MODEL_KEY", "VERSION", "ENV_CONFIG"])("checks variable collisions against the effective production override: %s", async name => {
+    const root = fixture();
+    const platform = fakePlatform({ bindings: [{ name: "ENV_CONFIG", type: "plain_text", text: "environment-value-marker" }] });
+    let artifactName: string = name;
+    platform.client.getWorkerArtifactVariableConfiguration = async () => ({ artifactId: "artifact-latest",
+      contentSha256: "a".repeat(64), keepBindings: [], variables: [{ name: artifactName, type: "plain_text" }], bindingNames: ["VERSION"] });
+    const configure = (vars: Record<string, unknown>) => writeFileSync(join(root, "wrangler.jsonc"),
+      JSON.stringify({ name: "promote-agent", env: { production: { vars } } }));
+    const options = { cwd: root, to: "production" as const, nonInteractive: true,
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test" }, client: platform.client };
+    configure({ PROD_ONLY: "production-value-marker" });
+    const { plan } = await createWorkerPromotionPlan(options);
+    expect(plan.canPromote).toBe(true);
+    expect(plan.variables).toContainEqual(expect.objectContaining({ name: "PROD_ONLY", decision: "SET" }));
+    expect(plan.variables?.some(variable => variable.name === name && name !== "ENV_CONFIG")).toBe(false);
+    artifactName = "PREVIEW_ONLY";
+    configure({ [name]: "production-value-marker" });
+    await expect(promoteWorkerProject(options)).rejects.toThrow("conflicts with an");
+    expect(platform.calls.deploy).toBe(0);
+    expect(platform.calls.createResource).toBe(0);
   });
 
   test("fails before promotion on unreadable state, deployment race or wrong immutable declaration", async () => {

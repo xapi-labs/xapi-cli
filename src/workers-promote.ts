@@ -1,5 +1,5 @@
 import { planWorkerNativeEvents } from "./workers-native-events.ts";
-import { planWorkerVariables, readWorkerVariableState, readWorkerArtifactVariableConfiguration, type WorkerVariableDecision } from "./workers-variable-plan.ts";
+import { planWorkerVariables, readWorkerVariableState, readWorkerArtifactVariableConfiguration, workerVariableDeclaration, type WorkerVariableDecision } from "./workers-variable-plan.ts";
 import { remoteWorkerResourceState, resourceReadyForDeployment } from "./workers-resource-state.ts";
 import { nativeDeploymentPlan, publicNativeDeploymentPlan, applyNativeDeploymentPhase, NativeDeploymentError, type NativeDeploymentClient, type NativeDeploymentPlan } from './workers-native-deployment.ts';
 import { createInterface } from "node:readline/promises";
@@ -361,6 +361,7 @@ export async function createWorkerPromotionPlan(
     throw new WorkerPushError("workers promote requires --to production");
   }
   const project = loadWorkerProject(options.cwd, options.configPath);
+  const compatibility = readWranglerDeploymentSettings(project, "production");
   const workerId = project.config.workerId;
   if (!workerId) {
     throw new WorkerPushError(
@@ -429,19 +430,28 @@ export async function createWorkerPromotionPlan(
     production,
     resources,
     secrets,
-    Boolean(readWranglerDeploymentSettings(project, "production").assets),
+    Boolean(compatibility.assets),
   );
+  // The deployment request replaces Artifact vars even when the override is empty.
+  // Retention types and non-variable bindings still come from the immutable Artifact.
+  const effectiveDeclaration = compatibility.variables === undefined ? declaration : {
+    ...declaration,
+    variables: workerVariableDeclaration(compatibility.variables).variables,
+  };
   const nativePlan = nativeDeploymentPlan(project, "production");
   for (const event of await planWorkerNativeEvents(project,"production",resources,api,options.clientOptions))
     checked.checks.push({status:event.operation,kind:"event",key:event.key,message:event.message});
   checked.dataRisk.push("D1 SQL is not executed by promotion. Apply database migrations explicitly when needed; Queue/Cron configuration runs after code. Code rollback does not roll back SQL.");
   const plan: WorkerPromotionPlan = {
     schemaVersion: 1,
-    variables: planWorkerVariables(declaration, currentVariables, [
+    variables: planWorkerVariables(effectiveDeclaration, currentVariables, [
       ...project.config.environments.production.resources.map(resource => resource.bindingName),
       ...project.config.environments.production.secrets,
       ...secrets.map(secret => text(secret.bindingName)!),
-    ], production.bindings),
+    ], production.bindings).map(variable => compatibility.variables === undefined ? variable : {
+      ...variable,
+      message: variable.message.replace("the Artifact", "the production configuration"),
+    }),
     workerId,
     to: "production",
     previewDeployment: {

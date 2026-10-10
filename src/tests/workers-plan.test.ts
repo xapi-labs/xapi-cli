@@ -14,6 +14,7 @@ import { HttpError } from "../client.ts";
 import { createWorkerPlan, prepareWorkerPlan } from "../workers-plan.ts";
 import { WORKER_PROJECT_SCHEMA_URL } from "../workers-project.ts";
 import { deploymentPrefix } from "../workers-deployment-state.ts";
+import { formatWorkerPlan } from "../workers-plan-output.ts";
 
 const roots: string[] = [];
 const originalFetch = globalThis.fetch;
@@ -76,6 +77,35 @@ function unexpected(name: string): () => Promise<never> {
 }
 
 describe("workers plan", () => {
+  test.each([2, 0, null])("preserves an unlimited current production budget when desired is %s", async desiredBudget => {
+    const root = project({ linked: true });
+    const path = join(root, "xapi.worker.json");
+    const config = JSON.parse(readFileSync(path, "utf8"));
+    config.environments.production.dailyBudgetUsd = desiredBudget;
+    writeFileSync(path, JSON.stringify(config));
+    const plan = await createWorkerPlan({ cwd: root, environment: "production",
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test" }, client: {
+        listWorkers: unexpected("listWorkers"),
+        getWorker: async () => ({ id: workerId, slug: "plan-agent", environments: [
+          { id: "env-production", name: "PRODUCTION", dailyBudgetUsd: null }], artifacts: [], deployments: [] }),
+        getWorkerVariableState: async () => ({ environment: "production", activeDeploymentId: null, exists: false, variables: [] }),
+        listWorkerResources: async () => [], listWorkerSecrets: async () => [],
+        workerBillingQuery: async () => ({ data: { version: "test-prices", rates: [] } }),
+      } });
+    const json = JSON.parse(JSON.stringify(plan));
+    const action = json.actions.find((item: { kind: string }) => item.kind === "budget");
+    expect(action.operation).toBe(desiredBudget === null ? "NO_CHANGE" : "UPDATE");
+    expect(action.desired).toEqual({ dailyBudgetUsd: desiredBudget });
+    if (desiredBudget !== null) expect(action.current).toEqual({ dailyBudgetUsd: null });
+    expect(json.costImpact).not.toHaveProperty("currentDailyBudgetUsd");
+    expect(json.costImpact).not.toHaveProperty("dailyBudgetDeltaUsd");
+    expect(json.costImpact.status).toBe("PARTIAL");
+    expect(json.costImpact.notes.join(" ")).toContain("current environment has no user-selected daily budget");
+    const rendered = formatWorkerPlan(plan);
+    expect(rendered).not.toContain("$0.00 →");
+    expect(rendered).toContain("current environment has no user-selected daily budget");
+  });
+
   test("shows Wrangler-only static routing and reserves its binding before a build exists", async () => {
     const root = project();
     const wrangler = { assets: { directory: "dist/client", binding: "ASSETS", not_found_handling: "single-page-application" } };
