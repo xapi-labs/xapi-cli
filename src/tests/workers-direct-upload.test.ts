@@ -143,14 +143,14 @@ describe('Worker direct upload with real HTTP channels',()=>{
       expect(f.calls.map(call=>call.method)).toEqual(['POST']);
     });
   }
-  it.each([128,129,257])('uploads %s unique blobs across full authorization pages, including duplicate paths and zero bytes',async count=>{
-    const modules=Array.from({length:count},(_,i)=>({path:`module-${i}.mjs`,content:i===0?'':`export const value=${i};`,encoding:'utf8' as const,contentType:'application/javascript+module' as const}));
+  it.each([128,129,257,502])('uploads %s unique blobs across full authorization pages, including duplicate paths and zero bytes',async count=>{
+    const modules=Array.from({length:count},(_,i)=>({path:`module-${i}.mjs`,content:i===0?'':`export const value=${i};`+(count===502&&i===127?'/*'+'x'.repeat(8*1024*1024)+'*/':''),encoding:'utf8' as const,contentType:'application/javascript+module' as const}));
     modules.push({...modules[0],path:'duplicate-empty.mjs'},{...modules[1],path:'duplicate-content.mjs'});
     const requestInput={idempotencyKey:'multipage-normal',bundle:{version:1 as const,mainModule:'module-1.mjs',modules}};
     const f=await recoveryFixture('normal',requestInput);
     expect(await nativeWorkerUpload(requestInput,f.apiUrl,headers)).toEqual(f.artifact);
     expect(f.calls.put).toBe(count);expect(f.calls.confirm).toBe(1);expect(f.calls.status).toBe(0);
-    expect(f.calls.pages).toEqual(count>256?[128,256]:count>128?[128]:[]);
+    expect(f.calls.pages).toEqual(count>384?[128,256,384]:count>256?[128,256]:count>128?[128]:[]);
   },30_000);
   it('polls durable confirmation without resending PUT or confirmation',async()=>{
     const f=await recoveryFixture('async-confirm');
@@ -235,6 +235,21 @@ describe('Worker direct upload with real HTTP channels',()=>{
   it.each(['reject','redirect'] as const)('does not retry an object %s or follow redirects',async mode=>{
     const f=await fixture(mode);await expect(uploadDirectWorkerArtifact(input,f.apiUrl,headers)).rejects.toThrow('Worker object upload failed');
     expect(f.calls.length).toBe(2);expect(f.calls[1].key).toBeUndefined();
+  });
+  it('exposes the upload ID before PUT and preserves safe object diagnostics without claiming backend status',async()=>{
+    const f=await fixture('reject');const messages:string[]=[];
+    let advertisedBeforePut=false;
+    const failure=await uploadDirectWorkerArtifact(input,f.apiUrl,headers,5000,undefined,message=>{
+      messages.push(message);if(message.includes('upload ID upload-1'))advertisedBeforePut=!f.calls.some(call=>call.method==='PUT');
+    }).catch(error=>error);
+    expect(advertisedBeforePut).toBe(true);
+    expect(failure.recovery).toMatchObject({errorCode:'worker_artifact_object_upload_failed',uploadId:'upload-1',
+      failureType:'http_error',httpStatus:403,objectSizeBytes:bytes.length,bodySentBytes:bytes.length});
+    expect(failure.recovery.next).toContain('workers upload-status');
+    expect(failure.recovery.status).toBeUndefined();
+    const publicOutput=JSON.stringify({messages,recovery:failure.recovery,message:failure.message});
+    for(const value of ['private-api-key','x-amz-checksum','http://','authorization'])expect(publicOutput).not.toContain(value);
+    expect(f.calls.map(call=>call.method)).toEqual(['POST','PUT']);
   });
   it('does not replay a lost confirmation',async()=>{
     const f=await fixture('lost-confirm');await expect(uploadDirectWorkerArtifact(input,f.apiUrl,headers)).rejects.toThrow();

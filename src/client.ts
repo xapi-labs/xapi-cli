@@ -300,6 +300,25 @@ export function createArtifactControlSession() {
 
 /** A temporary object channel carries bytes and checksum only, never API keys.
  * Its URL is validated by the Worker upload caller; errors never print it. */
+export class WorkerObjectUploadError extends Error {
+  constructor(public readonly diagnostic: {
+    failureType: 'idle_timeout' | 'transport_error' | 'http_error';
+    code?: string;
+    httpStatus?: number;
+    phase: 'queued_or_connecting' | 'sending_body' | 'awaiting_response' | 'receiving_response';
+    objectSizeBytes: number;
+    bodySentBytes: number;
+    elapsedMs: number;
+    idleMs: number;
+  }) {
+    super('Worker object upload failed' +
+      (diagnostic.httpStatus !== undefined ? ` (HTTP ${diagnostic.httpStatus})` : '') +
+      ` (${diagnostic.failureType}, ${diagnostic.phase}, ${diagnostic.objectSizeBytes} bytes)` +
+      '; no deployment was started');
+    this.name = 'WorkerObjectUploadError';
+  }
+}
+
 export function createArtifactUploadTransport() {
   // One pool per upload session; per-request deadlines stay independent.
   // A stalled object cannot have its deadline extended by another active PUT.
@@ -320,15 +339,22 @@ export function createArtifactUploadTransport() {
       if (signal.aborted) abort();
       else signal.addEventListener('abort', abort, { once: true });
       let finished = false;
+      let timedOut = false;
+      let phase: WorkerObjectUploadError['diagnostic']['phase'] = 'queued_or_connecting';
+      let bodySentBytes = 0;
+      const startedAt = performance.now();
+      let lastProgressAt = startedAt;
+      const expire = () => { timedOut = true; controller.abort(); };
       let timer = requestDeadline(
-        () => controller.abort(),
+        expire,
         transferIdleTimeoutMs(),
       );
       const progress = () => {
         if (finished || controller.signal.aborted) return;
+        lastProgressAt = performance.now();
         timer.dispose();
         timer = requestDeadline(
-          () => controller.abort(),
+          expire,
           transferIdleTimeoutMs(),
         );
       };
@@ -344,6 +370,11 @@ export function createArtifactUploadTransport() {
         const monitored = new Proxy(handler, {
           get(target, key) {
             const value = Reflect.get(target, key);
+            if (key === 'onConnect' || key === 'onRequestSent')
+              return (...args: any[]) => {
+                phase = key === 'onConnect' ? 'sending_body' : 'awaiting_response';
+                return typeof value === 'function' ? value.apply(target, args) : undefined;
+              };
             if (
               [
                 'onBodySent',
@@ -353,6 +384,10 @@ export function createArtifactUploadTransport() {
               ].includes(String(key))
             )
               return (...args: any[]) => {
+                if (key === 'onBodySent') {
+                  phase = 'sending_body';
+                  bodySentBytes += args[0]?.byteLength || 0;
+                } else phase = 'receiving_response';
                 progress();
                 return typeof value === 'function'
                   ? value.apply(target, args)
@@ -377,9 +412,9 @@ export function createArtifactUploadTransport() {
         } as any);
         if (!response.ok) {
           await response.body?.cancel();
-          throw new Error(
-            `Worker object upload failed (HTTP ${response.status})`,
-          );
+          throw new WorkerObjectUploadError({failureType: 'http_error', httpStatus: response.status,
+            phase, objectSizeBytes: bytes.length, bodySentBytes,
+            elapsedMs: Math.round(performance.now() - startedAt), idleMs: Math.round(performance.now() - lastProgressAt)});
         }
         await response.arrayBuffer();
       } catch (error) {
@@ -387,22 +422,16 @@ export function createArtifactUploadTransport() {
           throw signal.reason instanceof Error
             ? signal.reason
             : new Error('Worker upload cancelled');
-        if (
-          error instanceof Error &&
-          /^Worker object upload failed/.test(error.message)
-        )
+        if (error instanceof WorkerObjectUploadError)
           throw error;
         // Never include a signed URL or raw transport message in the public error.
         const code = (error as any)?.cause?.code;
         const safeCode =
           typeof code === 'string' && /^[A-Z0-9_]{1,64}$/.test(code)
-            ? ` (${code})`
-            : '';
-        throw new Error(
-          'Worker object upload failed or stalled' +
-            safeCode +
-            '; no deployment was started',
-        );
+            ? code : undefined;
+        throw new WorkerObjectUploadError({failureType: timedOut ? 'idle_timeout' : 'transport_error',
+          ...(safeCode ? {code: safeCode} : {}), phase, objectSizeBytes: bytes.length, bodySentBytes,
+          elapsedMs: Math.round(performance.now() - startedAt), idleMs: Math.round(performance.now() - lastProgressAt)});
       } finally {
         finished = true;
         timer.dispose();

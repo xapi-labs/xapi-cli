@@ -231,6 +231,32 @@ function fakePlatform(
 }
 
 describe("workers promote", () => {
+  test('keeps supported production native fields expressible without a new build or workflow',async()=>{
+    const root=fixture(),path=join(root,'wrangler.jsonc'),config=JSON.parse(readFileSync(path,'utf8'));
+    const metadata={placement:{mode:'off'},limits:{cpu_ms:50},logpush:false,keep_assets:false,tags:['owner']};
+    Object.assign(config.env.production,metadata);writeFileSync(path,JSON.stringify(config));
+    const platform=fakePlatform(),requests:Array<Parameters<PromotionClient['deployWorker']>[2]>=[];
+    const deploy=platform.client.deployWorker;
+    platform.client.deployWorker=async(api,id,request)=>{requests.push(request);return deploy(api,id,request);};
+    await promoteWorkerProject({cwd:root,to:'production',clientOptions:{apiHost:'localhost:3003',apiKey:'test'},
+      client:platform.client,confirm:async()=>true,sleep:async()=>undefined,
+      fetchPublic:(async()=>Response.json({ok:true})) as unknown as typeof fetch});
+    expect(requests[0].nativeMetadata).toEqual(metadata);
+    expect(platform.calls.deploy).toBe(1);
+  });
+  test.each(['future_option','services'])("rejects unrepresentable production %s before clearing metadata or making writes",async field=>{
+    const root=fixture(),path=join(root,'wrangler.jsonc');
+    const config=JSON.parse(readFileSync(path,'utf8'));
+    config.env.production[field]=field==='services'?[{binding:'FOREIGN',service:'another-account'}]:{enabled:true};
+    writeFileSync(path,JSON.stringify(config));
+    const platform=fakePlatform();
+    const options={cwd:root,to:'production' as const,nonInteractive:true,
+      clientOptions:{apiHost:'localhost:3003',apiKey:'test'},client:platform.client};
+    await expect(createWorkerPromotionPlan(options)).rejects.toMatchObject({recovery:{
+      errorCode:'worker_production_configuration_unrepresentable',fields:[field],remoteChangesApplied:false}});
+    await expect(promoteWorkerProject(options)).rejects.toThrow('production Wrangler configuration');
+    expect(platform.calls).toEqual({createResource:0,deploy:0,health:0});
+  });
   test.each([
     { artifactId: "artifact-latest", mediaType: "application/vnd.xapi.worker-bundle.v1+json", bundle: true },
     { artifactId: "artifact-older", mediaType: "application/vnd.xapi.worker-bundle.v2+json", bundle: true },

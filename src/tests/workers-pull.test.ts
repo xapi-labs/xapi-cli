@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os';
 import {basename,join} from 'node:path';
 import {initWorkerProject} from '../workers-init.ts';
 import {pullWorkerDeploymentConfiguration} from '../workers-pull.ts';
+import {loadWorkerProject,workerEnvironmentContainers} from '../workers-project.ts';
 const roots:string[]=[];
 afterEach(()=>{for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
 const options={apiHost:'localhost:3000',apiKey:'test'};
@@ -18,6 +19,30 @@ function fixture(){const parent=mkdtempSync(join(tmpdir(),'worker-pull-'));roots
   return {root,wrangler,source,remote};
 }
 describe('deployment configuration pull',()=>{
+  it('compares effective environment Container clearing, image and rollout overrides',async()=>{
+    const f=fixture(),path=join(f.root,'xapi.worker.json');
+    const config=JSON.parse(readFileSync(path,'utf8'));
+    config.containers=[{name:'app',className:'AppContainer',image:'docker.io/library/nginx:alpine'}];
+    for(const env of ['preview','production'])config.environments[env].resources=[{type:'durable_object',bindingName:'APP',className:'AppContainer'}];
+    const selected=[{...config.containers[0],image:'docker.io/library/nginx:stable',rolloutActiveGracePeriod:30}];
+    for(const override of [undefined,[],selected]) {
+      config.environments.preview.containers=override;writeFileSync(path,JSON.stringify(config));
+      const effective=workerEnvironmentContainers(loadWorkerProject(f.root).config,'preview');
+      const base={cwd:f.root,environment:'preview' as const,clientOptions:options};
+      const matching=await pullWorkerDeploymentConfiguration({...base,client:async()=>({...f.remote,
+        configuration:{...f.remote.configuration,containers:effective}})});
+      expect(matching.differences.some((difference:any)=>difference.field==='containers')).toBe(false);
+      const changed=await pullWorkerDeploymentConfiguration({...base,client:async()=>({...f.remote,
+        configuration:{...f.remote.configuration,containers:override===undefined?selected:config.containers}})});
+      expect(changed.differences).toContainEqual({field:'containers',local:effective,
+        remote:override===undefined?selected:config.containers});
+    }
+    delete config.containers;config.environments.preview.containers=selected;
+    delete config.environments.production.containers;writeFileSync(path,JSON.stringify(config));
+    const result=await pullWorkerDeploymentConfiguration({cwd:f.root,environment:'production',clientOptions:options,
+      client:async()=>({...f.remote,environment:'production',configuration:{...f.remote.configuration,containers:selected}})});
+    expect(result.differences).toContainEqual({field:'containers',local:[],remote:selected});
+  });
   it('compares required Secret names from both project and Wrangler while preserving the complete snapshot',async()=>{
     const f=fixture();const path=join(f.root,'xapi.worker.json');const config=JSON.parse(readFileSync(path,'utf8'));
     config.environments.preview.secrets=['PROJECT_KEY','SHARED_KEY'];writeFileSync(path,JSON.stringify(config));

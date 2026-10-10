@@ -6,6 +6,7 @@ import { relative, resolve, sep } from "node:path";
 import { XAPI_ACTION_HOST, XAPI_API_HOST, getConfig, requireApiKey } from "../config.ts";
 import { err, getFormat, output, type OutputFormat } from "../format.ts";
 import * as client from "../workers-client.ts";
+import {WorkerArtifactObjectUploadError} from '../workers-direct-upload.ts';
 import {
   initWorkerProject,
   type WorkerStarterTemplate,
@@ -1109,12 +1110,15 @@ export async function workersCommand(
         if (error instanceof WorkerArtifactError) err(error.message);
         throw error;
       }
-      output(
-        await client.uploadWorkerArtifact(options(), id, {
+      try {
+        output(await client.uploadWorkerArtifact(options(), id, {
           ...artifact.upload,
           idempotencyKey: flags["idempotency-key"] || randomUUID(),
-        }),
-      );
+        }));
+      } catch (error) {
+        if (error instanceof WorkerArtifactObjectUploadError) err(error.message, error.recovery);
+        throw error;
+      }
       return;
     }
     case "upload-status":

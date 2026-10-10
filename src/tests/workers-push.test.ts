@@ -10,7 +10,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HttpError, RequestTimeoutError } from "../client.ts";
+import { HttpError, RequestTimeoutError, WorkerObjectUploadError } from "../client.ts";
+import {WorkerArtifactObjectUploadError} from '../workers-direct-upload.ts';
 import {
   type PushClient,
   WorkerPushError,
@@ -291,6 +292,23 @@ function fakePlatform(
 }
 
 describe("workers push preview", () => {
+  test('preserves object upload diagnostics in push without replaying the upload or deploying',async()=>{
+    const root=fixture({linked:true}),platform=fakePlatform({exists:true});
+    platform.client.uploadWorkerArtifact=async()=>{
+      platform.calls.uploadArtifact++;
+      throw new WorkerArtifactObjectUploadError(workerId,'safe-owned-upload',new WorkerObjectUploadError({
+        failureType:'transport_error',code:'UND_ERR_SOCKET',phase:'awaiting_response',objectSizeBytes:1024,
+        bodySentBytes:1024,elapsedMs:250,idleMs:50}));
+    };
+    const failure=await pushWorkerProject({cwd:root,environment:'preview',clientOptions:{apiHost:'localhost:3003',apiKey:'test-key'},
+      client:platform.client,confirm:async()=>true,runBuild:async()=>{
+        mkdirSync(join(root,'dist'),{recursive:true});writeFileSync(join(root,'dist/worker.mjs'),'export default {fetch(){return new Response("ok")}}');
+      },sleep:async()=>undefined}).catch(error=>error);
+    expect(failure).toBeInstanceOf(WorkerPushError);
+    expect(failure.recovery).toMatchObject({uploadId:'safe-owned-upload',failureType:'transport_error',
+      code:'UND_ERR_SOCKET',objectSizeBytes:1024,bodySentBytes:1024,resourcesPreserved:true});
+    expect(platform.calls.uploadArtifact).toBe(1);expect(platform.calls.deploy).toBe(0);
+  });
   test("ordinary push after a matching successful rollback retains the current activation without a deployment write", async () => {
     const root = fixture({ resources: [{ type: "kv_namespace", bindingName: "STATE" }] });
     const platform = fakePlatform();

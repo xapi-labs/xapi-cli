@@ -69,7 +69,7 @@ export async function nativeWorkerUpload(input:WorkerArtifactUploadRequest,apiUr
         String(recovery.status),String(recovery.statusEndpoint),original);
     }
     if(error.name==='HttpError'&&error.status!==undefined)throw new HttpError(error.status,error.message);
-    throw Object.assign(new Error(error.message),{name:error.name});
+    throw Object.assign(new Error(error.message),{name:error.name,recovery:error.recovery});
   }
   return result.value;
 }

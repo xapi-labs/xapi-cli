@@ -414,6 +414,22 @@ export async function createWorkerPromotionPlan(
     );
   }
   const compatibility = readWranglerDeploymentSettings(project, "production", text(artifact.mediaType));
+  // Promotion reuses the preview Artifact; it cannot supply native output from
+  // a production build for configuration outside the existing desired state.
+  if (compatibility.nativeBundleRequired?.length) {
+    throw new WorkerPushError(
+      'Cannot represent production Wrangler configuration when promoting the preview Artifact: ' +
+        compatibility.nativeBundleRequired.join(', '),
+      {
+        errorCode: 'worker_production_configuration_unrepresentable',
+        fields: compatibility.nativeBundleRequired,
+        remoteChangesApplied: false,
+        supportedNativeFields: ['placement', 'limits', 'logpush', 'observability',
+          'cache_options', 'cache', 'keep_assets', 'keep_vars', 'tags', 'version_metadata', 'tail_consumers'],
+        next: 'Use xapi workers pull --env production to compare the active snapshot; review the listed fields and supported native mappings before promotion',
+      },
+    );
+  }
   const checkSecretBindings = (artifactBindings: string[] = []) => {
     const collision = conflictingWorkerSecretBinding(compatibility.requiredSecrets || [], [
       ...project.config.environments.production.resources.map(resource => resource.bindingName),

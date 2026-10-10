@@ -3,6 +3,7 @@ import {
   isRetryableRequestError,
   createArtifactControlSession,
   createArtifactUploadTransport,
+  WorkerObjectUploadError,
 } from './client.ts';
 import {
   workerArtifactDirectUpload,
@@ -29,6 +30,17 @@ type UploadStatus = {
 };
 const CONFIRM_STATUS_ATTEMPTS = 5;
 const CONFIRM_STATUS_INTERVAL_MS = 1_000;
+
+export class WorkerArtifactObjectUploadError extends Error {
+  readonly recovery: Record<string, unknown>;
+  constructor(workerId: string, uploadId: string, failure: WorkerObjectUploadError) {
+    const next = `xapi workers upload-status ${JSON.stringify(workerId)} --upload ${uploadId}`;
+    super(failure.message + `; upload ID ${uploadId}; query with ${next}`);
+    this.name = 'WorkerArtifactObjectUploadError';
+    this.recovery = {errorCode: 'worker_artifact_object_upload_failed', uploadId,
+      ...failure.diagnostic, next};
+  }
+}
 
 // Presigned object headers may include provider extensions. Reject credentials
 // and routing/framing overrides rather than allowlisting signing headers.
@@ -228,13 +240,13 @@ export async function uploadDirectWorkerArtifact(
       0,
     );
     const uploadId = page.uploadId;
-    if (typeof uploadId !== 'string' || !uploadId)
+    if (typeof uploadId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(uploadId))
       throw new Error('Invalid Worker upload session');
     const sent = new Set<string>(),
       authorizedHashes = new Set<string>();
     let cursor = 0;
     let uploadedBytes = 0;
-    progress(`Uploading ${prepared.files.size} files to R2`, true);
+    progress(`Uploading ${prepared.files.size} files to R2; upload ID ${uploadId}; query with xapi workers upload-status ${JSON.stringify(workerId)} --upload ${uploadId}`, true);
     while (true) {
       if (page.uploadId !== uploadId || !Array.isArray(page.files))
         throw new Error('Invalid Worker upload authorization');
@@ -285,8 +297,13 @@ export async function uploadDirectWorkerArtifact(
                 `Uploaded ${sent.size}/${prepared.files.size} files (${uploadedBytes} bytes)`,
               );
             } catch (error) {
-              failed = error;
-              controller.abort(error);
+              // Preserve the first object failure; sibling cancellation does not
+              // identify another failed object or imply anything about R2 state.
+              if (!failed) {
+                failed = error instanceof WorkerObjectUploadError
+                  ? new WorkerArtifactObjectUploadError(workerId, uploadId, error) : error;
+                controller.abort(failed);
+              }
             }
           }
         }),

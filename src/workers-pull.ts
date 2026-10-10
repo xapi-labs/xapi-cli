@@ -1,7 +1,7 @@
 import {existsSync,lstatSync,readFileSync,realpathSync,renameSync,writeFileSync,unlinkSync} from 'node:fs';
 import {basename,dirname,join,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {loadWorkerProject,resolveWorkerProjectPath} from './workers-project.ts';
+import {loadWorkerProject,resolveWorkerProjectPath,workerEnvironmentContainers} from './workers-project.ts';
 import {readWranglerDeploymentSettings} from './workers-wrangler-import.ts';
 import {workerDeploymentConfiguration,type WorkersClientOptions} from './workers-client.ts';
 
@@ -15,6 +15,7 @@ const comparable=(field:string,value:unknown):unknown=>{
   if(field==='requiredSecrets')return Array.isArray(value)&&value.every(item=>typeof item==='string')
     ? [...new Set(value)].sort() : value??[];
   if(field==='queueBindingAliases'||field==='nativeMetadata')return value??{};
+  if(field==='containers')return value??[];
   if(field!=='variables')return value;
   if(value==null)return {};
   if(typeof value!=='object'||Array.isArray(value))return value;
@@ -37,7 +38,8 @@ export async function pullWorkerDeploymentConfiguration(options:{cwd?:string;con
   if(!remote||remote.version!==1)throw new Error('Invalid Worker deployment snapshot');
   const local=readWranglerDeploymentSettings(project,options.environment);
   const comparison={compatibilityDate:local.compatibilityDate,compatibilityFlags:local.compatibilityFlags,
-    requiredSecrets:local.requiredSecrets,variables:local.variables,nativeMetadata:local.nativeMetadata,queueBindingAliases:local.queueBindingAliases};
+    requiredSecrets:local.requiredSecrets,variables:local.variables,nativeMetadata:local.nativeMetadata,queueBindingAliases:local.queueBindingAliases,
+    containers:workerEnvironmentContainers(project.config,options.environment)};
   const differences=Object.entries(comparison).filter(([key,value])=>
     canonical(comparable(key,value))!==canonical(comparable(key,remote[key])))
     .map(([field,local])=>({field,local:local??null,remote:remote[field]??null}));

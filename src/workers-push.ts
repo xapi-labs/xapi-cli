@@ -29,7 +29,7 @@ import {
   type WorkerDeploymentPlan,
 } from "./workers-plan.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
-import { WorkerArtifactConfirmationPendingError } from "./workers-direct-upload.ts";
+import { WorkerArtifactConfirmationPendingError, WorkerArtifactObjectUploadError } from "./workers-direct-upload.ts";
 import {
   remoteWorkerResourceState,
   resourceReadyForDeployment,
@@ -642,6 +642,8 @@ async function ensureArtifact(
       "Artifact",
     ));
   } catch (error) {
+    if (error instanceof WorkerArtifactObjectUploadError)
+      throw new WorkerPushError(error.message, {workerId, ...error.recovery});
     if (error instanceof WorkerArtifactConfirmationPendingError) {
       const reconciled = await find();
       if (reconciled) return reconciled;
@@ -675,6 +677,8 @@ async function ensureArtifact(
         "Artifact",
       ));
     } catch (retryError) {
+      if (retryError instanceof WorkerArtifactObjectUploadError)
+        throw new WorkerPushError(retryError.message, {workerId, ...retryError.recovery});
       if (retryError instanceof WorkerArtifactConfirmationPendingError) {
         const reconciled = await find();
         if (reconciled) return reconciled;
