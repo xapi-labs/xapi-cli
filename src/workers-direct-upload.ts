@@ -30,6 +30,110 @@ type UploadStatus = {
 };
 const CONFIRM_STATUS_ATTEMPTS = 5;
 const CONFIRM_STATUS_INTERVAL_MS = 1_000;
+const OBJECT_UPLOAD_ATTEMPTS = 3;
+class WorkerUploadDeadlineError extends Error {}
+const RETRYABLE_OBJECT_CODES = new Set([
+  'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT',
+  'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'ECONNABORTED', 'ECONNREFUSED', 'EAI_AGAIN',
+  'ENETUNREACH', 'EHOSTUNREACH',
+]);
+
+function objectAuthorizationExpiry(target: URL, pageExpiry: number): number {
+  const date = target.searchParams.get('X-Amz-Date');
+  const duration = target.searchParams.get('X-Amz-Expires');
+  if (date === null && duration === null) return pageExpiry;
+  if (!date || !duration || !/^\d{8}T\d{6}Z$/.test(date) || !/^\d+$/.test(duration) ||
+      target.searchParams.getAll('X-Amz-Date').length !== 1 ||
+      target.searchParams.getAll('X-Amz-Expires').length !== 1)
+    throw new Error('Invalid Worker object authorization expiry');
+  const timestamp = Date.parse(`${date.slice(0,4)}-${date.slice(4,6)}-${date.slice(6,8)}T${date.slice(9,11)}:${date.slice(11,13)}:${date.slice(13,15)}Z`);
+  const seconds = Number(duration);
+  if (!Number.isFinite(timestamp) || !Number.isSafeInteger(seconds) || seconds <= 0 ||
+      new Date(timestamp).toISOString().replace(/[-:]/g, '').replace('.000', '') !== date ||
+      !Number.isSafeInteger(timestamp + seconds * 1000))
+    throw new Error('Invalid Worker object authorization expiry');
+  return Math.min(pageExpiry, timestamp + seconds * 1000);
+}
+
+function waitForObjectRetry(delayMs: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', abort);
+      resolve();
+    }, delayMs);
+    signal.addEventListener('abort', abort, {once: true});
+  });
+}
+
+/** Retry only the same authorized content, in the same scheduler slot. */
+async function uploadAuthorizedObject(
+  transport: ReturnType<typeof createArtifactUploadTransport>,
+  url: string, bytes: Uint8Array, headers: Record<string, string>,
+  expiresAt: number, uploadDeadline: number, signal: AbortSignal,
+  progress: (message: string, force?: boolean) => void,
+) {
+  const startedAt = Date.now();
+  const deadline = Math.min(expiresAt, uploadDeadline);
+  const controller = new AbortController();
+  let attemptCount = 0;
+  let firstFailure: WorkerObjectUploadError['diagnostic'] | undefined;
+  const boundaryError = () => new WorkerObjectUploadError({
+    failureType: expiresAt <= uploadDeadline ? 'authorization_expired' : 'deadline_exceeded',
+    phase: 'queued_or_connecting', objectSizeBytes: bytes.length, bodySentBytes: 0,
+    elapsedMs: Date.now() - startedAt, idleMs: 0,
+  });
+  const cancel = () => controller.abort(signal.reason instanceof WorkerUploadDeadlineError ? boundaryError() : signal.reason);
+  if (signal.aborted) cancel();
+  else signal.addEventListener('abort', cancel, {once: true});
+  const timer = setTimeout(() => controller.abort(boundaryError()), Math.max(0, deadline - Date.now()));
+  const bounded = controller.signal;
+  const check = () => {
+    bounded.throwIfAborted();
+    if (Date.now() >= deadline) throw boundaryError();
+  };
+  try {
+    for (let attempt = 1; attempt <= OBJECT_UPLOAD_ATTEMPTS; attempt++) {
+      check();
+      attemptCount = attempt;
+      try {
+        // upload constructs a fresh bounded Readable on every invocation, using
+        // the original owned bytes and checksum headers without a bundle copy.
+        await transport.upload(url, bytes, headers, bounded);
+        check();
+        if (attempt > 1) progress(`Worker object recovered after ${attempt}/${OBJECT_UPLOAD_ATTEMPTS} attempts (${bytes.length} bytes)`, true);
+        return;
+      } catch (error) {
+        if (bounded.aborted && !(error instanceof WorkerObjectUploadError)) bounded.throwIfAborted();
+        if (!(error instanceof WorkerObjectUploadError)) throw error;
+        firstFailure ??= error.diagnostic;
+        const failure = error.diagnostic;
+        const retryable = failure.failureType === 'idle_timeout' ||
+          (failure.failureType === 'transport_error' && RETRYABLE_OBJECT_CODES.has(failure.code || '')) ||
+          (failure.failureType === 'http_error' && [408,429,500,502,503,504].includes(failure.httpStatus || 0));
+        if (!retryable || attempt === OBJECT_UPLOAD_ATTEMPTS) throw error;
+        check();
+        const delayMs = Math.max(500 * 2 ** (attempt - 1) + Math.floor(Math.random() * 250), failure.retryAfterMs ?? 0);
+        if (delayMs >= deadline - Date.now()) throw boundaryError();
+        progress(`Retrying Worker object (${bytes.length} bytes): attempt ${attempt + 1}/${OBJECT_UPLOAD_ATTEMPTS}; ${failure.code || failure.failureType}${failure.httpStatus !== undefined ? ` HTTP ${failure.httpStatus}` : ''}; delay ${delayMs}ms; elapsed ${Date.now() - startedAt}ms`, true);
+        await waitForObjectRetry(delayMs, bounded);
+      }
+    }
+  } catch (error) {
+    if (error instanceof WorkerObjectUploadError) {
+      const first = firstFailure;
+      throw new WorkerObjectUploadError({...error.diagnostic, attemptCount,
+        ...(first ? {firstFailure: {failureType: first.failureType,
+          ...(first.code ? {code: first.code} : {}),
+          ...(first.httpStatus !== undefined ? {httpStatus: first.httpStatus} : {})}} : {})});
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener('abort', cancel);
+  }
+}
 
 export class WorkerArtifactObjectUploadError extends Error {
   readonly recovery: Record<string, unknown>;
@@ -121,6 +225,7 @@ export async function uploadDirectWorkerArtifact(
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
     throw new Error('Upload timeout must be positive');
   const prepared = workerArtifactDirectUpload(input);
+  const uploadDeadline = Date.now() + timeoutMs;
   const controller = new AbortController();
   const cancel = () => controller.abort(callerSignal?.reason);
   if (callerSignal?.aborted) cancel();
@@ -128,7 +233,7 @@ export async function uploadDirectWorkerArtifact(
   let timer = setTimeout(
     () =>
       controller.abort(
-        new Error(
+        new WorkerUploadDeadlineError(
           'Worker upload time limit reached; no deployment was started',
         ),
       ),
@@ -245,11 +350,15 @@ export async function uploadDirectWorkerArtifact(
     const sent = new Set<string>(),
       authorizedHashes = new Set<string>();
     let cursor = 0;
+    let sessionExpiresAt = Infinity;
     let uploadedBytes = 0;
     progress(`Uploading ${prepared.files.size} files to R2; upload ID ${uploadId}; query with xapi workers upload-status ${JSON.stringify(workerId)} --upload ${uploadId}`, true);
     while (true) {
       if (page.uploadId !== uploadId || !Array.isArray(page.files))
         throw new Error('Invalid Worker upload authorization');
+      const pageExpiry = typeof page.expiresAt === 'string' ? Date.parse(page.expiresAt) : NaN;
+      if (!Number.isFinite(pageExpiry)) throw new Error('Invalid Worker upload authorization expiry');
+      sessionExpiresAt = Math.min(sessionExpiresAt, pageExpiry);
       const authorized = page.files.map((item) => {
         signal.throwIfAborted();
         const bytes = prepared.files.get(item.sha256);
@@ -276,20 +385,25 @@ export async function uploadDirectWorkerArtifact(
         const checksum = Buffer.from(item.sha256, 'hex').toString('base64');
         const uploadHeaders = objectUploadHeaders(item.headers, checksum);
         authorizedHashes.add(item.sha256);
-        return { item, bytes, uploadHeaders };
+        const expiresAt = objectAuthorizationExpiry(target, sessionExpiresAt);
+        return { item, bytes, uploadHeaders, expiresAt };
       });
       let next = 0,
         failed: unknown;
       await Promise.all(
         Array.from({ length: Math.min(8, authorized.length) }, async () => {
           while (next < authorized.length && !failed) {
-            const { item, bytes, uploadHeaders } = authorized[next++];
+            const { item, bytes, uploadHeaders, expiresAt } = authorized[next++];
             try {
-              await objectTransport.upload(
+              await uploadAuthorizedObject(
+                objectTransport,
                 item.url,
                 bytes,
                 uploadHeaders,
+                expiresAt,
+                uploadDeadline,
                 signal,
+                progress,
               );
               sent.add(item.sha256);
               uploadedBytes += bytes.length;
