@@ -456,40 +456,67 @@ export async function createWorkerPromotionPlan(
   const metadata = compatibility.nativeMetadata;
   const resetsMetadata = metadata !== undefined && !Object.keys(metadata).length;
   let bindingNames = declaration.bindingNames;
-  if (bindingNames.length && (resetsMetadata || metadata?.version_metadata !== undefined)) {
-    // The existing immutable Artifact endpoint can prove that a bundle has no
-    // assets. In that case its only built-in binding is version metadata. Never
-    // infer a historical Artifact's binding types from today's local Wrangler.
-    const readArtifact = api.getWorkerArtifact;
-    if (!readArtifact) throw new WorkerPushError('Cannot read immutable Artifact binding metadata', {
-      remoteChangesApplied: false,
-    });
-    const details = record(await readArtifact.call(api, options.clientOptions, workerId, artifactId), 'Artifact');
-    if (details.id !== artifactId || details.contentSha256 !== contentSha256 ||
-        !Number.isInteger(details.assetCount) || Number(details.assetCount) < 0) {
-      throw new WorkerPushError('xAPI returned missing or mismatched Artifact asset metadata', {
+  if (bindingNames.length && metadata !== undefined) {
+    const provider = previewDeployment.providerResult as UnknownRecord | undefined;
+    const snapshot = provider?.deploymentSnapshot as UnknownRecord | undefined;
+    const native = snapshot?.nativeMetadata as UnknownRecord | undefined;
+    const version = native?.version_metadata as { binding?: unknown } | undefined;
+    // A confirmed version binding cannot collide with immutable assets. If it
+    // matches an Artifact name in this exact snapshot, its binding kind is known.
+    let artifactVersion: string | undefined;
+    if (snapshot?.version === 1 && snapshot.artifactId === artifactId &&
+        snapshot.sourceSha256 === contentSha256 && typeof version?.binding === 'string' &&
+        bindingNames.includes(version.binding)) artifactVersion = version.binding;
+    if (!artifactVersion) {
+      const readArtifact = api.getWorkerArtifact;
+      if (!readArtifact) throw new WorkerPushError('Cannot read immutable Artifact binding metadata', {
         remoteChangesApplied: false,
       });
-    }
-    if (details.assetCount === 0) bindingNames = [];
-    // With assets the current name-only API cannot distinguish the immutable
-    // assets binding from a cleared/replaced version binding; keep both safe.
-    else {
-      const requestedNames = new Set([
-        ...(compatibility.requiredSecrets || []), ...Object.keys(compatibility.variables?.vars || {}),
-      ]);
-      const ambiguous = bindingNames.filter(name => requestedNames.has(name) &&
-        name !== (metadata?.version_metadata as { binding?: string } | undefined)?.binding);
-      if (ambiguous.length) throw new WorkerPushError(
-        'Cannot distinguish immutable assets from cleared or replaced version bindings: ' + ambiguous.join(', '), {
-          errorCode: 'worker_artifact_binding_metadata_unavailable',
-          artifactId, remoteChangesApplied: false,
-          next: 'Read the selected Artifact and its variable-configuration through the Workers API; promotion needs binding types to verify this collision',
+      const details = record(await readArtifact.call(api, options.clientOptions, workerId, artifactId), 'Artifact');
+      if (details.id !== artifactId || details.contentSha256 !== contentSha256 ||
+          !Number.isInteger(details.assetCount) || Number(details.assetCount) < 0 ||
+          (details.assetCount === 0 && bindingNames.length !== 1)) {
+        throw new WorkerPushError('xAPI returned missing or mismatched Artifact asset metadata', {
+          remoteChangesApplied: false,
         });
+      }
+      // The immutable query proves that a no-assets bundle has only its version
+      // binding. Never infer historical binding kinds from local Wrangler files.
+      if (details.assetCount === 0) artifactVersion = bindingNames[0];
+    }
+    const changesVersion = resetsMetadata || metadata.version_metadata !== undefined;
+    if (!changesVersion && artifactVersion) throw new WorkerPushError(
+      'Production native metadata cannot remove the selected Artifact version binding while applying other native settings', {
+        errorCode: 'worker_production_configuration_unrepresentable',
+        fields: ['version_metadata'], artifactId, remoteChangesApplied: false,
+        next: 'Inspect the selected Artifact and xapi workers pull --env production; the deployment API needs complete native metadata replacement to preserve this production intent',
+      });
+    if (changesVersion) {
+      if (artifactVersion) bindingNames = bindingNames.filter(name => name !== artifactVersion);
+      else {
+        // Without proof, an overlapping name might be immutable assets. Include
+        // the desired version name as well as Secrets/vars in this ambiguity.
+        const requestedNames = new Set([
+          ...(compatibility.requiredSecrets || []), ...Object.keys(compatibility.variables?.vars || {}),
+          ...((metadata.version_metadata as { binding?: string } | undefined)?.binding
+            ? [(metadata.version_metadata as { binding: string }).binding] : []),
+        ]);
+        const ambiguous = bindingNames.filter(name => requestedNames.has(name));
+        if (ambiguous.length) throw new WorkerPushError(
+          'Cannot distinguish immutable assets from cleared or replaced version bindings: ' + ambiguous.join(', '), {
+            errorCode: 'worker_artifact_binding_metadata_unavailable',
+            artifactId, remoteChangesApplied: false,
+            next: 'Read the selected Artifact and its variable-configuration through the Workers API; promotion needs binding types to verify this collision',
+          });
+      }
     }
   }
   if (metadata?.version_metadata !== undefined) {
-    bindingNames = [...new Set([...bindingNames, (metadata.version_metadata as { binding: string }).binding])];
+    const versionBinding = (metadata.version_metadata as { binding: string }).binding;
+    if (bindingNames.includes(versionBinding)) throw new WorkerPushError(`Duplicate Worker binding: ${versionBinding}`, {
+      remoteChangesApplied: false,
+    });
+    bindingNames = [...bindingNames, versionBinding];
   }
   checkSecretBindings(bindingNames);
   const checked = productionChecks(

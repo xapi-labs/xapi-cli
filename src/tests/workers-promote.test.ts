@@ -234,6 +234,65 @@ function fakePlatform(
 }
 
 describe("workers promote", () => {
+  test.each([true, false])('blocks a nonempty production override that cannot clear Artifact version metadata: snapshot=%s', async snapshotAvailable => {
+    const root = fixture();
+    writeFileSync(join(root, 'wrangler.jsonc'), JSON.stringify({ env: { production: { limits: { cpu_ms: 50 } } } }));
+    const platform = fakePlatform(), getWorker = platform.client.getWorker;
+    platform.client.getWorker = async (...args) => {
+      const worker = await getWorker(...args) as { artifacts: Array<Record<string, unknown>>, deployments: Array<Record<string, unknown>> };
+      return { ...worker, artifacts: worker.artifacts.map(artifact => ({ ...artifact,
+        mediaType: 'application/vnd.xapi.worker-bundle.v2+json' })),
+        deployments: worker.deployments.map(deployment => deployment.id === 'preview-latest' && snapshotAvailable ? {
+          ...deployment, providerResult: { deploymentSnapshot: { version: 1, artifactId: 'artifact-latest',
+            sourceSha256: 'a'.repeat(64), nativeMetadata: { version_metadata: { binding: 'PREVIEW_VERSION' } } } },
+        } : deployment) };
+    };
+    platform.client.getWorkerArtifactVariableConfiguration = async () => ({ artifactId: 'artifact-latest',
+      contentSha256: 'a'.repeat(64), keepBindings: [], variables: [], bindingNames: ['PREVIEW_VERSION'] });
+    platform.client.getWorkerArtifact = async () => ({ id: 'artifact-latest', contentSha256: 'a'.repeat(64), assetCount: 0 });
+    await expect(promoteWorkerProject({ cwd: root, to: 'production', nonInteractive: true,
+      clientOptions: { apiHost: 'localhost:3003', apiKey: 'test' }, client: platform.client }))
+      .rejects.toMatchObject({ recovery: { errorCode: 'worker_production_configuration_unrepresentable',
+        fields: ['version_metadata'], remoteChangesApplied: false } });
+    expect(platform.calls.createResource).toBe(0);
+    expect(platform.calls.deploy).toBe(0);
+  });
+
+  test.each([
+    { binding: 'ASSETS', snapshotAvailable: true, accepted: false },
+    { binding: 'ASSETS', snapshotAvailable: false, accepted: false },
+    { binding: 'RELEASE', snapshotAvailable: true, accepted: true },
+    { binding: 'RELEASE', snapshotAvailable: false, accepted: false },
+    { binding: 'NEW_VERSION', snapshotAvailable: false, accepted: true },
+  ])('checks production version bindings against immutable assets: $binding snapshot=$snapshotAvailable', async ({ binding, snapshotAvailable, accepted }) => {
+    const root = fixture();
+    writeFileSync(join(root, 'wrangler.jsonc'), JSON.stringify({ env: { production: { version_metadata: { binding } } } }));
+    const platform = fakePlatform(), getWorker = platform.client.getWorker;
+    platform.client.getWorker = async (...args) => {
+      const worker = await getWorker(...args) as { deployments: Array<Record<string, unknown>> };
+      return { ...worker, deployments: worker.deployments.map(deployment => deployment.id === 'preview-latest' && snapshotAvailable ? {
+        ...deployment, providerResult: { deploymentSnapshot: { version: 1, artifactId: 'artifact-latest',
+          sourceSha256: 'a'.repeat(64), nativeMetadata: { version_metadata: { binding: 'RELEASE' } } } },
+      } : deployment) };
+    };
+    platform.client.getWorkerArtifactVariableConfiguration = async () => ({ artifactId: 'artifact-latest',
+      contentSha256: 'a'.repeat(64), keepBindings: [], variables: [], bindingNames: ['ASSETS', 'RELEASE'] });
+    platform.client.getWorkerArtifact = async () => ({ id: 'artifact-latest', contentSha256: 'a'.repeat(64), assetCount: 1 });
+    const options = { cwd: root, to: 'production' as const, nonInteractive: true,
+      clientOptions: { apiHost: 'localhost:3003', apiKey: 'test' }, client: platform.client,
+      sleep: async () => undefined, fetchPublic: (async () => Response.json({ ok: true })) as unknown as typeof fetch };
+    if (accepted) {
+      const result = await promoteWorkerProject(options);
+      expect(result.plan.canPromote).toBe(true);
+      expect(platform.calls.deploy).toBe(1);
+    } else {
+      await expect(promoteWorkerProject(options)).rejects.toThrow(snapshotAvailable
+        ? 'Duplicate Worker binding: ASSETS' : 'Cannot distinguish immutable assets from cleared or replaced version bindings: ' + binding);
+      expect(platform.calls.deploy).toBe(0);
+      expect(platform.calls.createResource).toBe(0);
+    }
+  });
+
   test.each([
     { keep_vars: false, artifactKeep: ['json'], expected: 'REMOVE' },
     { keep_vars: true, artifactKeep: [], expected: 'RETAIN' },
@@ -318,6 +377,47 @@ describe("workers promote", () => {
       .rejects.toThrow('missing or mismatched Artifact asset metadata');
     expect(platform.calls.deploy).toBe(0);
     expect(platform.calls.createResource).toBe(0);
+  });
+
+  test.each([
+    { secret: 'RELEASE', matches: true, accepted: true },
+    { secret: 'ASSETS', matches: true, accepted: false },
+    { secret: 'RELEASE', matches: false, accepted: false },
+  ])('uses confirmed preview snapshot to distinguish assets/version bindings: $secret $matches', async ({ secret, matches, accepted }) => {
+    const root = fixture();
+    writeFileSync(join(root, 'wrangler.jsonc'), JSON.stringify({ env: { production: { secrets: { required: [secret] } } } }));
+    const platform = fakePlatform({ secrets: ['MODEL_KEY', secret] }), getWorker = platform.client.getWorker;
+    let artifactReads = 0;
+    platform.client.getWorkerArtifact = async () => {
+      artifactReads++;
+      return { id: 'artifact-latest', contentSha256: 'a'.repeat(64), assetCount: 1 };
+    };
+    platform.client.getWorker = async (...args) => {
+      const worker = await getWorker(...args) as { artifacts: Array<Record<string, unknown>>, deployments: Array<Record<string, unknown>> };
+      return { ...worker,
+        artifacts: worker.artifacts.map(artifact => ({ ...artifact, mediaType: 'application/vnd.xapi.worker-bundle.v2+json' })),
+        deployments: worker.deployments.map(deployment => deployment.id === 'preview-latest' ? { ...deployment,
+          providerResult: { deploymentSnapshot: { version: 1, artifactId: 'artifact-latest',
+            sourceSha256: (matches ? 'a' : 'b').repeat(64), nativeMetadata: { version_metadata: { binding: 'RELEASE' } } } },
+        } : deployment),
+      };
+    };
+    platform.client.getWorkerArtifactVariableConfiguration = async () => ({ artifactId: 'artifact-latest',
+      contentSha256: 'a'.repeat(64), keepBindings: [], variables: [], bindingNames: ['ASSETS', 'RELEASE'] });
+    const options = { cwd: root, to: 'production' as const, nonInteractive: true,
+      clientOptions: { apiHost: 'localhost:3003', apiKey: 'test' }, client: platform.client,
+      sleep: async () => undefined, fetchPublic: (async () => Response.json({ ok: true })) as unknown as typeof fetch };
+    if (accepted) {
+      const result = await promoteWorkerProject(options);
+      expect(result.plan.canPromote).toBe(true);
+      expect(platform.calls.deploy).toBe(1);
+    } else {
+      await expect(promoteWorkerProject(options)).rejects.toThrow(matches
+        ? 'Duplicate Worker binding: ASSETS' : 'Cannot distinguish immutable assets from cleared or replaced version bindings: RELEASE');
+      expect(platform.calls.deploy).toBe(0);
+      expect(platform.calls.createResource).toBe(0);
+    }
+    expect(artifactReads).toBe(matches ? 0 : 1);
   });
 
   test('required Secrets still conflict with an effective production version binding', async () => {
