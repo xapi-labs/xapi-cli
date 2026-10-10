@@ -24,7 +24,7 @@ async function run(scenario:string) {
   });
 }
 for(const scenario of ['healthy','lost-response','permanent-reset','idle-once','408','429-seconds','429-date','500','502','503','504',
-  'long-hint','long-hint-fit','403','redirect','cancel-body','cancel-response','cancel-backoff','deadline-backoff','invalid-expiry','expired',
+  'long-hint','long-hint-fit','overflow-hint','403','redirect','cancel-body','cancel-response','cancel-backoff','deadline-backoff','invalid-expiry','expired',
   'expiry-backoff','expiry-moving','signed-expired','signed-invalid','signed-moving'])
   it(`bounded object recovery over real Node HTTP: ${scenario}`,async()=>{
     const result=await run(scenario);expect(result.scenario).toBe(scenario);

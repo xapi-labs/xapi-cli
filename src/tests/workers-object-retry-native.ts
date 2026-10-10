@@ -74,13 +74,14 @@ const server=createServer(async(req,res)=>{
         res.writeHead(scenario==='403' ? 403 : 307, {location:'https://private.invalid/?secret=synthetic-private'});
         res.end('provider-secret synthetic-private');return;
       }
-      if(n===1 && ['408','429-seconds','429-date','500','502','503','504','long-hint','long-hint-fit'].includes(scenario)) {
-        const status=scenario.startsWith('429') ? 429 : scenario.startsWith('long-hint') ? 503 : Number(scenario);
+      if(n===1 && ['408','429-seconds','429-date','500','502','503','504','long-hint','long-hint-fit','overflow-hint'].includes(scenario)) {
+        const status=scenario.startsWith('429') ? 429 : scenario.startsWith('long-hint') || scenario==='overflow-hint' ? 503 : Number(scenario);
         const headers:Record<string,string>={};
         if(scenario==='429-seconds') {headers['retry-after']='1';retryNotBefore=Date.now()+1000;}
         if(scenario==='429-date') {headers['retry-after']=new Date(Date.now()+2100).toUTCString();retryNotBefore=Date.parse(headers['retry-after']);}
         if(scenario==='long-hint')headers['retry-after']='30';
         if(scenario==='long-hint-fit') {headers['retry-after']='9';retryNotBefore=Date.now()+9000;}
+        if(scenario==='overflow-hint')headers['retry-after']='9'.repeat(320);
         res.writeHead(status,headers);res.end('provider-secret synthetic-private');return;
       }
     }
@@ -122,7 +123,7 @@ if(successful) {
   }
   if(['expired','signed-expired','expiry-backoff','expiry-moving','signed-moving'].includes(scenario))
     assert.equal(error.recovery.failureType,'authorization_expired');
-  if(['deadline-backoff','long-hint'].includes(scenario))assert.equal(error.recovery.failureType,'deadline_exceeded');
+  if(['deadline-backoff','long-hint','overflow-hint'].includes(scenario))assert.equal(error.recovery.failureType,'deadline_exceeded');
   if(['403','redirect'].includes(scenario))assert.equal(error.recovery.httpStatus,scenario==='403' ? 403 : 307);
   if(scenario.startsWith('cancel-')){assert.ok(abortAt);assert.ok(Date.now()-abortAt<750);}
 }

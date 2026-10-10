@@ -421,7 +421,9 @@ export function createArtifactUploadTransport() {
           if (hint !== null && [429, 503].includes(response.status)) {
             const value = hint.trim();
             const delay = /^\d+(?:\.\d+)?$/.test(value)
-              ? Number(value) * 1000 : Date.parse(value) - Date.now();
+              // Even an overflowing numeric hint cannot fit an authorization
+              // deadline; retain that fact instead of falling back to an early retry.
+              ? Math.min(Number.MAX_SAFE_INTEGER, Number(value) * 1000) : Date.parse(value) - Date.now();
             if (Number.isFinite(delay) && delay >= 0) retryAfterMs = delay;
           }
           await response.body?.cancel();
