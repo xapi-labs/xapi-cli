@@ -234,6 +234,78 @@ function fakePlatform(
 }
 
 describe("workers promote", () => {
+  test.each([undefined,false,true])('uses complete production semantics only with affirmative backend support: %s', async supported => {
+    const root=fixture();
+    const inherited={placement:{mode:'smart'},logpush:false,cache:{enabled:true},
+      observability:{enabled:true,logs:{persist:false,native_extension:0}}};
+    writeFileSync(join(root,'wrangler.jsonc'),JSON.stringify({...inherited,
+      env:{preview:{version_metadata:{binding:'PREVIEW_VERSION'},tail_consumers:[{service:'preview-log'}]},
+        production:{limits:{cpu_ms:50}}}}));
+    const platform=fakePlatform(),getWorker=platform.client.getWorker;
+    platform.client.getWorker=async(...args)=>{
+      const worker=await getWorker(...args) as {artifacts:Array<Record<string,unknown>>};
+      return {...worker,artifacts:worker.artifacts.map(artifact=>({...artifact,mediaType:'application/vnd.xapi.worker-bundle.v2+json'}))};
+    };
+    platform.client.getWorkerArtifact=async()=>{throw new Error('typed metadata must not fetch Artifact blobs');};
+    platform.client.getWorkerArtifactVariableConfiguration=async()=>({artifactId:'artifact-latest',contentSha256:'a'.repeat(64),
+      keepBindings:['json'],variables:[],bindingNames:['ASSETS','PREVIEW_VERSION'],
+      bindings:[{type:'assets',name:'ASSETS'},{type:'version_metadata',name:'PREVIEW_VERSION'}],
+      ...(supported===undefined ? {} : {nativeMetadataCompleteSupported:supported})});
+    platform.client.getWorkerVariableState=async()=>({environment:'production',activeDeploymentId:null,exists:true,
+      variables:[{name:'OLD_PUBLIC',type:'json'}]});
+    const requests:Array<Record<string,unknown>>=[];const deploy=platform.client.deployWorker;
+    platform.client.deployWorker=async(api,id,input)=>{requests.push(input);return deploy(api,id,input);};
+    const options={cwd:root,to:'production' as const,nonInteractive:true,clientOptions:{apiHost:'localhost:3003',apiKey:'test'},
+      client:platform.client,sleep:async()=>{},fetchPublic:(async()=>Response.json({ok:true})) as unknown as typeof fetch};
+    if(supported!==true){
+      await expect(promoteWorkerProject(options)).rejects.toMatchObject({recovery:{errorCode:'worker_production_configuration_unrepresentable',remoteChangesApplied:false}});
+      expect(platform.calls.deploy).toBe(0);expect(platform.calls.createResource).toBe(0);return;
+    }
+    const result=await promoteWorkerProject(options);
+    const expected={placement:{mode:'smart'},logpush:false,cache_options:{enabled:true},observability:inherited.observability,
+      limits:{cpu_ms:50},tail_consumers:[]};
+    expect(result.plan.nativeMetadata).toEqual(expected);
+    expect(result.plan.variables).toContainEqual(expect.objectContaining({name:'OLD_PUBLIC',decision:'REMOVE'}));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({nativeMetadata:expected,nativeMetadataIsComplete:true,
+      variables:{vars:{}},requiredSecrets:['MODEL_KEY'],artifactId:'artifact-latest'});
+    expect(requests[0].nativeMetadata).not.toHaveProperty('version_metadata');
+  });
+
+  test.each([
+    {version:undefined,secret:'RELEASE',accepted:true},
+    {version:'RELEASE',secret:undefined,accepted:true},
+    {version:'NEW_VERSION',secret:undefined,accepted:true},
+    {version:'ASSETS',secret:undefined,accepted:false},
+    {version:undefined,secret:'ASSETS',accepted:false},
+  ])('classifies immutable bindings without snapshots and preserves assets collisions: $version $secret',async({version,secret,accepted})=>{
+    const root=fixture();
+    writeFileSync(join(root,'wrangler.jsonc'),JSON.stringify({env:{production:{limits:{cpu_ms:50},
+      ...(version ? {version_metadata:{binding:version}} : {}),...(secret ? {secrets:{required:[secret]}} : {})}}}));
+    const platform=fakePlatform({secrets:['MODEL_KEY',...(secret ? [secret] : [])]});
+    platform.client.getWorkerArtifactVariableConfiguration=async()=>({artifactId:'artifact-latest',contentSha256:'a'.repeat(64),
+      keepBindings:[],variables:[],bindingNames:['ASSETS','RELEASE'],bindings:[{type:'assets',name:'ASSETS'},
+        {type:'version_metadata',name:'RELEASE'}],nativeMetadataCompleteSupported:true});
+    platform.client.getWorkerArtifact=async()=>{throw new Error('no Artifact detail read required');};
+    const options={cwd:root,to:'production' as const,nonInteractive:true,clientOptions:{apiHost:'localhost:3003',apiKey:'test'},
+      client:platform.client,sleep:async()=>{},fetchPublic:(async()=>Response.json({ok:true})) as unknown as typeof fetch};
+    if(accepted)expect((await promoteWorkerProject(options)).plan.canPromote).toBe(true);
+    else {await expect(promoteWorkerProject(options)).rejects.toThrow('Duplicate Worker binding: ASSETS');expect(platform.calls.deploy).toBe(0);expect(platform.calls.createResource).toBe(0);}
+  });
+
+  test('typed metadata can prove a removed version Secret on legacy reset without enabling complete requests',async()=>{
+    const root=fixture();writeFileSync(join(root,'wrangler.jsonc'),JSON.stringify({env:{production:{secrets:{required:['RELEASE']}}}}));
+    const platform=fakePlatform({secrets:['MODEL_KEY','RELEASE']}),getWorker=platform.client.getWorker;
+    platform.client.getWorker=async(...args)=>{const worker=await getWorker(...args) as {artifacts:Array<Record<string,unknown>>};
+      return {...worker,artifacts:worker.artifacts.map(artifact=>({...artifact,mediaType:'application/vnd.xapi.worker-bundle.v2+json'}))};};
+    platform.client.getWorkerArtifactVariableConfiguration=async()=>({artifactId:'artifact-latest',contentSha256:'a'.repeat(64),
+      keepBindings:[],variables:[],bindingNames:['ASSETS','RELEASE'],bindings:[{type:'assets',name:'ASSETS'},{type:'version_metadata',name:'RELEASE'}]});
+    const deploy=platform.client.deployWorker;let request:Record<string,unknown>|undefined;
+    platform.client.deployWorker=async(api,id,input)=>{request=input;return deploy(api,id,input);};
+    await promoteWorkerProject({cwd:root,to:'production',nonInteractive:true,clientOptions:{apiHost:'localhost:3003',apiKey:'test'},
+      client:platform.client,sleep:async()=>{},fetchPublic:(async()=>Response.json({ok:true})) as unknown as typeof fetch});
+    expect(request?.nativeMetadata).toEqual({});expect(request).not.toHaveProperty('nativeMetadataIsComplete');
+  });
   test.each([
     { resetPreview: false, binding: undefined, accepted: true },
     { resetPreview: true, binding: undefined, accepted: false },

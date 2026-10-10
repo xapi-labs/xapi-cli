@@ -104,6 +104,7 @@ export interface WranglerDeploymentSettings {
   uploadSourceMaps?: boolean;
   queueBindingAliases?: Record<string, string>;
   nativeMetadata?: Record<string, unknown>;
+  nativeMetadataIsComplete?: boolean;
   nativeBundleRequired?: string[];
   requiredSecrets?: string[];
   variables?: WorkerPublicVariables;

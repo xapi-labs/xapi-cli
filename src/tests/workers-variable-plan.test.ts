@@ -2,6 +2,22 @@ import { describe, expect, test } from "bun:test";
 import { planWorkerVariables, readWorkerArtifactVariableConfiguration, readWorkerVariableState, workerVariableDeclaration, workerArtifactBindingNames } from "../workers-variable-plan.ts";
 
 describe("Worker public variable decisions", () => {
+  test('typed bindings require matching immutable identity, current kinds and complete name coverage', () => {
+    const value = {artifactId:'selected',contentSha256:'a'.repeat(64),keepBindings:[],variables:[],
+      bindingNames:['SAME'],bindings:[{type:'assets',name:'SAME',value:'private-marker'},
+        {type:'version_metadata',name:'SAME'}],nativeMetadataCompleteSupported:true};
+    const read = (change:Record<string,unknown>={}) => readWorkerArtifactVariableConfiguration({...value,...change},'selected','a'.repeat(64));
+    expect(read()).toMatchObject({bindings:[{type:'assets',name:'SAME'},{type:'version_metadata',name:'SAME'}],nativeMetadataCompleteSupported:true});
+    expect(JSON.stringify(read())).not.toContain('private-marker');
+    for (const change of [{artifactId:'other'},{contentSha256:'b'.repeat(64)},
+      {nativeMetadataCompleteSupported:'true'},{bindings:null},{bindings:[]},
+      {bindings:[{type:'secret_text',name:'SAME'}]},{bindings:[{type:'assets',name:''}]},
+      {bindings:[{type:'assets',name:'SAME'},{type:'assets',name:'SAME'}]},
+      {bindingNames:['SAME','EXTRA']},{bindings:[{type:'assets',name:'SAME'},{type:'assets',name:'EXTRA'}],bindingNames:['SAME','EXTRA']}])
+      expect(()=>read(change)).toThrow();
+    expect(read({bindingNames:[],bindings:[]})).toMatchObject({bindings:[]});
+    expect(read({bindings:undefined,nativeMetadataCompleteSupported:undefined}).bindings).toBeUndefined();
+  });
   test("native prototype-like variable names cannot inherit a varTypes entry", () => {
     const vars = JSON.parse('{"constructor":"normal","__proto__":"normal","toString":"normal","hasOwnProperty":"normal","J":"json-string"}');
     const declaration = workerVariableDeclaration({ vars, varTypes: { J: "json" } });

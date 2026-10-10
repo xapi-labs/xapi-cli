@@ -302,7 +302,7 @@ export function createArtifactControlSession() {
  * Its URL is validated by the Worker upload caller; errors never print it. */
 export class WorkerObjectUploadError extends Error {
   constructor(public readonly diagnostic: {
-    failureType: 'idle_timeout' | 'transport_error' | 'http_error';
+    failureType: 'idle_timeout' | 'transport_error' | 'http_error' | 'authorization_expired' | 'deadline_exceeded';
     code?: string;
     httpStatus?: number;
     phase: 'queued_or_connecting' | 'sending_body' | 'awaiting_response' | 'receiving_response';
@@ -310,6 +310,9 @@ export class WorkerObjectUploadError extends Error {
     bodySentBytes: number;
     elapsedMs: number;
     idleMs: number;
+    retryAfterMs?: number;
+    attemptCount?: number;
+    firstFailure?: { failureType: string; code?: string; httpStatus?: number };
   }) {
     super('Worker object upload failed' +
       (diagnostic.httpStatus !== undefined ? ` (HTTP ${diagnostic.httpStatus})` : '') +
@@ -411,17 +414,34 @@ export function createArtifactUploadTransport() {
           dispatcher,
         } as any);
         if (!response.ok) {
+          // Object retries must honor a valid hint in full, independently of the
+          // generic API client's capped backoff. Never retain raw header text.
+          const hint = response.headers.get('retry-after');
+          let retryAfterMs: number | undefined;
+          if (hint !== null && [429, 503].includes(response.status)) {
+            const value = hint.trim();
+            const delay = /^\d+(?:\.\d+)?$/.test(value)
+              // Even an overflowing numeric hint cannot fit an authorization
+              // deadline; retain that fact instead of falling back to an early retry.
+              ? Math.min(Number.MAX_SAFE_INTEGER, Number(value) * 1000) : Date.parse(value) - Date.now();
+            if (Number.isFinite(delay) && delay >= 0) retryAfterMs = delay;
+          }
           await response.body?.cancel();
           throw new WorkerObjectUploadError({failureType: 'http_error', httpStatus: response.status,
+            ...(retryAfterMs !== undefined ? {retryAfterMs} : {}),
             phase, objectSizeBytes: bytes.length, bodySentBytes,
             elapsedMs: Math.round(performance.now() - startedAt), idleMs: Math.round(performance.now() - lastProgressAt)});
         }
         await response.arrayBuffer();
       } catch (error) {
-        if (signal.aborted)
+        if (signal.aborted) {
+          if (signal.reason instanceof WorkerObjectUploadError)
+            throw new WorkerObjectUploadError({...signal.reason.diagnostic, phase, bodySentBytes,
+              elapsedMs: Math.round(performance.now() - startedAt), idleMs: Math.round(performance.now() - lastProgressAt)});
           throw signal.reason instanceof Error
             ? signal.reason
             : new Error('Worker upload cancelled');
+        }
         if (error instanceof WorkerObjectUploadError)
           throw error;
         // Never include a signed URL or raw transport message in the public error.

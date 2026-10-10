@@ -171,7 +171,7 @@ ${'  Resource        Count  Settled      Reserved  Estimated  Exposure  Quality 
     });
 
     expect(rendered).toContain("Data quality            PARTIAL");
-    expect(rendered).toContain("Complete through        —");
+    expect(rendered).toContain("Complete through (UTC)  —");
     expect(rendered).toContain(
       "! PARTIAL: provider data may be delayed or incomplete",
     );

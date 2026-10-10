@@ -104,6 +104,20 @@ export function formatWorkerRetentionGuidance(options: WorkerRetentionGuidanceOp
   if (!["show", "quote"].includes(options.action)) {
     lines.push(`The ${options.action} request returned a response. Request acceptance is not proof of lifecycle completion; use the reported state and follow-up reads.`);
   }
+  // Show structured receipt codes, never upstream error messages or provider payloads.
+  const receiptStatus = text(response.status);
+  if (receiptStatus && /^[A-Z][A-Z0-9_]*$/.test(receiptStatus)) {
+    lines.push(`Request status: ${receiptStatus}. This receipt does not establish lifecycle completion.`);
+  }
+  const errorCode = text(response.errorCode) || text(lifecycle.lastErrorCode);
+  const safeErrorCode = errorCode && /^[A-Z][A-Z0-9_]*$/.test(errorCode) ? errorCode : undefined;
+  if (safeErrorCode) lines.push(`Reported pending/error code: ${safeErrorCode}.`);
+  if (response.retryRequired === true) {
+    lines.push("The server reports retryRequired=true. No control action was retried automatically; inspect current step receipts before deciding whether to retry explicitly.");
+  }
+  if (safeErrorCode === "CONTAINER_STOP_PENDING") {
+    lines.push("Container stop is not confirmed complete. A runtime upload receipt or a SKIPPED native stop is not evidence that the Container stopped.");
+  }
   if (options.action === "quote") {
     lines.push("This quote is an estimate, not a lifecycle completion or refund receipt.");
   } else if (response.enabled === false) {
@@ -115,7 +129,8 @@ export function formatWorkerRetentionGuidance(options: WorkerRetentionGuidanceOp
     lines.push("Local polling ended. Stopping observation does not cancel the backend operation; read its state again when needed.");
   }
   const commands = workerReadOnlyFollowups(options);
-  if (commands.length) lines.push("Read-only follow-up:", ...commands.map(command => `  ${command}`));
+  if (commands.length) lines.push("Read-only follow-up:", ...commands.map(command =>
+    `  ${command}${(safeErrorCode || response.retryRequired === true) && command.startsWith("xapi workers retention show ") ? " --format json" : ""}`));
   return lines.join("\n");
 }
 

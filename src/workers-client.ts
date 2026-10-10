@@ -6,6 +6,7 @@ import { normalizeWorkerVariableOptions } from "./workers-artifact.ts";
 import { scheme } from "./config.ts";
 import { withWorkerTargetWait, type WorkerOperationWaitOptions } from './workers-operation-wait.ts';
 import { uploadDirectWorkerArtifact } from './workers-direct-upload.ts';
+import { collectWorkerBillingUsage } from './workers-billing-usage.ts';
 
 export interface WorkersClientOptions {
   apiHost: string;
@@ -377,21 +378,18 @@ export function workerBillingQuery(
   kind: WorkerBillingQueryKind,
   query: WorkerBillingQuery = {},
 ) {
-  const target = new URL(
-    url(
-      options,
-      `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/billing/${kind}`,
-    ),
-  );
-  for (const [key, value] of Object.entries(query)) {
-    if (value !== undefined) target.searchParams.set(key, value);
-  }
-  return request<unknown>(
-    target.toString(),
-    { headers: headers(options) },
-    30_000,
-    2,
-  );
+  const fetchPage = (pageQuery: WorkerBillingQuery) => {
+    const target = new URL(
+      url(options, `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/billing/${kind}`),
+    );
+    for (const [key, value] of Object.entries(pageQuery)) {
+      if (value !== undefined) target.searchParams.set(key, value);
+    }
+    return request<unknown>(target.toString(),
+      {headers:headers(options),signal:options.operationWait?.signal}, 30_000, 2);
+  };
+  return kind === 'usage' ? collectWorkerBillingUsage(fetchPage, query, options.operationWait?.signal,
+    {workerId:id,environment:environment.toLowerCase()}) : fetchPage(query);
 }
 
 export function listWorkerDomains(options: WorkersClientOptions, id: string) {

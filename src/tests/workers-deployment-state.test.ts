@@ -26,6 +26,21 @@ function platform() {
   return { api, run, resources, secrets, deployments, environment, uncertain: () => { failOnce = true; } };
 }
 
+test('complete native metadata intent changes request identity and never reuses a legacy activation',async()=>{
+  const p=platform();
+  const legacy={compatibilityFlags:[],nativeMetadata:{limits:{cpu_ms:50}}};
+  const complete={...legacy,nativeMetadataIsComplete:true};
+  const prefix=(settings:typeof complete | typeof legacy)=>deploymentPrefix('worker','preview','same-artifact',settings,p.environment,[],[]);
+  expect(prefix(legacy)).not.toBe(prefix(complete));
+  expect(prefix({...legacy,nativeMetadataIsComplete:false})).toBe(prefix(legacy));
+  const run=(settings:typeof complete | typeof legacy)=>ensureActiveDeployment(p.api,{apiHost:'localhost:3148',apiKey:'test'},
+    'worker','same-artifact','preview',settings,async()=>{});
+  await run(legacy);const result=await run(complete);
+  expect(p.deployments).toHaveLength(2);expect(p.deployments[0]).not.toHaveProperty('nativeMetadataIsComplete');
+  expect(p.deployments[1].nativeMetadataIsComplete).toBe(true);
+  expect((await run(complete)).deployment.id).toBe(result.deployment.id);expect(p.deployments).toHaveLength(2);
+});
+
 function rollbackSnapshot() {
   const environment = { id: "env", activeDeploymentId: "rollback-current", bindings: [], placementMode: "off" };
   const prefix = deploymentPrefix("worker", "preview", "artifact", { variables: { vars: { MODE: "restored" } } }, environment, [], []);

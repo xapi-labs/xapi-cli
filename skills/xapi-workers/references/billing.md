@@ -7,6 +7,7 @@ Set the correct control-plane host first. Every query below targets one environm
 ```sh
 xapi workers billing prices <worker-id> --env preview --json
 xapi workers billing overview <worker-id> --env preview --json
+xapi workers billing usage <worker-id> --env preview
 xapi workers billing ledger <worker-id> --env preview --all --json > ledger.json
 xapi workers metering <worker-id> --env preview --json
 xapi workers billing lifecycle <worker-id> --env preview --json
@@ -25,12 +26,35 @@ The deployment risk amount is an estimate of five-minute capacity exposure, not 
 
 `ledger --all` pins the first returned `snapshotTime`, preserves filters and follows all pages (up to 100 pages, normally 100 entries/page). It fails on mixed scope/snapshot, duplicate IDs, repeated/missing cursors, or the page limit rather than returning an apparently complete partial bill. `pagination.complete` means pagination completed, **not** that provider metering is complete. `--all` cannot be combined with `--cursor`.
 
-Responses may have different `snapshotId` values per page/query; fix `snapshotTime` and scope, not equality of IDs. `pagination.pageSnapshotIds` retains the page IDs for tracing. Read `ledger.json.snapshotTime`, then query:
+Ledger responses may have different `snapshotId` values per page/query; fix `snapshotTime` and scope, not equality of ledger IDs. `pagination.pageSnapshotIds` retains ledger page IDs for tracing. Read `ledger.json.snapshotTime`, then query:
 
 ```sh
 xapi workers billing overview <worker-id> --env preview --snapshot-time <snapshotTime> --json
 xapi workers billing usage <worker-id> --env preview --snapshot-time <snapshotTime> --from <ISO-time> --to <ISO-time> --json
 ```
+
+`billing usage` follows all aggregate pages automatically in both normal human
+output and JSON, without `--all` or an opt-in mode. It pins the first usage
+`snapshotId`, `snapshotTime`, range and filters, rejects changed scope, repeated
+cursors or duplicate bucket/resource/metric groups, and fails on cancellation or
+read errors instead of presenting a partial read as complete. Usage snapshot IDs
+are stable within that continuation; the ledger rule above is separate.
+
+Read `buckets[].summaries` and the backend's `totals`. Totals describe the whole
+scope and repeat on every page: use them once, never add page totals or sum raw
+`facts` as a substitute. Quantities and event counts are exact strings, shown
+without floating-point conversion. Keep metrics/units separate. `EVENT_SUM`
+represents independent selected events; `CUMULATIVE_LATEST` is the latest selected
+revision, not a second event to add. `UNRESOLVED` and null quantities remain unknown.
+An observed CPU quantity `0` remains an observed zero, not proof of zero cost.
+
+Coverage and UTC cutoff are independent of quantity and pagination. For example,
+117 observed Tail events can have `INDETERMINATE` coverage and
+`completeThrough: null`; finalized events do not prove a complete window.
+The compatibility `facts` arrays are empty on the new usage API. Raw samples stay
+in the existing bounded metering diagnostic. On an older backend, the CLI displays
+legacy observations and marks aggregate totals/coverage unavailable; it does not
+invent totals or a complete cutoff. Money still comes from overview/ledger.
 
 Ledger/overview cover the snapshot's UTC billing day, not all history. Respect returned `rangeMetadata` and freshness. For historical days select the required supported snapshot; do not assume old snapshots remain queryable forever. For a ledger over the CLI page limit, manually page `--limit 100 --cursor <opaque-cursor> --snapshot-time <same-time>`, preserving `--metric`/`--resource-id`; verify unique IDs and `hasMore: false`. Never decode or synthesize cursors.
 

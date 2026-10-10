@@ -187,7 +187,13 @@ Set `build.output` to the generated `.worker.bundle`, omit `build.main`, and set
 
 Direct upload progress is written to stderr; JSON stdout remains the final result.
 The CLI uploads content through a reusable, bounded connection pool. Files remain
-one complete-project Artifact, not separate deployments. After upload, xAPI
+one complete-project Artifact, not separate deployments. A temporary socket/idle
+failure or HTTP 408/429/500/502/503/504 may retry the same checksummed object, with
+the same authorization, up to three total attempts within the existing eight PUT
+slots. Retry-After is waited in full when it fits the upload/signature deadline;
+otherwise the upload stops. Cancellation, authorization/checksum failures and
+redirects do not retry. The CLI reports retries and the upload ID; it does not
+prepare a new session or replay confirmation/deployment automatically. After upload, xAPI
 persists confirmation and reports `QUEUED`, `CONFIRMING`, `READY`, or `FAILED`.
 A continuing large-file transfer uses an idle deadline; Artifact confirmation has
 its own bounded wait. If the CLI disconnects or reports an unresolved confirmation:
@@ -557,7 +563,7 @@ Container configuration resolves in this order: the selected environment's `cont
 
 ### Upload and build deadlines
 
-Artifact uploads use a 60-second no-progress budget rather than a 60-second total duration. Continuing multipart/JSON transmission is allowed; `XAPI_TRANSFER_IDLE_TIMEOUT_MS` adjusts the CLI idle budget. The receiver ends an incomplete body after 60 seconds with no socket activity, keeps its existing 20 MiB JSON and 100 MiB multipart content budgets, and shares a physical memory budget between JSON parsing and multipart receivers. This is platform capacity protection, not a user quota. No upload is automatically replayed. Inspect artifacts using the original idempotency key after a lost response.
+Artifact uploads use a 60-second no-progress budget rather than a 60-second total duration. Continuing multipart/JSON transmission is allowed; `XAPI_TRANSFER_IDLE_TIMEOUT_MS` adjusts the CLI idle budget. The receiver ends an incomplete body after 60 seconds with no socket activity, keeps its existing 20 MiB JSON and 100 MiB multipart content budgets, and shares a physical memory budget between JSON parsing and multipart receivers. This is platform capacity protection, not a user quota. Only the bounded same-object recovery described above is automatic; whole uploads and uncertain confirmation/publication writes are not replayed. Inspect artifacts using the original idempotency key after a lost response.
 
 Direct-upload file lists live in private R2; DB sessions keep only small references and confirmed artifact receipts. Preparing the same content again may reuse an active channel while granting the same full15-minute upload window as a new explicit preparation, including after the earlier CLI exits. This does not extend a deployment's execution deadline. Failed expired channels can be removed after the existing24h cleanup grace; start a new upload when the temporary session is absent. Confirmed artifact identity and deployment history remain available. No per-owner file/session quota is added.
 
@@ -578,6 +584,14 @@ not a per-user feature switch. User Tail references now resolve an owned xAPI Wo
 
 The deploy API accepts optional `nativeMetadata`. Omission uses Artifact defaults;
 a nonempty object overlays its ordinary fields; explicit `{}` clears them.
+With the matching backend, promotion automatically submits the complete effective
+production metadata computed from Wrangler's named-environment inheritance.
+Inherited root placement, limits, logging and cache settings remain; preview-only
+version bindings and user Tails are removed unless production declares them.
+The CLI checks backend support and matching immutable Artifact binding types;
+older services keep the safe preflight rejection for intent they cannot express.
+No extra command flag is needed. Review the displayed plan, set required production
+Secrets through the Secrets API, then use `workers promote --to production`.
 `placement.mode="off"` is recorded as intent and omitted from the WFP upload, as
 Wrangler does. It does not restore a later environment smart-placement default.
 `version_metadata.binding` becomes the native built-in binding; it does not create

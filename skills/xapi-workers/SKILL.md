@@ -55,6 +55,19 @@ For Cloudflare Containers, `ACTIVE` means the Worker upload, matching Durable Ob
 
 For incomplete observations report **unknown**, not zero or success. Keep deployment completion, resource behavior, xAPI consumption, storage-day finalization, provider invoice reconciliation, and physical cleanup as separate verdicts. Report only verified outcomes and the next concrete unresolved check.
 
+Pause exit 0 or `ACCEPTED` confirms a returned receipt, not completed suspension.
+With `SUSPENDING` / `CONTAINER_STOP_PENDING`, inspect `billing lifecycle` and
+`retention show --format json` for the current steps. Runtime upload success or a
+`SKIPPED` native stop does not prove the Container stopped. `retryRequired` calls
+for inspecting the evidence before an explicit retry, not automatic control replay
+or forced recovery.
+
+For billing usage, read [the quantity and coverage guidance](references/billing.md)
+before reconciliation. `workers billing usage` defaults to complete aggregate
+pagination and human output; quantities remain exact strings, with coverage and
+UTC cutoff shown separately. Observed totals are not invoices or proof of complete
+metering. Older services without aggregates remain explicitly unverified.
+
 ### Direct artifact uploads and deployment configuration
 
 The CLI checks `artifact-provider/status`. When R2 direct upload is available,
@@ -62,7 +75,11 @@ it prepares an owned temporary session, uploads checksummed bytes directly to
 R2 without the xAPI key, then asks xAPI to verify and seal the immutable artifact.
 There is no deployment/fund hold while uploading. Cancelled or expired sessions
 do not block the next push; native deployment starts only after confirmation.
-The temporary channel has a 15-minute lifetime; restart the upload after expiry.
+Transient object failures get at most three attempts within the same authorization,
+upload deadline and eight PUT slots; retry progress is visible. Cancellation or
+expiry stops recovery. Query the displayed upload ID before an explicit new push;
+object recovery does not replay confirmation or deployment. The temporary channel
+has a 15-minute lifetime; an expired channel needs an explicit new upload.
 Never paste signed object URLs in reports. The legacy upload API remains usable
 when the configured storage does not support direct upload.
 
