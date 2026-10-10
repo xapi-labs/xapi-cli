@@ -55,6 +55,13 @@ For Cloudflare Containers, `ACTIVE` means the Worker upload, matching Durable Ob
 
 For incomplete observations report **unknown**, not zero or success. Keep deployment completion, resource behavior, xAPI consumption, storage-day finalization, provider invoice reconciliation, and physical cleanup as separate verdicts. Report only verified outcomes and the next concrete unresolved check.
 
+Pause exit 0 or `ACCEPTED` confirms a returned receipt, not completed suspension.
+With `SUSPENDING` / `CONTAINER_STOP_PENDING`, inspect `billing lifecycle` and
+`retention show --format json` for the current steps. Runtime upload success or a
+`SKIPPED` native stop does not prove the Container stopped. `retryRequired` calls
+for inspecting the evidence before an explicit retry, not automatic control replay
+or forced recovery.
+
 For billing usage, read [the quantity and coverage guidance](references/billing.md)
 before reconciliation. `workers billing usage` defaults to complete aggregate
 pagination and human output; quantities remain exact strings, with coverage and

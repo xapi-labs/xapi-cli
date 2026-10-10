@@ -13,6 +13,36 @@ import {
 const target = { workerId: "worker-1", environment: "preview" };
 
 describe("lifecycle observation guidance", () => {
+  it("shows the pending pause receipt without treating native upload or SKIPPED stop as completion", () => {
+    const response = { status: "ACCEPTED", state: "SUSPENDING", retryRequired: true,
+      errorCode: "CONTAINER_STOP_PENDING", errorMessage: "https://provider.invalid/signed?secret=hidden" };
+    const before = JSON.stringify(response);
+    const human = formatWorkerRetentionGuidance({ ...target, action: "pause", response });
+    expect(human).toContain("Request status: ACCEPTED");
+    expect(human).toContain("Lifecycle SUSPENDING: work is pending");
+    expect(human).toContain("Reported pending/error code: CONTAINER_STOP_PENDING");
+    expect(human).toContain("Container stop is not confirmed complete");
+    expect(human).toContain("SKIPPED native stop is not evidence");
+    expect(human).toContain("retryRequired=true");
+    expect(human).toContain("No control action was retried automatically");
+    expect(human).toContain("xapi workers retention show worker-1 --env preview --format json");
+    expect(human).not.toContain("retention resume");
+    expect(human).not.toContain("--force");
+    expect(human).not.toContain("provider.invalid");
+    expect(JSON.stringify(response)).toBe(before);
+  });
+
+  it("keeps legacy completed pause output and exposes the pending code on a follow-up read", () => {
+    const complete = formatWorkerRetentionGuidance({ ...target, action: "pause", response: { state: "SUSPENDED" } });
+    expect(complete).toContain("Execution is paused");
+    expect(complete).not.toContain("Container stop is not confirmed complete");
+    const pending = formatWorkerRetentionGuidance({ ...target, action: "show", response: {
+      lifecycle: { state: "SUSPENDING", lastErrorCode: "CONTAINER_STOP_PENDING" },
+    } });
+    expect(pending).toContain("Reported pending/error code: CONTAINER_STOP_PENDING");
+    expect(pending).toContain("--format json");
+  });
+
   it("keeps an accepted delete pending through recorded progress", () => {
     const accepted = formatWorkerRetentionGuidance({
       ...target, action: "delete", response: { state: "ACCEPTED" },
