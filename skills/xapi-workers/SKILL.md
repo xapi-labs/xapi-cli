@@ -62,7 +62,11 @@ it prepares an owned temporary session, uploads checksummed bytes directly to
 R2 without the xAPI key, then asks xAPI to verify and seal the immutable artifact.
 There is no deployment/fund hold while uploading. Cancelled or expired sessions
 do not block the next push; native deployment starts only after confirmation.
-The temporary channel has a 15-minute lifetime; restart the upload after expiry.
+Transient object failures get at most three attempts within the same authorization,
+upload deadline and eight PUT slots; retry progress is visible. Cancellation or
+expiry stops recovery. Query the displayed upload ID before an explicit new push;
+object recovery does not replay confirmation or deployment. The temporary channel
+has a 15-minute lifetime; an expired channel needs an explicit new upload.
 Never paste signed object URLs in reports. The legacy upload API remains usable
 when the configured storage does not support direct upload.
 

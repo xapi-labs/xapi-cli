@@ -55,6 +55,7 @@ export interface WorkerPromotionCheck {
 export interface WorkerPromotionPlan {
   schemaVersion: 1;
   variables?: WorkerVariableDecision[];
+  nativeMetadata?: Record<string, unknown>;
   workerId: string;
   to: "production";
   previewDeployment: { id: string; artifactId: string; deployedAt?: string };
@@ -360,6 +361,7 @@ export async function createWorkerPromotionPlan(
   artifact: UnknownRecord;
   nativePlan: NativeDeploymentPlan;
   compatibility: ReturnType<typeof readWranglerDeploymentSettings>;
+  sourceCompatibility: ReturnType<typeof readWranglerDeploymentSettings>;
 }> {
   if (options.to !== "production") {
     throw new WorkerPushError("workers promote requires --to production");
@@ -415,7 +417,8 @@ export async function createWorkerPromotionPlan(
       "ACTIVE preview deployment is missing immutable Artifact metadata",
     );
   }
-  const compatibility = readWranglerDeploymentSettings(project, "production", text(artifact.mediaType));
+  let compatibility = readWranglerDeploymentSettings(project, "production", text(artifact.mediaType));
+  const sourceCompatibility = compatibility;
   // Promotion reuses the preview Artifact; it cannot supply native output from
   // a production build for configuration outside the existing desired state.
   if (compatibility.nativeBundleRequired?.length) {
@@ -453,10 +456,27 @@ export async function createWorkerPromotionPlan(
     api.getWorkerArtifactVariableConfiguration(options.clientOptions, workerId, artifactId)
       .then(value => readWorkerArtifactVariableConfiguration(value, artifactId, contentSha256)),
   ]);
+  // This affirmative capability belongs to the queried server, after its
+  // Artifact ID/SHA are verified. Old DTOs may silently drop unknown fields.
+  const complete = declaration.nativeMetadataCompleteSupported === true;
+  if (complete) compatibility = {...compatibility,
+    nativeMetadata: {...(compatibility.nativeMetadata || {})}, nativeMetadataIsComplete: true};
   const metadata = compatibility.nativeMetadata;
   const resetsMetadata = metadata !== undefined && !Object.keys(metadata).length;
   let bindingNames = declaration.bindingNames;
-  if (bindingNames.length && metadata !== undefined) {
+  if (declaration.bindings !== undefined && metadata !== undefined) {
+    // Assets remain part of the immutable Artifact; effective metadata replaces
+    // only the version binding. Preserve type records even for a shared name.
+    const changesVersion = complete || resetsMetadata || metadata.version_metadata !== undefined;
+    const version = declaration.bindings.find(binding => binding.type === 'version_metadata');
+    if (version && !changesVersion) throw new WorkerPushError(
+      'Production native metadata cannot remove the selected Artifact version binding while applying other native settings', {
+        errorCode: 'worker_production_configuration_unrepresentable', fields: ['version_metadata'],
+        artifactId, remoteChangesApplied: false,
+        next: 'Inspect xapi workers pull --env production; deploy the backend complete-native-metadata contract to preserve this production intent',
+      });
+    bindingNames = declaration.bindings.filter(binding => !changesVersion || binding.type === 'assets').map(binding => binding.name);
+  } else if (bindingNames.length && metadata !== undefined) {
     const provider = previewDeployment.providerResult as UnknownRecord | undefined;
     const snapshot = provider?.deploymentSnapshot as UnknownRecord | undefined;
     const native = snapshot?.nativeMetadata as UnknownRecord | undefined;
@@ -471,8 +491,8 @@ export async function createWorkerPromotionPlan(
     const previewOverride = provider?.nativeMetadataOverrides;
     // Absence proves no Artifact version only if preview did not reset metadata.
     // The existing backend records explicit {} overrides in providerResult.
-    const preservesVersion = previewOverride === undefined || (previewOverride !== null &&
-      typeof previewOverride === 'object' && !Array.isArray(previewOverride) && Object.keys(previewOverride).length > 0);
+    const preservesVersion = provider?.nativeMetadataIsComplete !== true && (previewOverride === undefined || (previewOverride !== null &&
+      typeof previewOverride === 'object' && !Array.isArray(previewOverride) && Object.keys(previewOverride).length > 0));
     const knownNoVersion = matchesSnapshot && native !== null && typeof native === 'object' &&
       !Array.isArray(native) && version === undefined && preservesVersion;
     if (!artifactVersion && !knownNoVersion) {
@@ -492,7 +512,7 @@ export async function createWorkerPromotionPlan(
       // binding. Never infer historical binding kinds from local Wrangler files.
       if (details.assetCount === 0) artifactVersion = bindingNames[0];
     }
-    const changesVersion = resetsMetadata || metadata.version_metadata !== undefined;
+    const changesVersion = complete || resetsMetadata || metadata.version_metadata !== undefined;
     // The current immutable query returns only assets and version binding
     // names. Two distinct names prove a version exists even without its kind.
     if (!changesVersion && (artifactVersion || bindingNames.length === 2)) throw new WorkerPushError(
@@ -547,8 +567,8 @@ export async function createWorkerPromotionPlan(
   // Match backend order: a variables override clears Artifact public retention,
   // then nativeMetadata can reset or explicitly restore the retained types.
   let keepBindings = compatibility.variables === undefined ? declaration.keepBindings : [];
-  if (resetsMetadata) keepBindings = [];
-  else if (Array.isArray(metadata?.keep_bindings)) keepBindings = metadata.keep_bindings
+  if (resetsMetadata || complete) keepBindings = [];
+  if (Array.isArray(metadata?.keep_bindings)) keepBindings = metadata.keep_bindings
     .filter((type): type is WorkerVariableType => type === 'plain_text' || type === 'json');
   const effectiveDeclaration = {
     ...declaration,
@@ -563,6 +583,7 @@ export async function createWorkerPromotionPlan(
   checked.dataRisk.push("D1 SQL is not executed by promotion. Apply database migrations explicitly when needed; Queue/Cron configuration runs after code. Code rollback does not roll back SQL.");
   const plan: WorkerPromotionPlan = {
     schemaVersion: 1,
+    ...(metadata !== undefined ? {nativeMetadata: structuredClone(metadata)} : {}),
     variables: planWorkerVariables(effectiveDeclaration, currentVariables, [
       ...project.config.environments.production.resources.map(resource => resource.bindingName),
       ...(compatibility.requiredSecrets || []),
@@ -595,7 +616,7 @@ export async function createWorkerPromotionPlan(
         (item.status === "MANUAL" && item.kind === "resource"),
     ),
   };
-  return { plan, worker, artifact, nativePlan, compatibility };
+  return { plan, worker, artifact, nativePlan, compatibility, sourceCompatibility };
 }
 
 export async function promoteWorkerProject(
@@ -631,7 +652,7 @@ export async function promoteWorkerProject(
     }
   }
   if (JSON.stringify(loadWorkerProject(project.rootDir, project.configPath).config) !== JSON.stringify(project.config) ||
-      JSON.stringify(readWranglerDeploymentSettings(project, "production", text(prepared.artifact.mediaType))) !== JSON.stringify(compatibility))
+      JSON.stringify(readWranglerDeploymentSettings(project, "production", text(prepared.artifact.mediaType))) !== JSON.stringify(prepared.sourceCompatibility))
     throw new WorkerPushError("Production configuration changed after plan; rerun promote to review it before applying changes");
   const wait =
     options.sleep ||

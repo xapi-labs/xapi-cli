@@ -23,7 +23,7 @@ export function deploymentBindingResources(resources: Row[], bindingNames?: stri
 // Only deployment inputs: polling timestamps, storage size and other changing
 // Provider observations must not cause deployments. No secret plaintext is read.
 export function deploymentPrefix(workerId: string, environment: string, artifactId: string,
-  compatibility: { compatibilityDate?: string; compatibilityFlags?: string[]; requiredSecrets?: string[]; nativeMetadata?: Record<string,unknown>; containers?: unknown[]; queueBindingAliases?: Record<string, string>; variables?: {vars:Record<string,unknown>;varTypes?:Record<string,string>} },
+  compatibility: { compatibilityDate?: string; compatibilityFlags?: string[]; requiredSecrets?: string[]; nativeMetadata?: Record<string,unknown>; nativeMetadataIsComplete?: boolean; containers?: unknown[]; queueBindingAliases?: Record<string, string>; variables?: {vars:Record<string,unknown>;varTypes?:Record<string,string>} },
   environmentState: Row, resources: Row[], secrets: Row[]): string {
   return `v3-${hash({ workerId, environment: environment.toLowerCase(), artifactId,
     compatibilityDate: compatibility.compatibilityDate,
@@ -31,6 +31,7 @@ export function deploymentPrefix(workerId: string, environment: string, artifact
     ...(compatibility.requiredSecrets?.length ? {requiredSecrets:[...compatibility.requiredSecrets].sort()} : {}),
     ...(compatibility.queueBindingAliases !== undefined ? {queueBindingAliases: Object.fromEntries(Object.entries(compatibility.queueBindingAliases).sort(([a],[b]) => a.localeCompare(b)))} : {}),
     ...(compatibility.nativeMetadata !== undefined ? {nativeMetadata:compatibility.nativeMetadata} : {}),
+    ...(compatibility.nativeMetadataIsComplete === true ? {nativeMetadataIsComplete:true} : {}),
     ...(compatibility.variables !== undefined ? {variables:compatibility.variables} : {}),
     ...(compatibility.containers !== undefined ? {containers: compatibility.containers} : {}),
     placementMode: environmentState.placementMode || "off",

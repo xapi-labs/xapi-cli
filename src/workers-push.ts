@@ -854,6 +854,7 @@ export async function ensureActiveDeployment(
           compatibilityFlags: compatibility.compatibilityFlags,
           ...(compatibility.requiredSecrets !== undefined ? {requiredSecrets:compatibility.requiredSecrets} : {}),
           ...(compatibility.nativeMetadata !== undefined ? {nativeMetadata:compatibility.nativeMetadata} : {}),
+          ...(compatibility.nativeMetadataIsComplete === true ? {nativeMetadataIsComplete:true} : {}),
           ...(compatibility.variables !== undefined ? {variables:compatibility.variables} : {}),
           ...(compatibility.queueBindingAliases !== undefined ? {queueBindingAliases:compatibility.queueBindingAliases} : {}),
           ...(containerOverrides !== undefined ? {containers:containerOverrides} : {}),

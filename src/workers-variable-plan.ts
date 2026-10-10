@@ -1,6 +1,7 @@
 import type { WorkerVariableOptions, WorkerVariableType } from "./workers-artifact.ts";
 import { normalizeWorkerVariableOptions } from "./workers-artifact.ts";
 import { WorkerProjectConfigError } from "./workers-project.ts";
+import { isWorkerBindingName } from './workers-binding-validation.ts';
 
 export interface WorkerVariableMetadata {
   name: string;
@@ -11,6 +12,8 @@ export interface WorkerVariableDeclaration {
   keepBindings: WorkerVariableType[];
   variables: WorkerVariableMetadata[];
   bindingNames: string[];
+  bindings?: Array<{type: 'assets' | 'version_metadata'; name: string}>;
+  nativeMetadataCompleteSupported?: boolean;
 }
 
 export interface WorkerVariableDecision {
@@ -81,10 +84,35 @@ export function readWorkerArtifactVariableConfiguration(
   if (!Array.isArray(declaration.keepBindings) || !declaration.keepBindings.every(variableType) ||
       !Array.isArray(declaration.bindingNames) || !declaration.bindingNames.every(name => typeof name === "string" && name.length > 0))
     return invalid("xAPI returned invalid Artifact variable configuration");
+  if (declaration.nativeMetadataCompleteSupported !== undefined &&
+      typeof declaration.nativeMetadataCompleteSupported !== 'boolean')
+    return invalid('xAPI returned invalid native metadata support');
+  let bindings: WorkerVariableDeclaration['bindings'];
+  if (declaration.bindings !== undefined) {
+    if (!Array.isArray(declaration.bindings)) return invalid('xAPI returned invalid Artifact binding types');
+    const entries = new Set<string>();
+    bindings = declaration.bindings.map(value => {
+      const binding = record(value);
+      if ((binding.type !== 'assets' && binding.type !== 'version_metadata') ||
+          !isWorkerBindingName(binding.name) || entries.has(`${binding.type}:${binding.name}`))
+        return invalid('xAPI returned invalid or duplicate Artifact binding types');
+      entries.add(`${binding.type}:${binding.name}`);
+      return {type: binding.type, name: binding.name};
+    });
+    const names = new Set(bindings.map(binding => binding.name));
+    if (names.size !== new Set(declaration.bindingNames).size || declaration.bindingNames.some(name => !names.has(name)))
+      return invalid('Artifact binding types do not match its binding names');
+    if (bindings.filter(binding => binding.type === 'assets').length > 1 ||
+        bindings.filter(binding => binding.type === 'version_metadata').length > 1)
+      return invalid('xAPI returned multiple Artifact binding declarations of one type');
+  }
   return {
     keepBindings: [...new Set(declaration.keepBindings)],
     variables: variables(declaration.variables),
     bindingNames: [...new Set(declaration.bindingNames as string[])],
+    ...(bindings !== undefined ? {bindings} : {}),
+    ...(declaration.nativeMetadataCompleteSupported !== undefined
+      ? {nativeMetadataCompleteSupported: declaration.nativeMetadataCompleteSupported as boolean} : {}),
   };
 }
 
