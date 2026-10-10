@@ -1,3 +1,4 @@
+import { WORKER_CLASS_IDENTIFIER } from './workers-binding-validation.ts';
 import { existsSync, realpathSync, readFileSync, statSync } from "fs";
 import { dirname, isAbsolute, join, parse, relative, resolve } from "path";
 import { z } from "zod";
@@ -33,14 +34,12 @@ export const workerManagedResourceSchema = z
     ]),
     bindingName: z
       .string()
-      .regex(
-        /^[A-Za-z][A-Za-z0-9_]{0,63}$/,
-        "must start with A-Z or a-z and contain only letters, 0-9, and underscore",
-      ),
+      .min(1),
     className: z
       .string()
-      .regex(/^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/)
+      .regex(WORKER_CLASS_IDENTIFIER)
       .optional(),
+    workflowName: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(),
     location: z
       .enum(["wnam", "enam", "weur", "eeur", "apac", "oc"])
       .optional(),
@@ -61,6 +60,9 @@ export const workerManagedResourceSchema = z
         path: ["className"],
         message: "is only valid for a durable_object or workflow resource",
       });
+    }
+    if (resource.workflowName && (resource.type !== "workflow" || !resource.className)) {
+      context.addIssue({ code: "custom", path: ["workflowName"], message: "requires a workflow resource with className" });
     }
     if (
       resource.location &&
@@ -84,7 +86,6 @@ export const workerManagedResourceSchema = z
 
 const desiredResourcesSchema = z
   .array(workerManagedResourceSchema)
-  .max(100)
   .default([])
   .superRefine((resources, context) => {
     const seen = new Set<string>();
@@ -101,21 +102,24 @@ const desiredResourcesSchema = z
   });
 
 const desiredSecretsSchema = z
-  .array(
-    z
-      .string()
-      .regex(
-        /^[A-Z][A-Z0-9_]{0,63}$/,
-        "must start with A-Z and contain only A-Z, 0-9, and underscore",
-      ),
-  )
-  .max(100)
+  .array(z.string().min(1))
   .default([])
   .transform((secrets) => [...new Set(secrets)].sort());
 
+export const workerQueueConsumerSchema = z.object({
+  bindingName: z.string().min(1),
+  queue: z.string().min(1),
+  max_batch_size: z.number().int().optional(),
+  max_batch_timeout: z.number().int().optional(),
+  max_retries: z.number().int().optional(),
+  retry_delay: z.number().int().optional(),
+  max_concurrency: z.number().int().optional(),
+  deadLetterBinding: z.string().min(1).optional(),
+}).strict();
+
 const environmentSchema = z
   .object({
-    dailyBudgetUsd: z.number().min(0.1).max(100),
+    dailyBudgetUsd: z.number().finite().min(0).nullable().default(null),
     defaultResourceLocation: z.enum(["wnam", "enam", "weur", "eeur", "apac", "oc"]).optional(),
     placementMode: z.enum(["off", "smart"]).optional(),
     healthCheck: z
@@ -125,6 +129,10 @@ const environmentSchema = z
       .default("/health"),
     resources: desiredResourcesSchema,
     secrets: desiredSecretsSchema,
+    queueConsumers: z.array(workerQueueConsumerSchema).optional(),
+    queueBindings: z.record(z.string().min(1), z.string().min(1)).optional(),
+    crons: z.array(z.string().min(1)).optional(),
+    containers: z.lazy(() => containersSchema).optional(),
   })
   .strict();
 
@@ -133,10 +141,7 @@ const staticAssetsSchema = z
     directory: relativeProjectPath,
     binding: z
       .string()
-      .regex(
-        /^[A-Za-z][A-Za-z0-9_]{0,63}$/,
-        "must start with A-Z or a-z and contain only letters, 0-9, and underscore",
-      )
+      .min(1)
       .optional(),
     htmlHandling: z
       .enum([
@@ -164,7 +169,7 @@ const staticAssetsSchema = z
 export const workerContainerSchema = z
   .object({
     name: z.string().regex(/^[a-z](?:[a-z0-9-]{0,62}[a-z0-9])?$/),
-    className: z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/),
+    className: z.string().regex(WORKER_CLASS_IDENTIFIER),
     image: z
       .string()
       .max(512)
@@ -173,15 +178,19 @@ export const workerContainerSchema = z
         'must be a remote image in Cloudflare Registry, Docker Hub, ECR, or Artifact Registry',
       ),
     instanceType: z
-      .enum(['lite', 'basic', 'standard-1', 'standard-2', 'standard-3', 'standard-4'])
+      .union([
+        z.enum(['lite', 'basic', 'standard-1', 'standard-2', 'standard-3', 'standard-4', 'dev', 'standard']),
+        z.object({ vcpu: z.number().finite().positive(), memory_mib: z.number().int().positive().safe(),
+          disk_mb: z.number().int().positive().safe() }).strict(),
+      ])
       .default('lite'),
-    maxInstances: z.number().int().min(1).max(100).default(20),
+    maxInstances: z.number().int().positive().safe().default(20),
     constraints: z
       .object({
         regions: z
           .array(z.enum(['ENAM', 'WNAM', 'EEUR', 'WEUR', 'APAC', 'SAM', 'ME', 'OC', 'AFR']))
           .min(1)
-          .max(8)
+
           .optional(),
         jurisdiction: z.enum(['eu', 'fedramp']).optional(),
       })
@@ -193,7 +202,6 @@ export const workerContainerSchema = z
 
 const containersSchema = z
   .array(workerContainerSchema)
-  .max(10)
   .superRefine((containers, context) => {
     const names = new Set<string>();
     const classes = new Set<string>();
@@ -226,7 +234,7 @@ export const workerProjectConfigSchema = z
     wrangler: relativeProjectPath,
     build: z
       .object({
-        command: z.string().min(1).max(1000),
+        command: z.string().min(1),
         output: relativeProjectPath,
         main: relativeProjectPath.optional(),
       })
@@ -244,9 +252,14 @@ export const workerProjectConfigSchema = z
 
 export type WorkerProjectConfig = z.infer<typeof workerProjectConfigSchema>;
 
+export function workerEnvironmentContainers(config: WorkerProjectConfig, environment: 'preview' | 'production') {
+  return config.environments[environment].containers ?? config.containers ??
+    (config.environments.preview.containers !== undefined || config.environments.production.containers !== undefined ? [] : undefined);
+}
+
 export function assertWorkerContainerBindings(config: WorkerProjectConfig): void {
-  for (const container of config.containers || []) {
-    for (const environment of ['preview', 'production'] as const) {
+  for (const environment of ['preview', 'production'] as const) {
+    for (const container of workerEnvironmentContainers(config, environment) || []) {
       const matching = config.environments[environment].resources.filter(
         (resource) =>
           resource.type === 'durable_object' &&
@@ -283,10 +296,9 @@ function sensitiveConfigPath(
   path: string[] = [],
 ): string | null {
   if (typeof value === "string") {
-    // xAPI issues sk- keys; older CLI configuration also uses xapi_.
-    // "xapi-" is an ordinary project/path prefix, not a credential format.
-    // Check values even in public identifiers: a real key must not leak there.
-    return /\b(?:(?:cfat|sk)[-_]|xapi_)[A-Za-z0-9_+/=-]{12,}\b/i.test(value)
+    // xapi- is a public project/path prefix, not a credential prefix.
+    // Keep scanning commands for real embedded keys rather than exempting them.
+    return /\b(?:cfat[-_]|sk[-_]|xapi_)[A-Za-z0-9_+/=-]{12,}\b/i.test(value)
       ? path.join(".") || "<root>"
       : null;
   }

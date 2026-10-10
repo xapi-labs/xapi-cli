@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   mkdirSync,
@@ -10,7 +10,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HttpError, RequestTimeoutError } from "../client.ts";
+import { HttpError, RequestTimeoutError, WorkerObjectUploadError } from "../client.ts";
+import {WorkerArtifactObjectUploadError} from '../workers-direct-upload.ts';
 import {
   type PushClient,
   WorkerPushError,
@@ -21,12 +22,42 @@ import {
   WORKER_PROJECT_SCHEMA_URL,
   loadWorkerProject,
 } from "../workers-project.ts";
+import {attachWorkerNativeMetadata,loadWorkerArtifact,workerArtifactDirectUpload} from '../workers-artifact.ts';
+import {cleanupNativeWorkerUpload,cleanupNativeWorkerUploadChildren,nativeWorkerUpload} from './workers-direct-upload-native.ts';
+afterAll(cleanupNativeWorkerUpload);
 
 const roots: string[] = [];
 const workerId = "22222222-2222-4222-8222-222222222222";
 const originalXapiKey = process.env.XAPI_KEY;
 
-afterEach(() => {
+for (const type of ["kv_namespace", "d1_database", "r2_bucket", "durable_object", "queue", "workflow", "assets"]) {
+  test(`required Secret collision with ${type} stops preview before any remote write`, async () => {
+    const bindingName = "COLLISION";
+    const resource = { type, bindingName, ...(["durable_object", "workflow"].includes(type) ? { className: "Example" } : {}) };
+    const root = fixture({ resources: type === "assets" ? [] : [resource] });
+    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify({
+      compatibility_date: "2026-08-26",
+      env: { preview: { secrets: { required: [bindingName] },
+        ...(type === "assets" ? { assets: { directory: "dist/client", binding: bindingName } } : {}) } },
+    }));
+    const platform = fakePlatform({ secrets: [bindingName] });
+    await expect(pushWorkerProject({
+      cwd: root, environment: "preview", confirm: async () => true,
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" }, client: platform.client,
+      runBuild: async () => {
+        mkdirSync(join(root, "dist/client"), { recursive: true });
+        writeFileSync(join(root, "dist/client/index.html"), "fixture");
+        writeFileSync(join(root, "dist/worker.mjs"), "export class Example {} export default {fetch(){return new Response('ok')}};");
+      },
+      fetchPublic: (async () => Response.json({ ok: true })) as unknown as typeof fetch,
+      sleep: async () => undefined,
+    })).rejects.toMatchObject({ message: `Duplicate Worker binding: ${bindingName}`, recovery: { remoteChangesApplied: false } });
+    expect(platform.calls).toEqual({ createWorker: 0, updateBudget: 0, createResource: 0, uploadArtifact: 0, deploy: 0 });
+  });
+}
+
+afterEach(async () => {
+  await cleanupNativeWorkerUploadChildren();
   if (originalXapiKey === undefined) delete process.env.XAPI_KEY;
   else process.env.XAPI_KEY = originalXapiKey;
   for (const root of roots.splice(0)) {
@@ -261,6 +292,49 @@ function fakePlatform(
 }
 
 describe("workers push preview", () => {
+  test('preserves object upload diagnostics in push without replaying the upload or deploying',async()=>{
+    const root=fixture({linked:true}),platform=fakePlatform({exists:true});
+    platform.client.uploadWorkerArtifact=async()=>{
+      platform.calls.uploadArtifact++;
+      throw new WorkerArtifactObjectUploadError(workerId,'safe-owned-upload',new WorkerObjectUploadError({
+        failureType:'transport_error',code:'UND_ERR_SOCKET',phase:'awaiting_response',objectSizeBytes:1024,
+        bodySentBytes:1024,elapsedMs:250,idleMs:50}));
+    };
+    const failure=await pushWorkerProject({cwd:root,environment:'preview',clientOptions:{apiHost:'localhost:3003',apiKey:'test-key'},
+      client:platform.client,confirm:async()=>true,runBuild:async()=>{
+        mkdirSync(join(root,'dist'),{recursive:true});writeFileSync(join(root,'dist/worker.mjs'),'export default {fetch(){return new Response("ok")}}');
+      },sleep:async()=>undefined}).catch(error=>error);
+    expect(failure).toBeInstanceOf(WorkerPushError);
+    expect(failure.recovery).toMatchObject({uploadId:'safe-owned-upload',failureType:'transport_error',
+      code:'UND_ERR_SOCKET',objectSizeBytes:1024,bodySentBytes:1024,resourcesPreserved:true});
+    expect(platform.calls.uploadArtifact).toBe(1);expect(platform.calls.deploy).toBe(0);
+  });
+  test("ordinary push after a matching successful rollback retains the current activation without a deployment write", async () => {
+    const root = fixture({ resources: [{ type: "kv_namespace", bindingName: "STATE" }] });
+    const platform = fakePlatform();
+    const fetchPublic = (async () => Response.json({ ok: true })) as unknown as typeof fetch;
+    const options = { cwd: root, environment: "preview" as const,
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" }, client: platform.client,
+      confirm: async () => true, fetchPublic, sleep: async () => undefined,
+      runBuild: async () => {
+        mkdirSync(join(root, "dist"), { recursive: true });
+        writeFileSync(join(root, "dist/worker.mjs"), "export default {fetch(){return new Response('ok')}};");
+      } };
+    const first = await pushWorkerProject(options);
+    const target = platform.state.deployments[0];
+    const rollback = { ...target, id: "rollback-current", status: "ACTIVE", idempotencyKey: "rollback:successful",
+      providerResult: { rollbackTargetDeploymentId: first.deployment.id } };
+    platform.state.deployments.unshift(rollback);
+    const plans: unknown[] = [];
+    const result = await pushWorkerProject({ ...options, onPlan: plan => plans.push(plan) });
+    expect(result.deployment.id).toBe(rollback.id);
+    expect(platform.calls).toEqual({ createWorker: 1, updateBudget: 0, createResource: 1, uploadArtifact: 1, deploy: 1 });
+    expect(platform.state.deployments).toHaveLength(2);
+    expect(plans).toContainEqual(expect.objectContaining({ actions: expect.arrayContaining([
+      expect.objectContaining({ kind: "deployment", operation: "NO_CHANGE", key: rollback.id }),
+    ]) }));
+  });
+
   test("push creates and binds D1 without touching missing migrations or the migration API", async () => {
     const root = fixture({ resources: [{ type: "d1_database", bindingName: "DB" }] });
     const config = JSON.parse(readFileSync(join(root, "wrangler.jsonc"), "utf8"));
@@ -284,6 +358,46 @@ describe("workers push preview", () => {
     expect(sqlCalls).toBe(0);
     expect(platform.calls.createResource).toBe(1);
     expect(platform.state.deployments[0].resourceIds).toEqual(["resource-1"]);
+  });
+
+  test('returns the uploaded artifact identity after native metadata changes its hash and size',async()=>{
+    const root=fixture({linked:true}),platform=fakePlatform({exists:true});
+    const metadata={observability:{enabled:true,head_sampling_rate:0.25}};
+    const wranglerPath=join(root,'wrangler.jsonc'),wrangler=JSON.parse(readFileSync(wranglerPath,'utf8'));
+    writeFileSync(wranglerPath,JSON.stringify({...wrangler,...metadata}));
+    let uploaded:{id:string;contentSha256:string;sizeBytes:number}|undefined;
+    let baseIdentity:{contentSha256:string;sizeBytes:number}|undefined;
+    platform.client.uploadWorkerArtifact=async(_options,_workerId,input)=>{
+      const base=loadWorkerArtifact(join(root,'dist/worker.mjs'));
+      baseIdentity=base;
+      const expected=attachWorkerNativeMetadata(base,metadata);
+      expect('bundle' in input).toBe(true);
+      expect(input).toMatchObject(expected.upload);
+      expect(expected.contentSha256).not.toBe(base.contentSha256);
+      expect(expected.sizeBytes).not.toBe(base.sizeBytes);
+      uploaded={id:'native-artifact',contentSha256:expected.contentSha256,sizeBytes:expected.sizeBytes};
+      platform.state.artifacts.push({...uploaded,idempotencyKey:input.idempotencyKey});
+      platform.calls.uploadArtifact++;
+      return uploaded;
+    };
+    const result=await pushWorkerProject({cwd:root,environment:'preview',clientOptions:{apiHost:'localhost:3003',apiKey:'test-key'},client:platform.client,
+      confirm:async()=>true,runBuild:async()=>{mkdirSync(join(root,'dist'),{recursive:true});writeFileSync(join(root,'dist/worker.mjs'),"export default {fetch(){return new Response('ok')}};");},
+      fetchPublic:(async()=>Response.json({ok:true})) as unknown as typeof fetch,sleep:async()=>undefined});
+    expect(result.status).toBe('ACTIVE');
+    expect(result.artifact).toEqual(uploaded!);
+    expect(result.artifact.contentSha256).not.toBe(baseIdentity!.contentSha256);
+    expect(result.artifact.sizeBytes).not.toBe(baseIdentity!.sizeBytes);
+    expect(platform.state.deployments[0].artifactId).toBe(uploaded!.id);
+    expect(platform.calls.uploadArtifact).toBe(1);expect(platform.calls.deploy).toBe(1);
+  });
+  test('records configured required Secret names in deployment input',async()=>{
+    const root=fixture({secrets:['APP_TOKEN']}),platform=fakePlatform({secrets:['APP_TOKEN']});
+    const deploy=platform.client.deployWorker.bind(platform.client);let required:unknown;
+    platform.client.deployWorker=async(...args)=>{required=args[2].requiredSecrets;return deploy(...args);};
+    await pushWorkerProject({cwd:root,environment:'preview',clientOptions:{apiHost:'localhost:3003',apiKey:'test-key'},client:platform.client,
+      confirm:async()=>true,runBuild:async()=>{mkdirSync(join(root,'dist'),{recursive:true});writeFileSync(join(root,'dist/worker.mjs'),"export default {fetch(){return new Response('ok')}};");},
+      fetchPublic:(async()=>Response.json({ok:true})) as unknown as typeof fetch,sleep:async()=>undefined});
+    expect(required).toEqual(['APP_TOKEN']);
   });
   test("passes only the explicit retention quote version to resource creation and deployment", async () => {
     const root=fixture({resources:[{type:"kv_namespace",bindingName:"STATE"}]});
@@ -344,7 +458,7 @@ describe("workers push preview", () => {
   test("recovers uncertain writes, hides credentials from build, waits ACTIVE, and is repeatable", async () => {
     const root = fixture({
       resources: [{ type: "kv_namespace", bindingName: "STATE" }],
-      buildCommand: "node build.mjs",
+      buildCommand: "node build.mjs # " + "native build option ".repeat(500),
     });
     writeFileSync(
       join(root, "build.mjs"),
@@ -477,7 +591,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(platform.calls.deploy).toBe(1);
   });
 
-  test("unreferenced resources remain stored but are excluded from deployed bindings", async () => {
+  test("updates a project without deleting or silently binding unrelated remote-only resources", async () => {
     const root = fixture({ linked: true });
     const platform = fakePlatform({ exists: true });
     platform.state.resources.push({
@@ -487,6 +601,9 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
       status: "ACTIVE",
     });
     let confirmations = 0;
+    let deployedBindings: string[] | undefined;
+    const deploy = platform.client.deployWorker;
+    platform.client.deployWorker = async (...args) => { deployedBindings = args[2].resourceIds as string[]; return deploy(...args); };
     await pushWorkerProject({
         cwd: root,
         environment: "preview",
@@ -702,7 +819,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     });
   });
 
-  test("immutable Artifact upload can retry; an unconfirmed publish requires an explicit retry", async () => {
+  test("lost Artifact and deployment responses reconcile existing receipts without repeating either write", async () => {
     const root = fixture({ linked: true });
     const platform = fakePlatform({ exists: true });
     const upload = platform.client.uploadWorkerArtifact.bind(platform.client);
@@ -711,17 +828,15 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     let deployAttempts = 0;
     platform.client.uploadWorkerArtifact = async (...args) => {
       uploadAttempts += 1;
-      if (uploadAttempts === 1) {
-        throw new HttpError(500, "transient artifact failure");
-      }
-      return upload(...args);
+      const result = await upload(...args);
+      if (uploadAttempts === 1) throw new HttpError(500, "lost artifact response");
+      return result;
     };
     platform.client.deployWorker = async (...args) => {
       deployAttempts += 1;
-      if (deployAttempts === 1) {
-        throw new HttpError(500, "transient deployment failure");
-      }
-      return deploy(...args);
+      const result = await deploy(...args);
+      if (deployAttempts === 1) throw new HttpError(500, "lost deployment response");
+      return result;
     };
     const options = {
       cwd: root,
@@ -740,14 +855,162 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
         Response.json({ ok: true })) as unknown as unknown as typeof fetch,
       sleep: async () => undefined,
     };
-    await expect(pushWorkerProject(options)).rejects.toThrow("No second publish was sent");
+    expect((await pushWorkerProject(options)).status).toBe("ACTIVE");
     expect(deployAttempts).toBe(1);
     const result = await pushWorkerProject(options);
     expect(result.status).toBe("ACTIVE");
-    expect(uploadAttempts).toBe(2);
-    expect(deployAttempts).toBe(2);
+    expect(uploadAttempts).toBe(1);
+    expect(deployAttempts).toBe(1);
     expect(platform.calls.uploadArtifact).toBe(1);
     expect(platform.calls.deploy).toBe(1);
+  });
+
+  test.each(["legacy-race", "pending", "old-api", "delayed-ready"] as const)("recovers owned immutable confirmation safely: %s", async mode => {
+    const root=fixture({linked:true});
+    const configPath=join(root,'xapi.worker.json');
+    const config=JSON.parse(readFileSync(configPath,'utf8'));
+    config.build={command:'fake-build',output:'dist',main:'worker.mjs'};
+    writeFileSync(configPath,JSON.stringify(config));
+    const platform=fakePlatform({exists:true});
+    let prepared:ReturnType<typeof workerArtifactDirectUpload>;
+    let immutable:{id:string;workerId:string;idempotencyKey:string;contentSha256:string;sizeBytes:number};
+    let host='';let prepares=0,confirms=0,puts=0,statusReads=0;
+    let confirming=false;
+    let releaseCommit!:()=>void;
+    const commitBarrier=new Promise<void>(resolve=>{releaseCommit=resolve;});
+    let confirmation:Promise<void>|undefined;
+    const keys:string[]=[];
+    const json=(value:unknown)=>Response.json(value);
+    const page=(cursor:number)=>{
+      const files=[...prepared.files].slice(cursor,cursor+128).map(([sha256,bytes])=>({sha256,size:bytes.length,
+        url:host+'/object/'+sha256,headers:{'x-amz-checksum-sha256':Buffer.from(sha256,'hex').toString('base64')}}));
+      return {uploadId:'same-owned-session',expiresAt:new Date(Date.now()+900000).toISOString(),files,
+        nextCursor:cursor+files.length<prepared.files.size?cursor+files.length:null};
+    };
+    const server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(req){
+      const path=new URL(req.url).pathname+new URL(req.url).search;
+      const body=Buffer.from(await req.arrayBuffer());
+      if(path.startsWith('/object/')) {
+        puts++;const sha256=path.split('/').at(-1)!;
+        expect(req.headers.get('xapi-key')??undefined).toBeUndefined();
+        expect(body.equals(prepared.files.get(sha256)!)).toBe(true);return new Response();
+      }
+      if(path.endsWith('/status')) {
+        statusReads++;
+        if(mode==='old-api'){return new Response(null,{status:404});}
+        if(mode==='delayed-ready'&&statusReads===2){releaseCommit();await confirmation;}
+        return json({uploadId:'same-owned-session',status:confirming?'UPLOADING':'READY',
+          ...(!confirming?{artifact:immutable}:{})});
+      }
+      if(path.endsWith('/confirm')) {
+        confirms++;confirming=true;
+        confirmation=commitBarrier.then(()=>{platform.state.artifacts.push(immutable);confirming=false;});
+        return new Response('simulated lost confirmation response',{status:502});
+      }
+      if(req.method==='POST') {
+        prepares++;keys.push(JSON.parse(body.toString()).idempotencyKey);
+        if(prepares===2)expect(confirming).toBe(true);
+        return json(page(0));
+      }
+      const cursor=Number(new URL(path,host).searchParams.get('cursor'));
+      if(mode==='legacy-race'&&prepares===2&&cursor===128) {
+        // First confirmation's transaction wins after prepare reused the session.
+        releaseCommit();await confirmation;
+        return json({...page(cursor),files:[],nextCursor:null});
+      }
+      return json(page(cursor));
+    }});
+    host='http://127.0.0.1:'+server.port;
+    platform.client.uploadWorkerArtifact=async(_options,_id,input)=>{
+      platform.calls.uploadArtifact++;prepared=workerArtifactDirectUpload(input);
+      immutable={id:'first-confirmation-artifact',workerId,idempotencyKey:input.idempotencyKey,...prepared.identity};
+      const apiUrl=host+'/api/v1/workers/'+workerId+'/artifact-uploads';
+      const headers={'XAPI-KEY':'test-key','Content-Type':'application/json'};
+      if(mode==='legacy-race'&&platform.calls.uploadArtifact===1) {
+        // Preserve the old client's protocol behavior to reproduce its retry race.
+        let oldPage=await (await fetch(apiUrl,{method:'POST',headers,body:JSON.stringify(prepared.input)})).json() as ReturnType<typeof page>;
+        while(true) {
+          for(const file of oldPage.files)await fetch(file.url,{method:'PUT',body:new Uint8Array(prepared.files.get(file.sha256)!),headers:file.headers});
+          if(oldPage.nextCursor===null)break;
+          oldPage=await (await fetch(apiUrl+'/same-owned-session?cursor='+oldPage.nextCursor,{headers})).json() as ReturnType<typeof page>;
+        }
+        const response=await fetch(apiUrl+'/same-owned-session/confirm',{method:'POST',headers});
+        throw new HttpError(response.status,'simulated legacy confirmation transport failure');
+      }
+      return nativeWorkerUpload(input,apiUrl,headers);
+    };
+    try {
+      const pushOptions={cwd:root,environment:'preview' as const,
+        clientOptions:{apiHost:'localhost:3003',apiKey:'test-key'},client:platform.client,confirm:async()=>true,
+        runBuild:async()=>{
+          mkdirSync(join(root,'dist'),{recursive:true});
+          writeFileSync(join(root,'dist/worker.mjs'),'export default {fetch(){return new Response("ok")}}');
+          for(let i=0;i<256;i++)writeFileSync(join(root,`dist/chunk-${i}.txt`),`distinct ${i}`);
+        },fetchPublic:(async()=>new Response('ok')) as unknown as typeof fetch,sleep:async()=>undefined};
+      if(mode==='pending'||mode==='old-api') {
+        const failure=await pushWorkerProject(pushOptions).catch(error=>error as WorkerPushError);
+        expect(failure).toBeInstanceOf(WorkerPushError);
+        expect((failure as WorkerPushError).recovery).toMatchObject({errorCode:'worker_artifact_confirmation_pending',
+          uploadId:'same-owned-session',status:mode==='pending'?'UPLOADING':'UNAVAILABLE',firstFailure:{type:'HttpError',status:502}});
+        expect({prepares,confirms,puts,statusReads}).toEqual({prepares:1,confirms:1,puts:257,statusReads:mode==='pending'?5:1});
+        expect(platform.calls.uploadArtifact).toBe(1);expect(platform.calls.deploy).toBe(0);
+        expect(platform.state.artifacts).toHaveLength(0);
+        releaseCommit();await confirmation;
+      }
+      const result=await pushWorkerProject(pushOptions);
+      expect(result.artifact).toEqual({id:immutable!.id,contentSha256:immutable!.contentSha256,sizeBytes:immutable!.sizeBytes});
+      expect(prepared!.files.size).toBe(257);
+      expect({prepares,confirms,puts,statusReads}).toEqual(mode==='legacy-race'
+        ?{prepares:2,confirms:1,puts:385,statusReads:1}
+        :(mode==='pending'||mode==='old-api')?{prepares:1,confirms:1,puts:257,statusReads:mode==='pending'?5:1}:{prepares:1,confirms:1,puts:257,statusReads:2});
+      if(mode==='legacy-race')expect(keys[0]).toBe(keys[1]);
+      expect(platform.state.artifacts).toHaveLength(1);
+      expect(platform.calls.deploy).toBe(1);expect(platform.state.deployments[0].artifactId).toBe(immutable!.id);
+    } finally {
+      releaseCommit();
+      server.stop(true);
+    }
+  },30_000);
+
+  test("a new explicit push follows native confirmation without replaying the failed operation", async () => {
+    const root = fixture({linked:true});
+    const platform = fakePlatform({exists:true});
+    const options = {cwd:root,environment:'preview' as const,
+      clientOptions:{apiHost:'localhost:3003',apiKey:'test-key'},client:platform.client,
+      confirm:async()=>true,runBuild:async()=>{
+        mkdirSync(join(root,'dist'),{recursive:true});
+        writeFileSync(join(root,'dist/worker.mjs'),"export default {fetch(){return new Response('ok')}};");
+      },fetchPublic:(async()=>Response.json({ok:true})) as unknown as typeof fetch,sleep:async()=>undefined};
+    await pushWorkerProject(options);
+    const original=platform.state.deployments[0];
+    original.status='FAILED';
+    original.outcome={operationId:'old-operation',providerEffect:'UNCONFIRMED'};
+    let observed=false;
+    const get=platform.client.getWorker.bind(platform.client);
+    platform.client.getWorker=async(...args)=>{
+      if(platform.calls.deploy===1)platform.state.deploymentReads=-100;
+      return get(...args);
+    };
+    platform.client.recoverWorkerControlOperation=async(_options,_worker,id)=>{
+      expect(id).toBe('old-operation');observed=true;
+      original.outcome={operationId:'old-operation',providerEffect:'ALL_WRITES_CONFIRMED',observation:{status:'MATCH'}};
+      return {};
+    };
+    const deploy=platform.client.deployWorker.bind(platform.client);
+    platform.client.deployWorker=async(...args)=>{
+      expect(observed).toBe(true);
+      const result=await deploy(...args);
+      (result as Record<string,unknown>).id='deployment-new';
+      platform.state.deployments.unshift(platform.state.deployments.pop()!);
+      platform.state.deploymentReads=0;
+      return result;
+    };
+    const next=await pushWorkerProject(options);
+    expect(next.status).toBe('ACTIVE');
+    expect(platform.calls.deploy).toBe(2);
+    expect(platform.calls.uploadArtifact).toBe(1);
+    expect(platform.state.deployments[0].idempotencyKey).not.toBe(original.idempotencyKey);
+    expect(original.status).toBe('FAILED');
   });
 
   test("reports the failed build command and recovery when its executable is missing", async () => {
@@ -939,87 +1202,40 @@ describe("deployment quote preflight", () => {
     return { root, platform, quotePaths, options };
   }
 
-  for (const version of [undefined, "old-price"]) {
-    test(`missing or stale quote (${version}) stops before resource writes and retains linked Worker`, async () => {
-      const { root, platform, quotePaths, options } = setup();
-      let failure: unknown;
-      try { await pushWorkerProject({ ...options, retentionPriceVersion: version }); }
-      catch (error) { failure = error; }
-      expect(failure).toBeInstanceOf(WorkerPushError);
-      expect((failure as WorkerPushError).message).toContain(version ? "quote changed" : "quote required");
-      expect(quotePaths.sort()).toEqual(["", "/quote/KV_NAMESPACE", "/quote/WORKER"]);
-      expect(platform.calls).toEqual({ createWorker: 1, updateBudget: 0, createResource: 0, uploadArtifact: 0, deploy: 0 });
-      expect(loadWorkerProject(root).config.workerId).toBe(workerId);
-      expect(JSON.stringify((failure as WorkerPushError).recovery)).toContain("price-v2");
-    });
-  }
-
-  test("reviewed quote deploys, no-op rerun skips quotes without republishing", async () => {
-    const { platform, quotePaths, options } = setup();
-    const first = await pushWorkerProject({ ...options, retentionPriceVersion: "price-v2" });
-    const requests = quotePaths.length;
-    const second = await pushWorkerProject(options);
+  test("first deployment and new resources do not require selecting a retention product", async () => {
+    const { root, platform, quotePaths, options } = setup();
+    const first = await pushWorkerProject(options);
     expect(first.status).toBe("ACTIVE");
-    expect(second.status).toBe("ACTIVE");
-    expect(quotePaths.length).toBe(requests);
-    expect(platform.calls.deploy).toBe(1);
+    expect(quotePaths).toEqual([]);
     expect(platform.calls.createResource).toBe(1);
+    expect(platform.calls.deploy).toBe(1);
+    expect(loadWorkerProject(root).config.workerId).toBe(workerId);
+    expect((await pushWorkerProject(options)).status).toBe("ACTIVE");
+    expect(platform.calls.deploy).toBe(1);
+    expect(quotePaths).toEqual([]);
   });
 
-  test("disabled retention introduces no quote requirement", async () => {
+  test("an informational quote outage cannot gate deployment", async () => {
     const { platform, options } = setup();
-    platform.client.workerRetention = async () => ({ enabled: false });
+    platform.client.workerRetention = async () => { throw new HttpError(503,"quote unavailable"); };
     expect((await pushWorkerProject(options)).status).toBe("ACTIVE");
   });
 
-  test("linked project stops before even a budget update when acceptance is missing", async () => {
-    const { root, platform, options } = setup(true);
-    const path = join(root, "xapi.worker.json");
-    const config = JSON.parse(readFileSync(path, "utf8"));
-    config.environments.preview.dailyBudgetUsd = 0.50;
-    writeFileSync(path, JSON.stringify(config));
-    await expect(pushWorkerProject(options)).rejects.toThrow("Retention quote required");
-    expect(platform.calls).toEqual({ createWorker: 0, updateBudget: 0, createResource: 0, uploadArtifact: 0, deploy: 0 });
+  test("server insufficient funds propagate after its atomic admission without write replay", async () => {
+    const { platform, quotePaths, options } = setup();
+    let attempts = 0;
+    platform.client.createWorkerResource = async () => {
+      attempts++;
+      throw new HttpError(402,"insufficient_account_balance");
+    };
+    await expect(pushWorkerProject(options)).rejects.toThrow("insufficient_account_balance");
+    expect(attempts).toBe(1);
+    expect(quotePaths).toEqual([]);
+    expect(platform.calls.uploadArtifact).toBe(0);
+    expect(platform.calls.deploy).toBe(0);
   });
 
-  for (const response of [
-    new HttpError(503, "quote unavailable"),
-    { priceVersion: "price-v2", freezeUsd: "unknown" },
-    { freezeUsd: "0.10" },
-  ]) {
-    test(`unavailable or invalid quote stops provisioning: ${JSON.stringify(response)}`, async () => {
-      const { platform, options } = setup();
-      platform.client.workerRetention = async (_options, _id, _environment, path = "") => {
-        if (!path) return { enabled: true, holds: [] };
-        if (response instanceof Error) throw response;
-        return response;
-      };
-      await expect(pushWorkerProject({ ...options, retentionPriceVersion: "price-v2" })).rejects.toBeInstanceOf(WorkerPushError);
-      expect(platform.calls).toEqual({ createWorker: 1, updateBudget: 0, createResource: 0, uploadArtifact: 0, deploy: 0 });
-    });
-  }
-
-  test("quotes each type once, counts resources, and does not re-quote an existing Worker hold", async () => {
-    const { root, platform, options, quotePaths } = setup(true);
-    const path = join(root, "xapi.worker.json");
-    const config = JSON.parse(readFileSync(path, "utf8"));
-    config.environments.preview.resources.push({ type: "kv_namespace", bindingName: "CACHE" });
-    writeFileSync(path, JSON.stringify(config));
-    const retention = platform.client.workerRetention!;
-    platform.client.workerRetention = async (...args) => args[3]
-      ? retention(...args)
-      : { enabled: true, holds: [{ resourceType: "WORKER", releasedAt: null }] };
-    let failure: unknown;
-    try { await pushWorkerProject(options); } catch (error) { failure = error; }
-    expect(failure).toBeInstanceOf(WorkerPushError);
-    expect(quotePaths).toEqual(["/quote/KV_NAMESPACE"]);
-    expect((failure as WorkerPushError).recovery.quotes).toEqual([
-      { resourceType: "KV_NAMESPACE", count: 2, freezeUsdPerResource: "0.10", priceVersion: "price-v2" },
-    ]);
-    expect(platform.calls.createResource).toBe(0);
-  });
-
-  test("backend quote rejection after preflight stops without automatically accepting or retrying", async () => {
+  test("explicit server quote rejection propagates without automatically accepting or retrying", async () => {
     const { platform, options } = setup();
     let attempts = 0;
     platform.client.createWorkerResource = async (_options, _id, _env, input) => {
@@ -1140,7 +1356,7 @@ describe("R2 readiness during push", () => {
     },
   );
   test.each([true, false])(
-    "R2 retry quotes only if the original hold is missing: existing=%s",
+    "R2 retry keeps identity without client quote gating: existing=%s",
     async (held) => {
       const root = fixture({ linked: true, resources: desired }),
         platform = fakePlatform({ exists: true });
@@ -1194,18 +1410,10 @@ describe("R2 readiness during push", () => {
           );
         },
       };
-      if (held) {
-        await expect(pushWorkerProject(options)).resolves.toMatchObject({
-          status: "ACTIVE",
-        });
-        expect(quotes).toEqual([]);
-      } else {
-        await expect(pushWorkerProject(options)).rejects.toThrow(
-          "Retention quote required",
-        );
-        expect(quotes).toEqual(["/quote/R2_BUCKET"]);
-        expect(platform.calls.uploadArtifact).toBe(0);
-      }
+      await expect(pushWorkerProject(options)).resolves.toMatchObject({status:"ACTIVE"});
+      expect(quotes).toEqual([]);
+      expect(platform.state.resources).toHaveLength(1);
+      expect(platform.state.resources[0].id).toBe("same-resource");
     },
   );
   test.each([true, false])(
@@ -1431,4 +1639,22 @@ describe("R2 readiness during push", () => {
     expect(platform.calls.uploadArtifact).toBe(0);
     expect(platform.calls.deploy).toBe(0);
   });
+});
+
+
+test("bootstrap handles Wrangler-only required Secrets before Artifact upload", async () => {
+  const root=fixture();
+  writeFileSync(join(root,"wrangler.jsonc"),JSON.stringify({name:"push-agent",secrets:{required:["WRANGLER_ONLY"]}}));
+  const platform=fakePlatform();
+  let caught: WorkerPushError|undefined;
+  try {
+    await pushWorkerProject({cwd:root,environment:"preview",clientOptions:{apiHost:"localhost:3003",apiKey:"test"},
+      client:platform.client,confirm:async()=>true,runBuild:async()=>{
+        mkdirSync(join(root,"dist"),{recursive:true});writeFileSync(join(root,"dist/worker.mjs"),"export default {fetch(){return new Response('ok')}}");
+      }});
+  } catch(error){caught=error as WorkerPushError;}
+  expect(caught?.recovery.missingSecrets).toEqual(["WRANGLER_ONLY"]);
+  expect(platform.calls.uploadArtifact).toBe(0);
+  expect(platform.calls.deploy).toBe(0);
+  expect(loadWorkerProject(root).config.workerId).toBe(workerId);
 });

@@ -1,3 +1,4 @@
+import { isWorkerBindingName } from './workers-binding-validation.ts';
 import { randomUUID } from "node:crypto";
 import { readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { mergeResourceChanges, resourceSyncState, sameResource } from "./workers-resource-sync.ts";
@@ -56,6 +57,7 @@ export interface PullProjectResourcesResult {
     updated: string[];
     unchanged: string[];
     removed: string[];
+    pending: Array<{ bindingName: string; status: string; declared: boolean }>;
   }>;
   nextSteps: string[];
 }
@@ -129,10 +131,10 @@ function steps(environments: EnvironmentName[]): string[] {
 }
 
 function bindingName(value: string | undefined): string {
-  if (!value || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value)) {
+  if (!isWorkerBindingName(value)) {
     throw new WorkerProjectConfigError(
       "worker_project_resource_binding_invalid",
-      "Binding name must start with A-Z or a-z and contain only letters, 0-9, and underscore",
+      "Binding name must be a nonempty string",
     );
   }
   return value;
@@ -164,7 +166,8 @@ function sameOrConflict(
   const comparableLocation = state.requestedLocation || state.effectiveLocation;
   const conflicts =
     local.type !== remote.type ||
-    (["durable_object", "workflow"].includes(local.type) && local.className !== remote.className) ||
+    (["durable_object", "workflow"].includes(local.type) && local.className !== undefined && local.className !== remote.className) ||
+    (local.workflowName !== undefined && local.workflowName !== remote.workflowName) ||
     (local.location && local.location !== comparableLocation) ||
     (local.readReplication &&
       local.readReplication !== state.readReplication);
@@ -179,6 +182,7 @@ function sameOrConflict(
     ...(remote.className && !local.className
       ? { className: remote.className }
       : {}),
+    ...(remote.workflowName && !local.workflowName ? { workflowName: remote.workflowName } : {}),
     ...(remote.location && !local.location ? { location: remote.location } : {}),
     ...(remote.readReplication && !local.readReplication
       ? { readReplication: remote.readReplication }
@@ -224,6 +228,7 @@ export async function pullProjectResources(
     const updated: string[] = [];
     const unchanged: string[] = [];
     const removed: string[] = [];
+    const pending: PullProjectResourcesResult["environments"][number]["pending"] = [];
     const desired = config.environments[environment].resources;
     const observed: Resource[] = [];
     const baseline = sync.state.environments[environment];
@@ -232,6 +237,7 @@ export async function pullProjectResources(
       const rightName = remoteWorkerResourceState(right).bindingName || "";
       return leftName.localeCompare(rightName);
     })) {
+      if (raw.type === "CONTAINER_APPLICATION") continue;
       const state = remoteWorkerResourceState(raw);
       const remote = desiredResourceFromRemote(state);
       if (!state.bindingName) {
@@ -247,13 +253,14 @@ export async function pullProjectResources(
         );
       }
       seen.add(state.bindingName);
-      const ready =
-        resourceReadyForDeployment(state);
+      const ready = resourceReadyForDeployment(state);
       if (!ready) {
-        throw new WorkerProjectConfigError(
-          "worker_project_resource_pull_not_ready",
-          `${environment} binding ${state.bindingName} is ${state.status}; repair or wait for it before pulling`,
-        );
+        pending.push({ bindingName: state.bindingName, status: state.status || "UNKNOWN", declared: desired.some(item => item.bindingName === state.bindingName) });
+        // A live pending resource is not a remote deletion. Keep its previous
+        // observation for the three-way merge while exposing current status.
+        const previous = baseline?.remote.find(item => item.bindingName === state.bindingName);
+        if (previous) observed.push(previous);
+        continue;
       }
       if (!remote) {
         throw new WorkerProjectConfigError(
@@ -299,7 +306,7 @@ export async function pullProjectResources(
       changed ||= !!(added.length || updated.length || removed.length);
     }
     sync.state.environments[environment] = { local: structuredClone(config.environments[environment].resources), remote: observed };
-    result.push({ name: environment, added, updated, unchanged, removed });
+    result.push({ name: environment, added, updated, unchanged, removed, pending });
   }
 
   if (readFileSync(project.configPath, "utf8") !== originalConfig)

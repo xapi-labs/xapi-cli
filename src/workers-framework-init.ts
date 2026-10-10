@@ -12,6 +12,9 @@ import {
   WorkerProjectConfigError,
   workerProjectConfigSchema,
 } from "./workers-project.ts";
+import { findGeneratedWranglerConfig, importWranglerProject } from "./workers-wrangler-import.ts";
+
+export const STATIC_APPLICATION_WORKER_SOURCE = `export default {\n  async fetch(request, _env) {\n    const url = new URL(request.url);\n    if (url.pathname === "/health" || url.pathname === "/api/health") {\n      return Response.json({ ok: true });\n    }\n    return Response.json({ error: "not_found" }, { status: 404 });\n  },\n};\n`;
 
 type PackageJson = Record<string, unknown> & {
   name?: string;
@@ -22,6 +25,7 @@ type PackageJson = Record<string, unknown> & {
 };
 
 export type ExistingFramework =
+  | "worker"
   | "react-vite"
   | "vue-vite"
   | "vite"
@@ -34,8 +38,8 @@ export interface InitExistingFrameworkOptions {
   name: string;
   slug: string;
   compatibilityDate: string;
-  previewDailyBudgetUsd: number;
-  productionDailyBudgetUsd: number;
+  previewDailyBudgetUsd: number | null;
+  productionDailyBudgetUsd: number | null;
   defaultResourceLocation?: "wnam" | "enam" | "weur" | "eeur" | "apac" | "oc";
   placementMode?: "off" | "smart";
   framework?: string;
@@ -252,14 +256,34 @@ export function initExistingFrameworkProject(
   const wranglerPath = join(options.rootDir, "wrangler.jsonc");
   const workerPath = join(options.rootDir, "xapi-worker/index.mjs");
   assertNotSymlink(packagePath);
-  assertNotSymlink(join(options.rootDir, "xapi-worker"));
   assertAvailable(configPath);
-  if (existsSync(wranglerPath)) {
-    throw new WorkerProjectConfigError(
-      "worker_init_existing_wrangler",
-      "This project already has wrangler.jsonc; preserve it and run `xapi workers init --from-wrangler ./wrangler.jsonc`",
+  const nativeWrangler = findGeneratedWranglerConfig(options.rootDir) ||
+    ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].find(name => existsSync(join(options.rootDir, name)));
+  if (nativeWrangler) {
+    const imported = importWranglerProject({
+      cwd: options.rootDir,
+      wranglerPath: nativeWrangler,
+      previewDailyBudgetUsd: options.previewDailyBudgetUsd,
+      productionDailyBudgetUsd: options.productionDailyBudgetUsd,
+      defaultResourceLocation: options.defaultResourceLocation,
+      placementMode: options.placementMode,
+    });
+    if (!imported.wrote) throw new WorkerProjectConfigError(
+      "worker_init_native_import_required",
+      `Review the existing native configuration with xapi workers init --from-wrangler ${nativeWrangler}; ${imported.report.entries.filter(entry => entry.category === "UNSUPPORTED").map(entry => `${entry.path}: ${entry.message}`).join("; ")}`,
     );
+    return {
+      framework: "worker",
+      configPath: imported.configPath,
+      files: ["xapi.worker.json"],
+      nextSteps: [
+        ...imported.nextSteps,
+        ...imported.report.entries.filter(entry => entry.category === "REENTER").map(entry => `${entry.path}: ${entry.message}`),
+        "Preserve the application's native Worker entrypoint and complete Wrangler dry-run bundle; do not replace server routes with the static adapter",
+      ],
+    };
   }
+  assertNotSymlink(join(options.rootDir, "xapi-worker"));
   assertAvailable(workerPath);
   // Do not mix a new entrypoint with an existing adapter from an older init.
   assertAvailable(join(options.rootDir, "xapi-worker/index.ts"));
@@ -346,14 +370,13 @@ export function initExistingFrameworkProject(
       run_worker_first: ["/api/*", "/health"],
     },
   };
-  const worker = `export default {\n  async fetch(request, _env) {\n    const url = new URL(request.url);\n    if (url.pathname === "/health" || url.pathname === "/api/health") {\n      return Response.json({ ok: true });\n    }\n    return Response.json({ error: "not_found" }, { status: 404 });\n  },\n};\n`;
   const gitignore = appendGitignore(options.rootDir);
 
   writeFileSync(join(options.rootDir, ".gitignore"), gitignore, "utf8");
   writeFileSync(wranglerPath, `${JSON.stringify(wrangler, null, 2)}\n`, "utf8");
   writeFileSync(configPath, `${JSON.stringify(parsed.data, null, 2)}\n`, "utf8");
   mkdirSync(dirname(workerPath), { recursive: true });
-  writeFileSync(workerPath, worker, { encoding: "utf8", flag: "wx" });
+  writeFileSync(workerPath, STATIC_APPLICATION_WORKER_SOURCE, { encoding: "utf8", flag: "wx" });
 
   return {
     framework,

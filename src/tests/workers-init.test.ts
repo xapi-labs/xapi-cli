@@ -230,6 +230,76 @@ describe("workers init", () => {
     expect(existsSync(join(target, "xapi-worker/index.ts"))).toBe(false);
   });
 
+  for (const name of ["wrangler.jsonc", "wrangler.json", "wrangler.toml"]) {
+    test(`imports an existing native ${name} before guessing the application framework`, async () => {
+      const cwd = workspace();
+      const pkg = JSON.stringify({
+        name: "native-app", dependencies: { "some-server-framework": "latest" },
+        scripts: { build: "framework build", "build:cloud-worker": "framework build && wrangler deploy --dry-run --outfile dist/app.worker.bundle" },
+      });
+      writeFileSync(join(cwd, "package.json"), pkg);
+      mkdirSync(join(cwd, "dist"));
+      const source = 'export default {fetch(request) { return new Response(new URL(request.url).pathname === "/api/message" ? "Real API" : "Real SSR page"); }};';
+      const metadata = { main_module: "server.mjs", bindings: [], compatibility_date: "2026-09-10" };
+      writeFileSync(join(cwd, "dist/app.worker.bundle"), `--native\r\nContent-Disposition: form-data; name="metadata"\r\n\r\n${JSON.stringify(metadata)}\r\n--native\r\nContent-Disposition: form-data; name="server.mjs"; filename="server.mjs"\r\nContent-Type: application/javascript+module\r\n\r\n${source}\r\n--native--\r\n`);
+      const wrangler = name.endsWith(".toml")
+        ? 'name = "native-app"\nmain = "dist/server.mjs"\ncompatibility_date = "2026-09-10"\n'
+        : JSON.stringify({ name: "native-app", main: "dist/server.mjs", compatibility_date: "2026-09-10" });
+      writeFileSync(join(cwd, name), wrangler);
+      const result = initWorkerProject({ cwd, target: "." });
+      const project = loadWorkerProject(cwd);
+      expect(result.framework).toBe("worker");
+      expect(result.files).toEqual(["xapi.worker.json"]);
+      expect(project.config.wrangler).toBe(name);
+      expect(project.config.build).toEqual({ command: "npm run build:cloud-worker", output: "dist/app.worker.bundle" });
+      const artifact = await loadWorkerProjectBundle(project, "preview");
+      expect(artifact.upload).toMatchObject({ bundle: { modules: [{ path: "server.mjs", content: source }] } });
+      expect(readFileSync(join(cwd, name), "utf8")).toBe(wrangler);
+      expect(readFileSync(join(cwd, "package.json"), "utf8")).toBe(pkg);
+      expect(existsSync(join(cwd, "xapi-worker"))).toBe(false);
+    });
+  }
+
+  test("uses the generated deploy pointer and preserves the actual SSR config and assets", async () => {
+    const cwd = workspace();
+    const original = JSON.stringify({ name: "generated-ssr", dependencies: { next: "latest", react: "latest", vite: "latest" }, scripts: { build: "vite build" } });
+    writeFileSync(join(cwd, "package.json"), original);
+    mkdirSync(join(cwd, ".wrangler/deploy"), { recursive: true });
+    mkdirSync(join(cwd, "dist/server"), { recursive: true });
+    mkdirSync(join(cwd, "dist/client"));
+    writeFileSync(join(cwd, ".wrangler/deploy/config.json"), JSON.stringify({ configPath: "../../dist/server/wrangler.json" }));
+    writeFileSync(join(cwd, "dist/server/index.mjs"), 'export default {fetch() { return new Response("SSR content"); }};');
+    writeFileSync(join(cwd, "dist/client/app.css"), "body { color: blue; }");
+    const native = JSON.stringify({ name: "generated-ssr", main: "index.mjs", compatibility_date: "2026-09-10", assets: { directory: "../client", binding: "ASSETS", run_worker_first: true } });
+    writeFileSync(join(cwd, "dist/server/wrangler.json"), native);
+    // The pointer is authoritative even when the original root config exists.
+    writeFileSync(join(cwd, "wrangler.jsonc"), JSON.stringify({ name: "original", main: "src/index.ts" }));
+    const result = initWorkerProject({ cwd, target: "." });
+    expect(result.framework).toBe("worker");
+    const project = loadWorkerProject(cwd);
+    expect(project.config.wrangler).toBe("dist/server/wrangler.json");
+    expect(project.config.build.output).toBe("dist/server/index.mjs");
+    expect(project.config.assets).toEqual({ directory: "dist/client", binding: "ASSETS", runWorkerFirst: true });
+    const artifact = await loadWorkerProjectBundle(project, "preview");
+    expect(artifact.upload).toMatchObject({ bundle: {
+      modules: [{ content: 'export default {fetch() { return new Response("SSR content"); }};' }],
+      assets: { files: [{ path: "/app.css", contentType: "text/css" }], config: { runWorkerFirst: true } },
+    } });
+    expect(readFileSync(join(cwd, "package.json"), "utf8")).toBe(original);
+    expect(readFileSync(join(cwd, "dist/server/wrangler.json"), "utf8")).toBe(native);
+    expect(existsSync(join(cwd, "xapi-worker"))).toBe(false);
+  });
+
+  test("rejects a stale generated pointer without creating a fake static adapter", () => {
+    const cwd = workspace();
+    writeFileSync(join(cwd, "package.json"), JSON.stringify({ scripts: { build: "vite build" }, dependencies: { react: "latest", vite: "latest" } }));
+    mkdirSync(join(cwd, ".wrangler/deploy"), { recursive: true });
+    writeFileSync(join(cwd, ".wrangler/deploy/config.json"), JSON.stringify({ configPath: "../../dist/missing/wrangler.json" }));
+    expect(() => initWorkerProject({ cwd, target: "." })).toThrow("Wrangler configuration is not a file");
+    expect(existsSync(join(cwd, "xapi.worker.json"))).toBe(false);
+    expect(existsSync(join(cwd, "xapi-worker"))).toBe(false);
+  });
+
   test("writes APAC data defaults and Smart Placement into both environments", () => {
     const cwd = workspace();
     initWorkerProject({
@@ -562,7 +632,7 @@ describe("workers init", () => {
       initWorkerProject({
         cwd,
         target: "bad-budget",
-        previewDailyBudgetUsd: 0,
+        previewDailyBudgetUsd: -1,
       }),
     ).toThrow("preview daily budget");
     expect(existsSync(join(cwd, "bad-budget", "xapi.worker.json"))).toBe(false);

@@ -15,14 +15,24 @@ function canonical(value: unknown): unknown {
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 const sorted = (rows: Row[]) => rows.sort((a, b) => String(a.bindingName).localeCompare(String(b.bindingName)));
 
+export function deploymentBindingResources(resources: Row[], bindingNames?: string[]): Row[] {
+  return resources.filter(row => row.type !== 'CONTAINER_APPLICATION' &&
+    (bindingNames === undefined || bindingNames.includes(String(row.bindingName))));
+}
+
 // Only deployment inputs: polling timestamps, storage size and other changing
 // Provider observations must not cause deployments. No secret plaintext is read.
 export function deploymentPrefix(workerId: string, environment: string, artifactId: string,
-  compatibility: { compatibilityDate?: string; compatibilityFlags?: string[] },
-  environmentState: Row, resources: Row[], _secrets: Row[]): string {
+  compatibility: { compatibilityDate?: string; compatibilityFlags?: string[]; requiredSecrets?: string[]; nativeMetadata?: Record<string,unknown>; containers?: unknown[]; queueBindingAliases?: Record<string, string>; variables?: {vars:Record<string,unknown>;varTypes?:Record<string,string>} },
+  environmentState: Row, resources: Row[], secrets: Row[]): string {
   return `v3-${hash({ workerId, environment: environment.toLowerCase(), artifactId,
     compatibilityDate: compatibility.compatibilityDate,
     compatibilityFlags: [...(compatibility.compatibilityFlags || [])].sort(),
+    ...(compatibility.requiredSecrets?.length ? {requiredSecrets:[...compatibility.requiredSecrets].sort()} : {}),
+    ...(compatibility.queueBindingAliases !== undefined ? {queueBindingAliases: Object.fromEntries(Object.entries(compatibility.queueBindingAliases).sort(([a],[b]) => a.localeCompare(b)))} : {}),
+    ...(compatibility.nativeMetadata !== undefined ? {nativeMetadata:compatibility.nativeMetadata} : {}),
+    ...(compatibility.variables !== undefined ? {variables:compatibility.variables} : {}),
+    ...(compatibility.containers !== undefined ? {containers: compatibility.containers} : {}),
     placementMode: environmentState.placementMode || "off",
     bindings: environmentState.bindings || [],
     resources: sorted(resources.map(r => {
@@ -37,9 +47,29 @@ export function deploymentPrefix(workerId: string, environment: string, artifact
 
 export function currentMatchingDeployment(deployments: Row[], environmentState: Row,
   artifactId: string, prefix: string): Row | undefined {
-  return deployments.find(d => d.id === environmentState.activeDeploymentId &&
+  if (typeof environmentState.activeDeploymentId !== "string" || !environmentState.activeDeploymentId) return undefined;
+  const current = deployments.find(d => d.id === environmentState.activeDeploymentId &&
     d.environmentId === environmentState.id && d.artifactId === artifactId &&
-    d.status === "ACTIVE" && typeof d.idempotencyKey === "string" && d.idempotencyKey.startsWith(prefix));
+    d.status === "ACTIVE");
+  if (!current) return undefined;
+  // A rollback may itself select a successful rollback. Follow only exact
+  // server-recorded links already in this bounded snapshot, with every link
+  // proving the same environment/artifact. Never infer from artifact alone or
+  // fetch unbounded history. Cycles/missing evidence simply require deployment.
+  const byId = new Map(deployments.map(d => [d.id, d]));
+  const visited = new Set<unknown>();
+  let proof: Row | undefined = current;
+  while (proof && !visited.has(proof.id)) {
+    visited.add(proof.id);
+    if (proof.environmentId !== environmentState.id || proof.artifactId !== artifactId ||
+        proof.status !== "ACTIVE" || typeof proof.idempotencyKey !== "string") return undefined;
+    if (proof.idempotencyKey.startsWith(prefix)) return current;
+    if (!proof.idempotencyKey.startsWith("rollback:")) return undefined;
+    const targetId = (proof.providerResult as Row | undefined)?.rollbackTargetDeploymentId;
+    if (typeof targetId !== "string" || !targetId) return undefined;
+    proof = byId.get(targetId);
+  }
+  return undefined;
 }
 
 // Scope to the previous activation: returning to an older configuration must
@@ -55,11 +85,11 @@ export function safeDeploymentRetryKey(baseKey: string, deployment: Row): string
   const provider = deployment.providerResult as Row | undefined;
   if (deployment.status !== "FAILED" || typeof deployment.id !== "string" || !deployment.id || deployment.deployedAt ||
       !outcome || !["FAILED", "CANCELLED", "TIMED_OUT"].includes(String(outcome.execution)) ||
-      !["NOT_DISPATCHED", "NO_WRITES"].includes(String(outcome.providerEffect)) ||
+      !["NOT_DISPATCHED", "NO_WRITES", "REJECTED"].includes(String(outcome.providerEffect)) ||
       typeof outcome.operationId !== "string" || !outcome.operationId ||
       outcome.operationId !== provider?.controlOperationId || outcome.supersededBy || outcome.observation ||
-      !Array.isArray(outcome.steps) || !outcome.steps.every(step => step &&
-        ["PLANNED", "SKIPPED"].includes(step.state) && !step.evidence)) return undefined;
+      !Array.isArray(outcome.steps) || (outcome.providerEffect === "REJECTED" && !outcome.steps.some(step => step?.state === "REJECTED")) || !outcome.steps.every(step => step &&
+        (outcome.providerEffect === "REJECTED" ? ["PLANNED", "SKIPPED", "REJECTED"] : ["PLANNED", "SKIPPED"]).includes(step.state) && !step.evidence)) return undefined;
   // Keep the original deployment prefix/activation scope and stay below the
   // API's 128-character limit. Mutable receipt timestamps are not key inputs.
   return `${baseKey}-r${hash([deployment.id, outcome.operationId]).slice(0, 24)}`;

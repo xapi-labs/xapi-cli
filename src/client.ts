@@ -2,12 +2,14 @@
  * HTTP client - thin wrapper around fetch with timeout/retry
  */
 
+import { Agent, fetch as objectFetch, type Dispatcher } from 'undici/index.js';
 import { scheme, assertAllowedHost } from './config.ts';
 import { open, rm } from 'node:fs/promises';
 import { once } from 'node:events';
 import { resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { requestDeadline } from './request-deadline.ts';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const EXECUTE_TIMEOUT_MS = 60_000;
@@ -38,6 +40,7 @@ export class HttpError extends Error {
     public readonly status: number,
     detail: string,
     public readonly retryAfterMs?: number,
+    public readonly responseBody?: unknown,
   ) {
     super(`HTTP ${status}: ${detail}`);
     this.name = 'HttpError';
@@ -131,93 +134,325 @@ function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
   });
 }
 
+// A scoped dispatcher prevents Node's fetch implementation from reintroducing
+// its own 300-second parser deadlines. The request AbortSignal owns the deadline.
+class RequestDeadlineAgent extends Agent {
+  progress?: () => void;
+  constructor() { super({ headersTimeout: 0, bodyTimeout: 0 }); }
+  override dispatch(options: Agent.DispatchOptions, handler: Dispatcher.DispatchHandlers): boolean {
+    const progress = this.progress;
+    const originalBody = options.body;
+    // fetch can serialize JSON as one large chunk. Split only the transport
+    // iterator so socket backpressure can report progress on slow uploads too.
+    const body = progress && originalBody && (
+      typeof originalBody === 'string' || originalBody instanceof Uint8Array ||
+      Symbol.asyncIterator in Object(originalBody)
+    ) ? Readable.from((async function* () {
+      const chunks = typeof originalBody === 'string' || originalBody instanceof Uint8Array
+        ? [originalBody] : originalBody as AsyncIterable<Uint8Array>;
+      for await (const chunk of chunks) {
+        const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        for (let offset = 0; offset < bytes.length; offset += 65_536)
+          yield bytes.subarray(offset, offset + 65_536);
+      }
+    })(), { objectMode: false, highWaterMark: 65_536 }) : originalBody;
+    // Observe bytes actually sent/received by Node's transport, not FormData
+    // construction. Bind original methods: some handlers use private fields.
+    const monitored = progress ? new Proxy(handler, {
+      get(target, key) {
+        const value = Reflect.get(target, key);
+        if (['onBodySent', 'onResponseStarted', 'onHeaders', 'onData'].includes(String(key))) {
+          return (...args: any[]) => {
+            progress();
+            return typeof value === 'function' ? value.apply(target, args) : undefined;
+          };
+        }
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) : handler;
+    return super.dispatch({ ...options, body, headersTimeout: 0, bodyTimeout: 0 }, monitored);
+  }
+}
+
 export async function request<T>(
   url: string,
   options: RequestInit,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   retries = 0,
+  deadlineMode: 'total' | 'idle' = 'total',
+  fetcher: typeof fetch = fetch,
+  sessionTransport?: RequestDeadlineAgent,
 ): Promise<T> {
   // Enforce the host allowlist before the API key ever leaves the machine.
   assertAllowedHost(url);
 
-  let attempt = 0;
-  while (true) {
-    const controller = new AbortController();
-    const callerSignal = options.signal;
-    const abortFromCaller = () => controller.abort();
-    if (callerSignal?.aborted) controller.abort();
-    else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
-    let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
-    try {
-      // redirect: 'manual' — never auto-follow. fetch forwards custom headers
-      // (including XAPI-Key) across redirects, which would carry the API key to a
-      // host outside the allowlist. The xapi API never legitimately redirects.
-      const res = await fetch(url, { ...options, redirect: 'manual', signal: controller.signal });
-      if (res.status >= 300 && res.status < 400) {
-        throw new Error(
-          `refusing to follow redirect to "${res.headers.get('location') ?? '?'}" `
-          + '(would forward the API key past the host allowlist)',
-        );
-      }
-      if (!res.ok) {
-        const retryAfterMs = isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined;
-        if (isRetryableStatus(res.status) && attempt < retries) {
-          await res.text().catch(() => ''); // drain body so the socket can be reused
-          clearTimeout(timer);
-          await sleep(backoffDelayMs(attempt, retryAfterMs), callerSignal);
-          attempt++;
-          continue;
+  const transport = sessionTransport || new RequestDeadlineAgent();
+  try {
+    let attempt = 0;
+    while (true) {
+      const controller = new AbortController();
+      const callerSignal = options.signal;
+      const abortFromCaller = () => controller.abort();
+      if (callerSignal?.aborted) controller.abort();
+      else callerSignal?.addEventListener('abort', abortFromCaller, { once: true });
+      let timedOut = false;
+      let finished = false;
+      let timer = requestDeadline(() => { timedOut = true; controller.abort(); }, timeoutMs);
+      transport.progress = deadlineMode === 'idle' ? () => {
+        if (finished || controller.signal.aborted) return;
+        timer.dispose();
+        timer = requestDeadline(() => { timedOut = true; controller.abort(); }, timeoutMs);
+      } : undefined;
+      try {
+        // redirect: 'manual' — never auto-follow. fetch forwards custom headers
+        // (including XAPI-Key) across redirects, which would carry the API key to a
+        // host outside the allowlist. The xapi API never legitimately redirects.
+        const fetchOptions = { ...options, redirect: 'manual', signal: controller.signal, dispatcher: transport } as RequestInit;
+        const res = await fetcher(url, fetchOptions);
+        if (res.status >= 300 && res.status < 400) {
+          throw new Error(
+            `refusing to follow redirect to "${res.headers.get('location') ?? '?'}" `
+            + '(would forward the API key past the host allowlist)',
+          );
+        }
+        if (!res.ok) {
+          const retryAfterMs = isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined;
+          if (isRetryableStatus(res.status) && attempt < retries) {
+            await res.text().catch(() => ''); // drain body so the socket can be reused
+            timer.dispose();
+            await sleep(backoffDelayMs(attempt, retryAfterMs), callerSignal);
+            attempt++;
+            continue;
+          }
+          const text = await res.text();
+          let responseBody: unknown;
+          try { responseBody = JSON.parse(text); } catch { /* Plain upstream errors stay plain. */ }
+          throw new HttpError(res.status, text.slice(0, 300), retryAfterMs, responseBody);
+        }
+        if (res.status === 204) {
+          return undefined as T;
         }
         const text = await res.text();
-        throw new HttpError(res.status, text.slice(0, 300), retryAfterMs);
-      }
-      if (res.status === 204) {
-        return undefined as T;
-      }
-      const text = await res.text();
-      if (!text.trim()) {
-        return undefined as T;
-      }
-      const body = JSON.parse(text) as T;
-      // Detect business-level auth errors (HTTP 200 but unauthorized)
-      if (body && typeof body === 'object' && 'success' in body && (body as any).success === false) {
-        const data = (body as any).data;
-        if (data?.statusCode === 401 || data?.error === 'Unauthorized') {
-          throw new Error(
-            'Authentication failed: ' + (data.message || 'Invalid or missing API key')
-            + '. Run "npx xapi-to config set apiKey=<key>" to update your key.',
-          );
+        if (!text.trim()) {
+          return undefined as T;
         }
-        if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && data?.message?.includes('OAuth'))) {
-          throw new Error(
-            (data.message || 'OAuth authorization required')
-            + '. Run "xapi-to oauth bind" to connect your account.',
-          );
+        const body = JSON.parse(text) as T;
+        // Detect business-level auth errors (HTTP 200 but unauthorized)
+        if (body && typeof body === 'object' && 'success' in body && (body as any).success === false) {
+          const data = (body as any).data;
+          if (data?.statusCode === 401 || data?.error === 'Unauthorized') {
+            throw new Error(
+              'Authentication failed: ' + (data.message || 'Invalid or missing API key')
+              + '. Run "npx xapi-to config set apiKey=<key>" to update your key.',
+            );
+          }
+          if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && data?.message?.includes('OAuth'))) {
+            throw new Error(
+              (data.message || 'OAuth authorization required')
+              + '. Run "xapi-to oauth bind" to connect your account.',
+            );
+          }
         }
-      }
-      return body;
-    } catch (e) {
-      if (timedOut) {
-        const timeoutError = new RequestTimeoutError(timeoutMs);
-        if (attempt < retries) {
+        return body;
+      } catch (e) {
+        if (timedOut) {
+          const timeoutError = new RequestTimeoutError(timeoutMs);
+          if (attempt < retries) {
+            await sleep(backoffDelayMs(attempt), callerSignal);
+            attempt++;
+            continue;
+          }
+          throw timeoutError;
+        }
+        if (isRetryableNetworkError(e) && attempt < retries) {
+          timer.dispose();
           await sleep(backoffDelayMs(attempt), callerSignal);
           attempt++;
           continue;
         }
-        throw timeoutError;
+        throw e;
+      } finally {
+        finished = true;
+        timer.dispose();
+        callerSignal?.removeEventListener('abort', abortFromCaller);
       }
-      if (isRetryableNetworkError(e) && attempt < retries) {
-        clearTimeout(timer);
-        await sleep(backoffDelayMs(attempt), callerSignal);
-        attempt++;
-        continue;
-      }
-      throw e;
-    } finally {
-      clearTimeout(timer);
-      callerSignal?.removeEventListener('abort', abortFromCaller);
     }
+  } finally {
+    if (!sessionTransport) await transport.destroy().catch(() => undefined);
+  }
+}
+
+/** A continuing upload has no total-duration cutoff. Never replay the write. */
+export function uploadRequest<T>(url: string, options: RequestInit): Promise<T> {
+  return request<T>(url, options, transferIdleTimeoutMs(), 0, 'idle');
+}
+
+/** Control-plane calls in one upload share their connection while retaining
+ * host/redirect checks and an independent total deadline for every request. */
+export function createArtifactControlSession() {
+  const transport = new RequestDeadlineAgent();
+  return {
+    request: <T>(url: string, options: RequestInit, budget: number, retries: number) =>
+      request<T>(url, options, budget, retries, 'total', objectFetch as unknown as typeof fetch, transport),
+    close: () => transport.destroy().catch(() => undefined),
+  };
+}
+
+/** A temporary object channel carries bytes and checksum only, never API keys.
+ * Its URL is validated by the Worker upload caller; errors never print it. */
+export class WorkerObjectUploadError extends Error {
+  constructor(public readonly diagnostic: {
+    failureType: 'idle_timeout' | 'transport_error' | 'http_error';
+    code?: string;
+    httpStatus?: number;
+    phase: 'queued_or_connecting' | 'sending_body' | 'awaiting_response' | 'receiving_response';
+    objectSizeBytes: number;
+    bodySentBytes: number;
+    elapsedMs: number;
+    idleMs: number;
+  }) {
+    super('Worker object upload failed' +
+      (diagnostic.httpStatus !== undefined ? ` (HTTP ${diagnostic.httpStatus})` : '') +
+      ` (${diagnostic.failureType}, ${diagnostic.phase}, ${diagnostic.objectSizeBytes} bytes)` +
+      '; no deployment was started');
+    this.name = 'WorkerObjectUploadError';
+  }
+}
+
+export function createArtifactUploadTransport() {
+  // One pool per upload session; per-request deadlines stay independent.
+  // A stalled object cannot have its deadline extended by another active PUT.
+  const transport = new Agent({
+    connections: 8,
+    headersTimeout: 0,
+    bodyTimeout: 0,
+  });
+  return {
+    async upload(
+      url: string,
+      bytes: Uint8Array,
+      headers: Record<string, string>,
+      signal: AbortSignal,
+    ) {
+      const controller = new AbortController();
+      const abort = () => controller.abort(signal.reason);
+      if (signal.aborted) abort();
+      else signal.addEventListener('abort', abort, { once: true });
+      let finished = false;
+      let timedOut = false;
+      let phase: WorkerObjectUploadError['diagnostic']['phase'] = 'queued_or_connecting';
+      let bodySentBytes = 0;
+      const startedAt = performance.now();
+      let lastProgressAt = startedAt;
+      const expire = () => { timedOut = true; controller.abort(); };
+      let timer = requestDeadline(
+        expire,
+        transferIdleTimeoutMs(),
+      );
+      const progress = () => {
+        if (finished || controller.signal.aborted) return;
+        lastProgressAt = performance.now();
+        timer.dispose();
+        timer = requestDeadline(
+          expire,
+          transferIdleTimeoutMs(),
+        );
+      };
+      const dispatcher: Dispatcher = Object.create(transport);
+      dispatcher.dispatch = (options, handler) => {
+        const body = Readable.from(
+          (async function* () {
+            for (let offset = 0; offset < bytes.length; offset += 65_536)
+              yield bytes.subarray(offset, offset + 65_536);
+          })(),
+          { objectMode: false, highWaterMark: 65_536 },
+        );
+        const monitored = new Proxy(handler, {
+          get(target, key) {
+            const value = Reflect.get(target, key);
+            if (key === 'onConnect' || key === 'onRequestSent')
+              return (...args: any[]) => {
+                phase = key === 'onConnect' ? 'sending_body' : 'awaiting_response';
+                return typeof value === 'function' ? value.apply(target, args) : undefined;
+              };
+            if (
+              [
+                'onBodySent',
+                'onResponseStarted',
+                'onHeaders',
+                'onData',
+              ].includes(String(key))
+            )
+              return (...args: any[]) => {
+                if (key === 'onBodySent') {
+                  phase = 'sending_body';
+                  bodySentBytes += args[0]?.byteLength || 0;
+                } else phase = 'receiving_response';
+                progress();
+                return typeof value === 'function'
+                  ? value.apply(target, args)
+                  : undefined;
+              };
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+        return transport.dispatch(
+          { ...options, body, headersTimeout: 0, bodyTimeout: 0 },
+          monitored,
+        );
+      };
+      try {
+        const response = await objectFetch(url, {
+          method: 'PUT',
+          body: bytes as BodyInit,
+          headers,
+          redirect: 'manual',
+          signal: controller.signal,
+          dispatcher,
+        } as any);
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw new WorkerObjectUploadError({failureType: 'http_error', httpStatus: response.status,
+            phase, objectSizeBytes: bytes.length, bodySentBytes,
+            elapsedMs: Math.round(performance.now() - startedAt), idleMs: Math.round(performance.now() - lastProgressAt)});
+        }
+        await response.arrayBuffer();
+      } catch (error) {
+        if (signal.aborted)
+          throw signal.reason instanceof Error
+            ? signal.reason
+            : new Error('Worker upload cancelled');
+        if (error instanceof WorkerObjectUploadError)
+          throw error;
+        // Never include a signed URL or raw transport message in the public error.
+        const code = (error as any)?.cause?.code;
+        const safeCode =
+          typeof code === 'string' && /^[A-Z0-9_]{1,64}$/.test(code)
+            ? code : undefined;
+        throw new WorkerObjectUploadError({failureType: timedOut ? 'idle_timeout' : 'transport_error',
+          ...(safeCode ? {code: safeCode} : {}), phase, objectSizeBytes: bytes.length, bodySentBytes,
+          elapsedMs: Math.round(performance.now() - startedAt), idleMs: Math.round(performance.now() - lastProgressAt)});
+      } finally {
+        finished = true;
+        timer.dispose();
+        signal.removeEventListener('abort', abort);
+      }
+    },
+    close: () => transport.destroy().catch(() => undefined),
+  };
+}
+
+export async function uploadArtifactObject(
+  url: string,
+  bytes: Uint8Array,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+): Promise<void> {
+  const transport = createArtifactUploadTransport();
+  try {
+    await transport.upload(url, bytes, headers, signal);
+  } finally {
+    await transport.close();
   }
 }
 

@@ -1,79 +1,24 @@
 import { validNativeCron } from "./workers-cron.ts";
 export { validNativeCron } from "./workers-cron.ts";
 import { createHash } from "node:crypto";
-import { z } from "zod";
 import type { LoadedWorkerProject } from "./workers-project.ts";
 import {
-  queueBinding,
+  readWranglerNativeEvents,
   readWranglerEventConfig,
 } from "./workers-wrangler-import.ts";
 import type { WorkersClientOptions } from "./workers-client.ts";
 
-const consumerSchema = z
-  .object({
-    queue: z.string().regex(/^[a-zA-Z0-9_-]{1,63}$/),
-    max_batch_size: z.number().int().min(1).max(100).optional(),
-    max_batch_timeout: z.number().int().min(0).max(60).optional(),
-    max_retries: z.number().int().min(0).max(100).optional(),
-    retry_delay: z.number().int().min(0).max(43200).optional(),
-    max_concurrency: z.number().int().min(1).max(250).optional(),
-    dead_letter_queue: z.string().optional(),
-  })
-  .strict();
-
-export function nativeDeploymentPlan(
-  project: LoadedWorkerProject,
-  environment: "preview" | "production",
-) {
+export function nativeDeploymentPlan(project: LoadedWorkerProject, environment: "preview" | "production") {
   const source = readWranglerEventConfig(project, environment);
-  const d1Migrations = project.config.environments[environment].resources
-    .filter(resource => resource.type === "d1_database")
-    .map(resource => ({
-      bindingName: resource.bindingName,
-      execution: "EXPLICIT_COMMAND" as const,
-      command: `xapi workers d1 migrations plan --binding ${resource.bindingName} --env ${environment}`,
-    }));
-  const consumers = source.consumers.map((raw) => {
-    const { dead_letter_queue, ...consumer } = consumerSchema.parse(raw);
-    return {
-      bindingName: queueBinding(source.config, consumer.queue),
-      configuration: {
-        ...consumer,
-        ...(dead_letter_queue
-          ? {
-              deadLetterBinding: queueBinding(source.config, dead_letter_queue),
-            }
-          : {}),
-      },
-    };
-  });
-  const crons = [
-    ...new Set(z.array(z.string().min(1).max(100)).parse(source.crons ?? [])),
-  ];
-  for (const cron of crons) {
-    if (!validNativeCron(cron))
-      throw new Error(
-        "The platform scheduled adapter currently supports numeric five-field UTC Cron; Quartz extensions must not be silently converted",
-      );
-  }
-  for (const item of consumers) {
-    const expectedType = "queue";
-    if (
-      !project.config.environments[environment].resources.some(
-        (resource) =>
-          resource.bindingName === item.bindingName &&
-          resource.type === expectedType,
-      )
-    )
-      throw new Error(
-        `Missing managed ${expectedType} binding ${item.bindingName}; re-import Wrangler before deploying`,
-      );
-  }
+  const desired = readWranglerNativeEvents(project, environment);
   return {
-    d1Migrations,
-    consumers,
-    crons,
-    cronsConfigured: source.crons !== undefined,
+    d1Migrations: project.config.environments[environment].resources
+      .filter(resource => resource.type === "d1_database")
+      .map(resource => ({bindingName: resource.bindingName, execution: "EXPLICIT_COMMAND" as const,
+        command: `xapi workers d1 migrations plan --binding ${resource.bindingName} --env ${environment}`})),
+    consumers: desired.queueConsumers.map(({bindingName, ...configuration}) => ({bindingName, configuration})),
+    crons: desired.crons,
+    cronsConfigured: source.crons !== undefined || project.config.environments[environment].crons !== undefined,
   };
 }
 export type NativeDeploymentPlan = ReturnType<typeof nativeDeploymentPlan>;
@@ -152,22 +97,8 @@ export async function applyNativeDeploymentPhase(
         throw new Error(`Active ${type} binding ${binding} is required`);
       return resource.id as string;
     };
-    const desiredBindings = new Set(plan.consumers.map(item => item.bindingName));
-    for (const resource of resources) {
-      if (
-        resource.type !== "QUEUE" || resource.status !== "ACTIVE" ||
-        !resource.config?.nativeConsumerHash ||
-        desiredBindings.has(resource.bindingName)
-      ) continue;
-      if (!api.disableWorkerQueueConsumer)
-        throw new Error("Client does not support stopping removed Queue consumers");
-      const result: any = await api.disableWorkerQueueConsumer(
-        options, workerId, environment, resource.id,
-      );
-      if (!["DISABLED", "UNCHANGED"].includes(result?.status))
-        throw new Error(`Queue consumer disable receipt missing: ${resource.bindingName}`);
-      receipts.push({ bindingName: resource.bindingName, ...result });
-    }
+    // Omitting a Queue consumer declaration does not remove its native consumer.
+    // Explicit consumer configure/disable is the user's separate mutation.
     for (const consumer of plan.consumers) {
       if (!api.configureWorkerQueueConsumer)
         throw new Error("Client does not support Queue event configuration");
@@ -225,8 +156,7 @@ export async function applyNativeDeploymentPhase(
             row.cron === cron &&
             row.timezone === "UTC",
         );
-        receipts.push(
-          schedule
+        const receipt = schedule
             ? schedule.enabled
               ? schedule
               : await api.updateWorkerSchedule(options, workerId, schedule.id, {
@@ -241,8 +171,10 @@ export async function applyNativeDeploymentPhase(
                 path: "/",
                 method: "POST",
                 enabled: true,
-              }),
-        );
+              });
+        if (!receipt || typeof receipt.id !== "string" || !receipt.id.length)
+          throw new Error(`Scheduled handler receipt missing: ${cron}`);
+        receipts.push(receipt);
       }
     }
     return receipts;

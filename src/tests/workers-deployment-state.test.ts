@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { ensureActiveDeployment } from "../workers-push.ts";
-import { deploymentPrefix, deploymentKey, safeDeploymentRetryKey } from "../workers-deployment-state.ts";
+import { currentMatchingDeployment, deploymentPrefix, deploymentKey, safeDeploymentRetryKey } from "../workers-deployment-state.ts";
 import { RequestTimeoutError } from "../client.ts";
 
 function platform() {
@@ -22,9 +22,108 @@ function platform() {
     },
   };
   const run = (date = "2026-09-07", artifact = "same-artifact") => ensureActiveDeployment(api, { apiHost: "localhost:3148", apiKey: "test" }, "worker", artifact,
-    "preview", { compatibilityDate: date, compatibilityFlags: [] }, async () => {});
-  return { run, resources, secrets, deployments, environment, uncertain: () => { failOnce = true; } };
+    "preview", { compatibilityDate: date, compatibilityFlags: [] }, async () => {},undefined,undefined,undefined,true);
+  return { api, run, resources, secrets, deployments, environment, uncertain: () => { failOnce = true; } };
 }
+
+function rollbackSnapshot() {
+  const environment = { id: "env", activeDeploymentId: "rollback-current", bindings: [], placementMode: "off" };
+  const prefix = deploymentPrefix("worker", "preview", "artifact", { variables: { vars: { MODE: "restored" } } }, environment, [], []);
+  const target: Record<string, unknown> = { id: "target", environmentId: "env", artifactId: "artifact", status: "ACTIVE", idempotencyKey: prefix + "original" };
+  const current: Record<string, unknown> = { id: "rollback-current", environmentId: "env", artifactId: "artifact", status: "ACTIVE", idempotencyKey: "rollback:explicit-operation", providerResult: { rollbackTargetDeploymentId: "target" } };
+  return { environment, prefix, target, current, deployments: [current, target] };
+}
+
+test("matches the current successful rollback using only its exact server-recorded target configuration", () => {
+  const p = rollbackSnapshot();
+  expect(currentMatchingDeployment(p.deployments, p.environment, "artifact", p.prefix)).toBe(p.current);
+  const changed = deploymentPrefix("worker", "preview", "artifact", { variables: { vars: { MODE: "changed" } } }, p.environment, [], []);
+  expect(currentMatchingDeployment(p.deployments, p.environment, "artifact", changed)).toBeUndefined();
+  expect(currentMatchingDeployment(p.deployments, p.environment, "changed-artifact", p.prefix)).toBeUndefined();
+});
+
+test("preserves direct v3 matching without requiring rollback provenance", () => {
+  const p = rollbackSnapshot();
+  p.current.idempotencyKey = p.prefix + "active";
+  p.current.providerResult = { rollbackTargetDeploymentId: "unknown" };
+  expect(currentMatchingDeployment([p.current], p.environment, "artifact", p.prefix)).toBe(p.current);
+});
+
+test("matches nested successful rollback links in the existing snapshot", () => {
+  const p = rollbackSnapshot();
+  const original: Record<string, unknown> = { ...p.target, id: "original" };
+  p.target.idempotencyKey = "rollback:previous";
+  p.target.providerResult = { rollbackTargetDeploymentId: original.id };
+  p.deployments.push(original);
+  expect(currentMatchingDeployment(p.deployments, p.environment, "artifact", p.prefix)).toBe(p.current);
+  for (const change of [
+    () => { original.environmentId = "foreign"; },
+    () => { original.artifactId = "foreign"; },
+    () => { original.status = "FAILED"; },
+    () => { original.idempotencyKey = "different-configuration"; },
+    () => { original.idempotencyKey = "rollback:cycle"; original.providerResult = { rollbackTargetDeploymentId: p.current.id }; },
+  ]) {
+    Object.assign(original, { ...p.target, id: "original", idempotencyKey: p.prefix + "original" });
+    change();
+    expect(currentMatchingDeployment(p.deployments, p.environment, "artifact", p.prefix)).toBeUndefined();
+  }
+});
+
+for (const [name, change] of [
+  ["current activation points elsewhere", (p: ReturnType<typeof rollbackSnapshot>) => { p.environment.activeDeploymentId = "unlisted"; }],
+  ["current activation absent", (p: ReturnType<typeof rollbackSnapshot>) => { delete (p.environment as Record<string, unknown>).activeDeploymentId; delete p.current.id; }],
+  ["current belongs to another environment", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.environmentId = "foreign"; }],
+  ["current artifact differs", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.artifactId = "other"; }],
+  ["current DEPLOYING", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.status = "DEPLOYING"; }],
+  ["current FAILED", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.status = "FAILED"; }],
+  ["current UNKNOWN", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.status = "UNKNOWN"; }],
+  ["not a rollback key", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.idempotencyKey = "other-operation"; }],
+  ["missing current key", (p: ReturnType<typeof rollbackSnapshot>) => { delete p.current.idempotencyKey; }],
+  ["missing provider metadata", (p: ReturnType<typeof rollbackSnapshot>) => { delete p.current.providerResult; }],
+  ["non-string target", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.providerResult = { rollbackTargetDeploymentId: { id: "target" } }; }],
+  ["target ID does not identify matching history", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.providerResult = { rollbackTargetDeploymentId: "unknown" }; }],
+  ["target missing from bounded snapshot", (p: ReturnType<typeof rollbackSnapshot>) => { p.deployments.pop(); }],
+  ["target belongs to another environment", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.environmentId = "foreign"; }],
+  ["target artifact differs", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.artifactId = "other"; }],
+  ["target DEPLOYING", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.status = "DEPLOYING"; }],
+  ["target FAILED", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.status = "FAILED"; }],
+  ["target UNKNOWN", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.status = "UNKNOWN"; }],
+  ["target configuration prefix differs", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.idempotencyKey = "v3-other-config-original"; }],
+  ["target key missing", (p: ReturnType<typeof rollbackSnapshot>) => { delete p.target.idempotencyKey; }],
+  ["self-reference", (p: ReturnType<typeof rollbackSnapshot>) => { p.current.providerResult = { rollbackTargetDeploymentId: p.current.id }; }],
+  ["nested rollback target missing", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.idempotencyKey = "rollback:previous"; p.target.providerResult = { rollbackTargetDeploymentId: "missing-grandparent" }; }],
+  ["nested rollback cycle", (p: ReturnType<typeof rollbackSnapshot>) => { p.target.idempotencyKey = "rollback:previous"; p.target.providerResult = { rollbackTargetDeploymentId: p.current.id }; }],
+] as const) {
+  test(`rollback match fails closed: ${name}`, () => {
+    const p = rollbackSnapshot();
+    change(p);
+    expect(currentMatchingDeployment(p.deployments, p.environment, "artifact", p.prefix)).toBeUndefined();
+  });
+}
+
+test("push reuses the current successful rollback without another deploy or history read", async () => {
+  const p = platform();
+  const first = await p.run();
+  const rollback = { ...first.deployment, id: "rollback-current", idempotencyKey: "rollback:explicit-operation", providerResult: { rollbackTargetDeploymentId: first.deployment.id } };
+  p.deployments.push(rollback);
+  p.environment.activeDeploymentId = rollback.id;
+  let reads = 0;
+  const get = p.api.getWorker;
+  p.api.getWorker = async () => { reads++; return get(); };
+  const result = await p.run();
+  expect(result.deployment).toBe(rollback);
+  expect(result.idempotencyKey).toBe(rollback.idempotencyKey);
+  expect(p.deployments).toHaveLength(2);
+  expect(reads).toBe(1);
+  const nested = { ...rollback, id: "rollback-again", providerResult: { rollbackTargetDeploymentId: rollback.id } };
+  p.deployments.push(nested);
+  p.environment.activeDeploymentId = nested.id;
+  expect((await p.run()).deployment).toBe(nested);
+  expect(p.deployments).toHaveLength(3);
+  expect(reads).toBe(2);
+  expect((await p.run("2026-09-06")).deployment.id).not.toBe(rollback.id);
+  expect(p.deployments).toHaveLength(4);
+});
 
 test("same code: add, replace and explicitly remove bindings deploy; unchanged repeats do not", async () => {
   const p = platform();
@@ -276,4 +375,87 @@ test("latest in-progress retry is polled with its existing key without a new POS
   await expect(p.run()).rejects.toThrow("poll only; no automatic publish");
   expect(p.posts).toHaveLength(0);
   expect(p.reads()).toBe(1);
+});
+
+test("an explicit retry of known undispatched FAILED intent gets a fresh identity without changing source", async () => {
+  const p = platform(); const deploy = p.api.deployWorker; const keys: string[] = [];
+  p.api.deployWorker = async (options, id, input) => {
+    keys.push(String(input.idempotencyKey));
+    if (keys.length === 1) {
+      const failure = {...input,id:'before-provider',environmentId:'env',status:'FAILED',createdAt:'2026-10-06T10:00:00Z',providerResult:{controlOperationId:'unsent-op'},outcome:{operationId:'unsent-op',providerEffect:'NOT_DISPATCHED',execution:'FAILED',steps:[{state:'SKIPPED'}],automaticReplay:false}};
+      p.deployments.push(failure); return failure;
+    }
+    return deploy(options,id,input);
+  };
+  await expect(p.run()).rejects.toThrow('deployment failed');
+  const retried = await p.run();
+  expect(retried.deployment.status).toBe('ACTIVE');
+  expect(keys).toHaveLength(2);expect(keys[1]).not.toBe(keys[0]);expect(keys[1].length).toBeLessThanOrEqual(128);
+  expect((await p.run()).deployment.id).toBe(retried.deployment.id);expect(keys).toHaveLength(2);
+});
+
+test("lost retry response preserves the new attempt key until its original journal is visible", async () => {
+  const p = platform(); const keys:string[]=[]; const deploy = p.api.deployWorker;
+  p.api.deployWorker = async (options,id,input) => {
+    keys.push(String(input.idempotencyKey));
+    if (keys.length === 1) { const failure={...input,id:'unsent',environmentId:'env',status:'FAILED',providerResult:{controlOperationId:'known-unsent'},outcome:{operationId:'known-unsent',providerEffect:'NOT_DISPATCHED',execution:'FAILED',steps:[{state:'SKIPPED'}]}};p.deployments.push(failure);return failure; }
+    if(keys.length === 2)throw new RequestTimeoutError(1000);
+    return deploy(options,id,input);
+  };
+  await expect(p.run()).rejects.toThrow('deployment failed');
+  await expect(p.run()).rejects.toThrow();
+  await p.run();expect(keys).toHaveLength(3);expect(keys[2]).toBe(keys[1]);expect(keys[1]).not.toBe(keys[0]);
+});
+
+test("unknown or partially confirmed FAILED writes reconcile the original journal and never submit a new deployment", async () => {
+  for(const effect of ['UNCONFIRMED','PARTIAL_WRITES_CONFIRMED','ALL_WRITES_CONFIRMED']) {
+    const p=platform();const deployed=await p.run();p.environment.activeDeploymentId=null;
+    Object.assign(deployed.deployment,{status:'FAILED',outcome:{operationId:'original-op',providerEffect:effect}});
+    let recovered=0;let sent=0;
+    const api={...p.api,recoverWorkerControlOperation:async(_options:unknown,_id:string,operationId:string)=>{expect(operationId).toBe('original-op');recovered++;return{outcome:{providerEffect:effect}};},deployWorker:async()=>{sent++;throw Error('unsafe replay');}};
+    await expect(ensureActiveDeployment(api,{apiHost:'localhost:3148',apiKey:'test'},'worker','same-artifact','preview',{compatibilityDate:'2026-09-07',compatibilityFlags:[]},async()=>{})).rejects.toThrow('deployment failed');
+    expect(recovered).toBe(1);expect(sent).toBe(0);expect(p.deployments).toHaveLength(1);
+  }
+});
+
+
+test('environment Container overrides retain identity on reads and change identity on a real specification change', async () => {
+  const p=platform();
+  const declaration=(instanceType:'lite'|'basic')=>[{name:'app',className:'AppContainer',image:'docker.io/library/nginx:alpine',instanceType,maxInstances:1,rolloutActiveGracePeriod:0}];
+  const run=(containers:ReturnType<typeof declaration>)=>ensureActiveDeployment(p.api,{apiHost:'localhost:3148',apiKey:'test'},'worker','same-artifact','preview',{compatibilityFlags:[]},async()=>{},undefined,[],undefined,false,containers);
+  const first=await run(declaration('lite'));
+  expect((await run(declaration('lite'))).deployment.id).toBe(first.deployment.id);
+  const changed=await run(declaration('basic'));
+  expect(changed.deployment.id).not.toBe(first.deployment.id);
+  expect(p.deployments[1]?.containers).toEqual(declaration('basic'));
+  expect((await run(declaration('basic'))).deployment.id).toBe(changed.deployment.id);
+  expect(p.deployments).toHaveLength(2);
+});
+
+
+test('removing a declaration unbinds the live resource and keeps the remote resource intact',async()=>{
+  const p=platform();
+  p.resources.push({id:'a',bindingName:'A',type:'KV_NAMESPACE',status:'ACTIVE',providerResourceId:'kv-a'},{id:'b',bindingName:'B',type:'KV_NAMESPACE',status:'ACTIVE',providerResourceId:'kv-b'});
+  const run=(names:string[])=>ensureActiveDeployment(p.api,{apiHost:'localhost:3148',apiKey:'test'},'worker','same-artifact','preview',{compatibilityFlags:[]},async()=>{},undefined,names);
+  const initial=await run(['A','B']);
+  const removed=await run(['A']);
+  expect(removed.deployment.id).not.toBe(initial.deployment.id);
+  expect(p.deployments[1]?.resourceIds).toEqual(['a']);
+  expect((await run(['A'])).deployment.id).toBe(removed.deployment.id);
+  expect(p.resources).toHaveLength(2);
+});
+
+test('Queue alias overrides change deployment identity without changing resources or Artifact', async () => {
+  const p = platform();
+  p.resources.push({id:'one-queue',bindingName:'ONE',type:'QUEUE',status:'ACTIVE',providerResourceId:'native-queue'});
+  const run = (queueBindingAliases: Record<string,string>) => ensureActiveDeployment(p.api,{apiHost:'localhost:3148',apiKey:'test'},'worker','same-artifact','preview',
+    {compatibilityDate:'2026-10-08',compatibilityFlags:[],queueBindingAliases},async()=>{});
+  const first = await run({TWO:'ONE',THREE:'ONE'});
+  expect((await run({THREE:'ONE',TWO:'ONE'})).deployment.id).toBe(first.deployment.id);
+  const removed = await run({});
+  expect(removed.deployment.id).not.toBe(first.deployment.id);
+  expect(p.deployments[1].queueBindingAliases).toEqual({});
+  expect((await run({})).deployment.id).toBe(removed.deployment.id);
+  expect(p.resources).toHaveLength(1);
+  expect(new Set(p.deployments.map(d=>d.artifactId)).size).toBe(1);
 });

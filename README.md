@@ -15,7 +15,7 @@ npm install -g xapi-to
 cd xapi-cli && bun install
 ```
 
-The published CLI runs on Node.js 18+. Bun is only required for local source development and tests.
+The published CLI runs on Node.js 18.17+ (the Undici 6 transport dependency minimum). Bun is only required for local source development and tests.
 
 ## Teach Your Agent the xAPI Skill
 
@@ -552,9 +552,7 @@ through xAPI as Cloudflare native static assets:
 `workers plan` shows whether the selected environment has a dedicated hostname.
 When `webAppReady` is false, production promotion asks you to review the base
 path, root-relative routes, and OAuth callbacks without blocking applications
-that deliberately support path-prefix hosting. Project bundles use one
-authenticated multipart request: modules and static assets are not uploaded as
-independent deployments. Limits are 64 MiB aggregate module content (no arbitrary 200-module cutoff),
+that deliberately support path-prefix hosting. Project bundles remain one immutable Artifact, including modules and static assets. When the backend advertises direct R2 upload, the CLI uses a temporary checksummed channel and asks xAPI to verify and seal it before deployment. Legacy storage keeps the authenticated multipart fallback; files are not independent deployments. Limits are 64 MiB aggregate module content (no arbitrary 200-module cutoff),
 100,000 assets / 25 MiB per asset, and 100 MiB total decoded project content.
 These are CLI validation limits; the platform and provider also validate uploads.
 
@@ -659,19 +657,15 @@ no-op, while reusing a binding for another type is rejected. `--env both`
 declares the same binding independently for preview and production; it does not
 make both environments share one physical resource.
 
-Resource and static-assets binding names are case-sensitive: `Chat`, `CHAT`, and
-`chat` remain distinct. They must match `^[A-Za-z][A-Za-z0-9_]{0,63}$`; import,
-resource editing, and deployment preserve the spelling. This is a bounded native
-identifier subset, not full JavaScript identifier support. Secret names retain
-`^[A-Z][A-Z0-9_]{0,63}$` and their existing value-management behavior.
+Resource and static-assets binding names are case-sensitive: `Chat`, `CHAT`, and `chat` remain distinct. The CLI preserves nonempty binding and Secret names, including long and non-identifier names; use `env["binding-name"]` when needed. Exported class names retain JavaScript identifier syntax. Provider validation, ownership and duplicate-binding checks still apply; upstream name limits are reported rather than replaced with an xAPI naming subset.
 
 `push` creates missing preview resources only after its full plan passes.
 `promote` performs the same production preflight and, after confirmation,
 creates missing production declarations before activating the exact tested
 preview Artifact. A budget mismatch, missing required Secret or incompatible binding blocks activation.
 An undeclared production resource is retained and unbound by the next deployment.
-If creation requires an accepted freeze quote, pass its exact
-version with `--retention-price-version`.
+The server checks and freezes the required funds. An explicitly selected
+`--retention-price-version` is optional; the CLI adds no mandatory per-type quote step.
 
 `resources update` requires the resource type because it replaces the complete
 portable declaration. Before the project is linked, it can correct any local
@@ -693,7 +687,8 @@ xapi workers plan --env preview
 `.xapi/resource-sync-*` baseline for a three-way merge. Local edits and removed
 bindings are preserved; remote-only changes are adopted; conflicting edits abort
 without overwriting JSON. It changes no native resources and copies no Secret
-values. `--env both` uses independent environment baselines.
+values. A live pending resource keeps its prior baseline observation; it does not
+erase its existing declaration. `--env both` uses independent environment baselines.
 
 Use `resources remove --env ... --binding ...` only when the live resource must
 remain. `plan` explains that the next deployment removes its binding only.
@@ -709,6 +704,8 @@ resource disappears. If the request fails, the live resource remains visible
 and the user can inspect and explicitly retry deletion. `resources list/create/delete
 <worker-id> ...` remain low-level recovery primitives and do not update project
 files.
+
+Queue consumer omission preserves existing delivery. Disable an owned consumer explicitly before removing its Wrangler declaration. Cron omission preserves triggers; an explicit `triggers.crons` array synchronizes this project's CLI-owned triggers and `[]` clears them. Manual platform HTTP schedules remain independent. See the [event lifecycle and native configuration contract](skills/xapi-workers/references/deployment.md#native-configuration-and-application-deployment-prerequisites). Funding estimates are displayed in the plan; the server checks and prepares protected seven-day funds without a mandatory per-type CLI quote or price-version argument.
 
 Deployment identity includes the code Artifact, remote resource identities,
 environment bindings and compatibility settings. Secret values are independent
@@ -768,11 +765,9 @@ xapi-to workers resources list <worker-id> --env preview --format table
 xapi-to workers secrets list <worker-id> --env preview --format table
 
 # Persistent schedules remain Worker-scoped rather than project resource declarations.
-# Queue includes an xAPI-managed consumer. Send a local route envelope from
-# Worker code; delivery is at least once, so make /tasks/run idempotent:
-# await env.TASK_QUEUE.send({
-#   path: '/tasks/run', method: 'POST', body: { taskId: 'task_123' }
-# });
+# A declared Worker consumer delivers Queue bodies to default.queue;
+# a body path does not route to fetch(). Commit by stable task ID before ack:
+# await env.TASK_QUEUE.send({ taskId: 'task_123' });
 xapi-to workers schedules create <worker-id> \
   --name heartbeat --cron "*/15 * * * *" --timezone UTC \
   --env preview --path /cron --method POST
@@ -799,7 +794,8 @@ xapi-to workers delete <worker-id> --yes
 
 Set `XAPI_API_HOST=api.test.xapi.to` for the test control plane. Mutating requests
 are not retried automatically; when a deployment result is uncertain, inspect
-the Worker and retry with the same idempotency key.
+the original operation before choosing an explicit retry with unchanged inputs
+and the same idempotency key; uncertainty is not proof that a write failed.
 
 For a custom hostname, `workers domains attach --xdomain-domain-id` automates
 ownership TXT through xdomain. Without an xdomain record, use the public manual
