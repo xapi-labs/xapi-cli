@@ -55,6 +55,12 @@ For Cloudflare Containers, `ACTIVE` means the Worker upload, matching Durable Ob
 
 For incomplete observations report **unknown**, not zero or success. Keep deployment completion, resource behavior, xAPI consumption, storage-day finalization, provider invoice reconciliation, and physical cleanup as separate verdicts. Report only verified outcomes and the next concrete unresolved check.
 
+For billing usage, read [the quantity and coverage guidance](references/billing.md)
+before reconciliation. `workers billing usage` defaults to complete aggregate
+pagination and human output; quantities remain exact strings, with coverage and
+UTC cutoff shown separately. Observed totals are not invoices or proof of complete
+metering. Older services without aggregates remain explicitly unverified.
+
 ### Direct artifact uploads and deployment configuration
 
 The CLI checks `artifact-provider/status`. When R2 direct upload is available,
