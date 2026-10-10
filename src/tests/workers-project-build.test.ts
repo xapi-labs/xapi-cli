@@ -291,6 +291,27 @@ test("Wrangler-only required Secrets collide with public variables before upload
   await expect(loadWorkerProjectBundle(config, "preview")).rejects.toThrow("Duplicate Worker binding");
 });
 
+for (const native of [false, true]) {
+  test(`root required Secrets collide with resources in ${native ? "native" : "module"} artifacts`, async () => {
+    const config = project(native);
+    writeFileSync(join(config.rootDir, "wrangler.jsonc"), JSON.stringify({
+      compatibility_date: "2026-09-10", secrets: { required: ["API_CONTAINER"] },
+    }));
+    await expect(loadWorkerProjectBundle(config, "preview")).rejects.toThrow("Duplicate Worker binding: API_CONTAINER");
+  });
+}
+
+test("repeated Secret declarations remain valid and unselected environment names do not collide", async () => {
+  const config = project(false, false);
+  config.config.environments.preview.secrets = ["SHARED_TOKEN"];
+  writeFileSync(join(config.rootDir, "wrangler.jsonc"), JSON.stringify({
+    compatibility_date: "2026-09-10", secrets: { required: ["SHARED_TOKEN", "SHARED_TOKEN"] },
+    env: { production: { secrets: { required: ["API_CONTAINER"] } } },
+  }));
+  await expect(loadWorkerProjectBundle(config, "preview")).resolves.toBeDefined();
+  await expect(loadWorkerProjectBundle(config, "production")).rejects.toThrow("Duplicate Worker binding: API_CONTAINER");
+});
+
 test("production native bundle explicitly clears preview-only ordinary metadata", async () => {
   const config = project(true);
   const output = join(config.rootDir, config.config.build.output);

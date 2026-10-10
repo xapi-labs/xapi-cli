@@ -14,6 +14,40 @@ import { WORKER_PROJECT_SCHEMA_URL } from "../workers-project.ts";
 const roots: string[] = [];
 const workerId = "33333333-3333-4333-8333-333333333333";
 
+for (const bindingName of ["STATE", "ASSETS"]) {
+  test(`required Secret collision with ${bindingName} blocks promotion before resource/deployment writes`, async () => {
+    const root = fixture();
+    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify({
+      compatibility_date: "2026-08-26",
+      env: { production: { secrets: { required: [bindingName] },
+        ...(bindingName === "ASSETS" ? { assets: { directory: "dist/client", binding: bindingName } } : {}) } },
+    }));
+    const platform = fakePlatform({ resources: [], secrets: ["MODEL_KEY", bindingName] });
+    const options = { cwd: root, to: "production" as const, nonInteractive: true,
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" }, client: platform.client };
+    await expect(createWorkerPromotionPlan(options)).rejects.toThrow(`Duplicate Worker binding: ${bindingName}`);
+    await expect(promoteWorkerProject(options)).rejects.toThrow(`Duplicate Worker binding: ${bindingName}`);
+    expect(platform.calls).toEqual({ createResource: 0, deploy: 0, health: 0 });
+  });
+}
+
+test("promotion rejects required Secret collisions with immutable Artifact assets", async () => {
+  const root = fixture();
+  const path = join(root, "wrangler.jsonc");
+  const config = JSON.parse(readFileSync(path, "utf8"));
+  config.env.production.secrets = { required: ["ARTIFACT_ASSETS"] };
+  writeFileSync(path, JSON.stringify(config));
+  const platform = fakePlatform({ secrets: ["MODEL_KEY", "ARTIFACT_ASSETS"] });
+  const declaration = platform.client.getWorkerArtifactVariableConfiguration;
+  platform.client.getWorkerArtifactVariableConfiguration = async (...args) => ({
+    ...await declaration(...args) as object, bindingNames: ["ARTIFACT_ASSETS"],
+  });
+  await expect(promoteWorkerProject({ cwd: root, to: "production", nonInteractive: true,
+    clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" }, client: platform.client,
+  })).rejects.toMatchObject({ message: "Duplicate Worker binding: ARTIFACT_ASSETS", recovery: { remoteChangesApplied: false } });
+  expect(platform.calls).toEqual({ createResource: 0, deploy: 0, health: 0 });
+});
+
 afterEach(() => {
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });

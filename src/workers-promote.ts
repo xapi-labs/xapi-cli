@@ -16,6 +16,7 @@ import {
 } from "./workers-push.ts";
 import { workerEnvironmentContainers, loadWorkerProject } from "./workers-project.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
+import { conflictingWorkerSecretBinding } from "./workers-binding-validation.ts";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -413,6 +414,15 @@ export async function createWorkerPromotionPlan(
     );
   }
   const compatibility = readWranglerDeploymentSettings(project, "production", text(artifact.mediaType));
+  const checkSecretBindings = (artifactBindings: string[] = []) => {
+    const collision = conflictingWorkerSecretBinding(compatibility.requiredSecrets || [], [
+      ...project.config.environments.production.resources.map(resource => resource.bindingName),
+      ...(compatibility.assets?.binding ? [compatibility.assets.binding] : []),
+      ...artifactBindings,
+    ]);
+    if (collision) throw new WorkerPushError(`Duplicate Worker binding: ${collision}`, { remoteChangesApplied: false });
+  };
+  checkSecretBindings();
   const [resources, secrets, currentVariables, declaration] = await Promise.all([
     api
       .listWorkerResources(options.clientOptions, workerId, "production")
@@ -425,6 +435,7 @@ export async function createWorkerPromotionPlan(
     api.getWorkerArtifactVariableConfiguration(options.clientOptions, workerId, artifactId)
       .then(value => readWorkerArtifactVariableConfiguration(value, artifactId, contentSha256)),
   ]);
+  checkSecretBindings(declaration.bindingNames);
   const checked = productionChecks(
     workerId,
     {...project.config.environments.production, secrets: compatibility.requiredSecrets || []},

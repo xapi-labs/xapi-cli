@@ -29,6 +29,32 @@ const roots: string[] = [];
 const workerId = "22222222-2222-4222-8222-222222222222";
 const originalXapiKey = process.env.XAPI_KEY;
 
+for (const type of ["kv_namespace", "d1_database", "r2_bucket", "durable_object", "queue", "workflow", "assets"]) {
+  test(`required Secret collision with ${type} stops preview before any remote write`, async () => {
+    const bindingName = "COLLISION";
+    const resource = { type, bindingName, ...(["durable_object", "workflow"].includes(type) ? { className: "Example" } : {}) };
+    const root = fixture({ resources: type === "assets" ? [] : [resource] });
+    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify({
+      compatibility_date: "2026-08-26",
+      env: { preview: { secrets: { required: [bindingName] },
+        ...(type === "assets" ? { assets: { directory: "dist/client", binding: bindingName } } : {}) } },
+    }));
+    const platform = fakePlatform({ secrets: [bindingName] });
+    await expect(pushWorkerProject({
+      cwd: root, environment: "preview", confirm: async () => true,
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" }, client: platform.client,
+      runBuild: async () => {
+        mkdirSync(join(root, "dist/client"), { recursive: true });
+        writeFileSync(join(root, "dist/client/index.html"), "fixture");
+        writeFileSync(join(root, "dist/worker.mjs"), "export class Example {} export default {fetch(){return new Response('ok')}};");
+      },
+      fetchPublic: (async () => Response.json({ ok: true })) as unknown as typeof fetch,
+      sleep: async () => undefined,
+    })).rejects.toMatchObject({ message: `Duplicate Worker binding: ${bindingName}`, recovery: { remoteChangesApplied: false } });
+    expect(platform.calls).toEqual({ createWorker: 0, updateBudget: 0, createResource: 0, uploadArtifact: 0, deploy: 0 });
+  });
+}
+
 afterEach(async () => {
   await cleanupNativeWorkerUploadChildren();
   if (originalXapiKey === undefined) delete process.env.XAPI_KEY;

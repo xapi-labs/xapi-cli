@@ -1,4 +1,5 @@
 import { requestDeadline } from "./request-deadline.ts";
+import { conflictingWorkerSecretBinding } from "./workers-binding-validation.ts";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -24,6 +25,8 @@ import {
 } from "./workers-wrangler-import.ts";
 
 const BUILD_TIMEOUT_MS = 15 * 60_000;
+const BUILD_KILL_GRACE_MS = 500;
+const BUILD_CLOSE_GRACE_MS = 250;
 
 export type WorkerProjectBuildRunner = (
   command: string,
@@ -58,10 +61,13 @@ export async function runWorkerProjectBuild(
   timeoutMs = BUILD_TIMEOUT_MS,
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
+    const unix = process.platform !== "win32";
     const child = spawn(command, {
       cwd,
       env: sanitizedBuildEnvironment(),
       shell: true,
+      // A separate group lets us signal only this build and its descendants.
+      detached: unix,
       stdio: ["inherit", "pipe", "pipe"],
     });
     // stdout is reserved for the CLI's JSON contract. Build tools routinely
@@ -69,31 +75,99 @@ export async function runWorkerProjectBuild(
     // remain visible without corrupting `--format json` output.
     child.stdout?.pipe(process.stderr);
     child.stderr?.pipe(process.stderr);
-    const timer = requestDeadline(() => {
-      child.kill("SIGTERM");
-      reject(
-        new WorkerProjectBuildError(
-          `Build exceeded the ${timeoutMs / 60_000} minute timeout`,
-          { buildCommand: command, projectRoot: cwd },
-        ),
-      );
-    }, timeoutMs);
-    child.once("error", (error) => {
+    let stopping: WorkerProjectBuildError | undefined;
+    let cancelledBy: "SIGINT" | "SIGTERM" | undefined;
+    let closed = false;
+    let settled = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let closeTimer: ReturnType<typeof setTimeout> | undefined;
+    let treeKiller: ReturnType<typeof spawn> | undefined;
+    const finish = (error?: WorkerProjectBuildError) => {
+      if (settled) return;
+      settled = true;
       timer.dispose();
-      reject(
-        new WorkerProjectBuildError(`Unable to start build: ${error.message}`, {
-          buildCommand: command,
-          projectRoot: cwd,
-        }),
-      );
-    });
-    child.once("exit", (code, signal) => {
+      clearTimeout(killTimer);
+      clearTimeout(closeTimer);
+      process.removeListener("SIGINT", interrupt);
+      process.removeListener("SIGTERM", terminate);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      if (error) reject(error);
+      else resolve();
+      // detached builds no longer receive terminal signals automatically.
+      // Restore the CLI's default cancellation behavior after cleanup, while
+      // leaving any existing caller signal handlers in control.
+      if (cancelledBy && process.listenerCount(cancelledBy) === 0) {
+        process.exitCode = cancelledBy === "SIGINT" ? 130 : 143;
+        process.kill(process.pid, cancelledBy);
+      }
+    };
+    const signalGroup = (signal: "SIGTERM" | "SIGKILL") => {
+      if (!child.pid) return;
+      try { process.kill(-child.pid, signal); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH" && stopping)
+          stopping.recovery.buildTermination = "unconfirmed";
+      }
+    };
+    const stop = (error: WorkerProjectBuildError) => {
+      if (stopping || settled) return;
+      stopping = error;
       timer.dispose();
+      if (unix) {
+        signalGroup("SIGTERM");
+        // Do not cancel escalation on shell exit/pipe closure: a descendant
+        // may ignore TERM and keep writing files even without inherited pipes.
+        killTimer = setTimeout(() => {
+          signalGroup("SIGKILL");
+          if (closed) finish(error);
+          else closeTimer = setTimeout(() => finish(error), BUILD_CLOSE_GRACE_MS);
+        }, BUILD_KILL_GRACE_MS);
+      } else if (child.pid) {
+        // Windows has no POSIX process groups. Kill the owned tree before its
+        // shell disappears; taskkill does not receive any build credentials.
+        treeKiller = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+          env: sanitizedBuildEnvironment(), stdio: "ignore", windowsHide: true,
+        });
+        const killed = (confirmed: boolean) => {
+          if (settled) return;
+          if (!confirmed) {
+            error.recovery.buildTermination = "unconfirmed";
+            child.kill("SIGKILL");
+          }
+          finish(error);
+        };
+        treeKiller.once("error", () => killed(false));
+        treeKiller.once("close", code => killed(code === 0));
+        killTimer = setTimeout(() => { treeKiller?.kill(); killed(false); }, 1000);
+      } else finish(error);
+    };
+    const cancel = (signal: "SIGINT" | "SIGTERM") => {
+      cancelledBy = signal;
+      stop(new WorkerProjectBuildError(`Build cancelled with ${signal}`, {
+        buildCommand: command, projectRoot: cwd,
+      }));
+    };
+    const interrupt = () => cancel("SIGINT");
+    const terminate = () => cancel("SIGTERM");
+    process.on("SIGINT", interrupt);
+    process.on("SIGTERM", terminate);
+    const timer = requestDeadline(() => stop(new WorkerProjectBuildError(
+      `Build exceeded the ${timeoutMs / 60_000} minute timeout`,
+      { buildCommand: command, projectRoot: cwd },
+    )), timeoutMs);
+    child.once("error", error => finish(new WorkerProjectBuildError(
+      `Unable to start build: ${error.message}`, { buildCommand: command, projectRoot: cwd },
+    )));
+    // exit only observes the shell. close also waits for inherited output pipes.
+    child.once("close", (code, signal) => {
+      closed = true;
+      if (stopping) return;
       if (code === 0) {
-        resolve();
+        finish();
         return;
       }
-      reject(
+      finish(
         new WorkerProjectBuildError(
           code === 127
             ? "Build command could not run because a required executable was not found"
@@ -124,6 +198,11 @@ export async function loadWorkerProjectBundle(
   );
   try {
     const settings = readWranglerDeploymentSettings(project, environment, project.config.build.output.endsWith(".bundle") ? "application/vnd.xapi.worker-bundle.v2+json" : undefined);
+    const secretCollision = conflictingWorkerSecretBinding(settings.requiredSecrets || [], [
+      ...project.config.environments[environment].resources.map(resource => resource.bindingName),
+      ...(settings.assets?.binding ? [settings.assets.binding] : []),
+    ]);
+    if (secretCollision) throw new WorkerArtifactError(`Duplicate Worker binding: ${secretCollision}`);
     // A static initializer cannot stand in for a server produced by the real
     // application build. Only the generated adapter is guarded; custom Worker
     // entrypoints and ordinary SPA output retain their existing behavior.
