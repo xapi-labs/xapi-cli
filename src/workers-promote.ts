@@ -464,10 +464,18 @@ export async function createWorkerPromotionPlan(
     // A confirmed version binding cannot collide with immutable assets. If it
     // matches an Artifact name in this exact snapshot, its binding kind is known.
     let artifactVersion: string | undefined;
-    if (snapshot?.version === 1 && snapshot.artifactId === artifactId &&
-        snapshot.sourceSha256 === contentSha256 && typeof version?.binding === 'string' &&
+    const matchesSnapshot = snapshot?.version === 1 && snapshot.artifactId === artifactId &&
+      snapshot.sourceSha256 === contentSha256;
+    if (matchesSnapshot && typeof version?.binding === 'string' &&
         bindingNames.includes(version.binding)) artifactVersion = version.binding;
-    if (!artifactVersion) {
+    const previewOverride = provider?.nativeMetadataOverrides;
+    // Absence proves no Artifact version only if preview did not reset metadata.
+    // The existing backend records explicit {} overrides in providerResult.
+    const preservesVersion = previewOverride === undefined || (previewOverride !== null &&
+      typeof previewOverride === 'object' && !Array.isArray(previewOverride) && Object.keys(previewOverride).length > 0);
+    const knownNoVersion = matchesSnapshot && native !== null && typeof native === 'object' &&
+      !Array.isArray(native) && version === undefined && preservesVersion;
+    if (!artifactVersion && !knownNoVersion) {
       const readArtifact = api.getWorkerArtifact;
       if (!readArtifact) throw new WorkerPushError('Cannot read immutable Artifact binding metadata', {
         remoteChangesApplied: false,
@@ -485,19 +493,28 @@ export async function createWorkerPromotionPlan(
       if (details.assetCount === 0) artifactVersion = bindingNames[0];
     }
     const changesVersion = resetsMetadata || metadata.version_metadata !== undefined;
-    if (!changesVersion && artifactVersion) throw new WorkerPushError(
+    // The current immutable query returns only assets and version binding
+    // names. Two distinct names prove a version exists even without its kind.
+    if (!changesVersion && (artifactVersion || bindingNames.length === 2)) throw new WorkerPushError(
       'Production native metadata cannot remove the selected Artifact version binding while applying other native settings', {
         errorCode: 'worker_production_configuration_unrepresentable',
         fields: ['version_metadata'], artifactId, remoteChangesApplied: false,
         next: 'Inspect the selected Artifact and xapi workers pull --env production; the deployment API needs complete native metadata replacement to preserve this production intent',
       });
+    if (!changesVersion && !knownNoVersion && !artifactVersion) throw new WorkerPushError(
+      'Cannot classify Artifact bindings to verify complete production native metadata', {
+        errorCode: 'worker_artifact_binding_metadata_unavailable',
+        fields: ['version_metadata'], artifactId, remoteChangesApplied: false,
+        next: 'Read the selected Artifact and its variable-configuration through the Workers API; binding types are needed to rule out retained preview version metadata',
+      });
     if (changesVersion) {
       if (artifactVersion) bindingNames = bindingNames.filter(name => name !== artifactVersion);
-      else {
+      else if (!knownNoVersion) {
         // Without proof, an overlapping name might be immutable assets. Include
         // the desired version name as well as Secrets/vars in this ambiguity.
         const requestedNames = new Set([
           ...(compatibility.requiredSecrets || []), ...Object.keys(compatibility.variables?.vars || {}),
+          ...currentVariables.map(variable => variable.name),
           ...((metadata.version_metadata as { binding?: string } | undefined)?.binding
             ? [(metadata.version_metadata as { binding: string }).binding] : []),
         ]);
