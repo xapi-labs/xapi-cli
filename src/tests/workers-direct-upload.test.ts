@@ -36,7 +36,7 @@ async function fixture(mode:'normal'|'bad-channel'|'bad-checksum'|'reject'|'reje
     if(path.endsWith('/confirm')){
       if(mode==='reject-confirm'){res.writeHead(400);res.end('Worker object is missing or has wrong checksum');return;}
       if(mode==='lost-confirm'){res.writeHead(200,{'content-type':'application/json'});res.end('{');return;}
-      res.setHeader('content-type','application/json');res.end(JSON.stringify({id:'artifact',contentSha256:sha}));return;
+      res.setHeader('content-type','application/json');res.end(JSON.stringify({id:'artifact',contentSha256:sha,sizeBytes:bytes.length}));return;
     }
     const id='upload-'+(++upload);
     res.setHeader('content-type','application/json');res.end(JSON.stringify({uploadId:id,
@@ -50,7 +50,7 @@ async function fixture(mode:'normal'|'bad-channel'|'bad-checksum'|'reject'|'reje
 }
 const headers={'XAPI-KEY':'private-api-key','Content-Type':'application/json'};
 
-type RecoveryMode='normal'|'ready'|'compact'|'pending'|'expired'|'wrong-hash'|'wrong-size'|'wrong-owner'|'wrong-key'|'unknown'|'old-api'|'delayed-confirm';
+type RecoveryMode='normal'|'ready'|'compact'|'pending'|'expired'|'wrong-hash'|'wrong-size'|'wrong-owner'|'wrong-key'|'unknown'|'old-api'|'delayed-confirm'|'async-confirm'|'failed-confirm';
 async function recoveryFixture(mode:RecoveryMode,requestInput:WorkerArtifactUploadRequest=input) {
   const prepared=workerArtifactDirectUpload(requestInput);
   const files=[...prepared.files].map(([sha256,content])=>({sha256,size:content.length}));
@@ -75,6 +75,8 @@ async function recoveryFixture(mode:RecoveryMode,requestInput:WorkerArtifactUplo
     if(path.endsWith('/status')) {
       calls.status++;
       if(mode==='old-api')return new Response(null,{status:404});
+      if(mode==='failed-confirm')return json({uploadId:'owned-session',status:'FAILED',error:{code:'worker_artifact_integrity_failed',status:400}});
+      if(mode==='async-confirm'&&calls.status<3)return json({uploadId:'owned-session',status:'CONFIRMING',progress:{stage:'VERIFYING',completedFiles:calls.status,totalFiles:3}});
       if(mode==='pending'||(mode==='delayed-confirm'&&calls.status===1))return json({uploadId:'owned-session',status:'UPLOADING'});
       if(mode==='expired'||mode==='unknown')return json({uploadId:'owned-session',status:mode==='expired'?'EXPIRED':'UNKNOWN'});
       return json({uploadId:'owned-session',status:'READY',artifact:{...artifact,
@@ -85,12 +87,13 @@ async function recoveryFixture(mode:RecoveryMode,requestInput:WorkerArtifactUplo
     }
     if(path.endsWith('/confirm')) {
       calls.confirm++;
+      if(mode==='async-confirm'||mode==='failed-confirm') {expect(JSON.parse(body.toString()).async).toBe(true);return json({uploadId:'owned-session',status:'QUEUED'});}
       if(mode==='delayed-confirm'){return new Response('lost confirmation response',{status:502});}
       return json(artifact);
     }
     if(req.method==='POST') {
       calls.prepare++;
-      return json(['normal','delayed-confirm','compact'].includes(mode)?page(0):{...page(0),files:[],nextCursor:null});
+      return json(['normal','delayed-confirm','compact','async-confirm','failed-confirm'].includes(mode)?page(0):{...page(0),files:[],nextCursor:null});
     }
     const cursor=Number(new URL(path,host).searchParams.get('cursor'));calls.pages.push(cursor);
     return json(mode==='normal'?page(cursor):{...page(cursor),files:[],nextCursor:null});
@@ -108,6 +111,42 @@ describe('Worker direct upload with real HTTP channels',()=>{
     expect(f.calls.put).toBe(count);expect(f.calls.confirm).toBe(1);expect(f.calls.status).toBe(0);
     expect(f.calls.pages).toEqual(count>256?[128,256]:count>128?[128]:[]);
   },30_000);
+  it('polls durable confirmation without resending PUT or confirmation',async()=>{
+    const f=await recoveryFixture('async-confirm');
+    expect(await nativeWorkerUpload(input,f.apiUrl,headers)).toEqual(f.artifact);
+    expect(f.calls).toMatchObject({prepare:1,put:1,confirm:1,status:3});
+  });
+  it('preserves a terminal validation failure instead of deploying or replaying',async()=>{
+    const f=await recoveryFixture('failed-confirm');
+    await expect(nativeWorkerUpload(input,f.apiUrl,headers)).rejects.toThrow('worker_artifact_integrity_failed');
+    expect(f.calls.confirm).toBe(1);expect(f.calls.put).toBe(1);
+  });
+  it('uses bounded parallel PUTs and reuses object connections across a page',async()=>{
+    const modules=Array.from({length:40},(_,i)=>({path:`${i}.mjs`,content:`export const n=${i};`,
+      encoding:'utf8' as const,contentType:'application/javascript+module' as const}));
+    const requestInput={idempotencyKey:'parallel-keepalive',bundle:{version:1 as const,mainModule:'0.mjs',modules}};
+    const prepared=workerArtifactDirectUpload(requestInput);let host='',active=0,peak=0,puts=0;
+    const sockets=new Set<unknown>();
+    const server=createServer(async(req,res)=>{
+      const chunks:Buffer[]=[];for await(const chunk of req)chunks.push(Buffer.from(chunk));
+      const body=Buffer.concat(chunks);const path=req.url!;
+      if(path.startsWith('/object/')) {
+        sockets.add(req.socket);active++;peak=Math.max(peak,active);puts++;
+        const hash=path.split('/').at(-1)!;expect(body.equals(prepared.files.get(hash)!)).toBe(true);
+        expect(req.headers['xapi-key']).toBeUndefined();
+        await new Promise(resolve=>setTimeout(resolve,20));active--;res.end();return;
+      }
+      res.setHeader('content-type','application/json');
+      if(path.endsWith('/confirm'))res.end(JSON.stringify({id:'parallel-artifact',workerId:'w',...prepared.identity}));
+      else res.end(JSON.stringify({uploadId:'parallel-session',expiresAt:new Date(Date.now()+900000),nextCursor:null,
+        files:[...prepared.files].map(([sha256,bytes])=>({sha256,size:bytes.length,url:host+'/object/'+sha256,
+          headers:{'x-amz-checksum-sha256':Buffer.from(sha256,'hex').toString('base64')}}))}));
+    });servers.push(server);
+    await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));host='http://127.0.0.1:'+(server.address() as any).port;
+    expect(await nativeWorkerUpload(requestInput,host+'/api/v1/workers/w/artifact-uploads',headers)).toHaveProperty('id');
+    expect(puts).toBe(40);expect(peak).toBeGreaterThan(1);expect(peak).toBeLessThanOrEqual(8);
+    expect(sockets.size).toBeLessThanOrEqual(8);
+  });
   it('recovers an already confirmed session using its owned immutable identity without PUT or confirm',async()=>{
     const f=await recoveryFixture('ready');
     expect(await uploadDirectWorkerArtifact(input,f.apiUrl,headers)).toEqual(f.artifact);
@@ -141,7 +180,7 @@ describe('Worker direct upload with real HTTP channels',()=>{
     expect(f.calls).toEqual({prepare:1,put:1,pages:[],confirm:1,status:2});
   },30_000);
   it('sends only bytes/checksum to the object channel and confirms once',async()=>{
-    const f=await fixture();expect(await uploadDirectWorkerArtifact(input,f.apiUrl,headers)).toMatchObject({id:'artifact',contentSha256:sha});
+    const f=await fixture();expect(await uploadDirectWorkerArtifact(input,f.apiUrl,headers)).toMatchObject({id:'artifact',contentSha256:sha,sizeBytes:bytes.length});
     expect(f.calls.map(c=>c.method)).toEqual(['POST','PUT','POST']);
     expect(f.calls[0].key).toBe(headers['XAPI-KEY']);expect(f.calls[1].key).toBeUndefined();
     expect(f.calls[2].key).toBe(headers['XAPI-KEY']);

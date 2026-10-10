@@ -181,11 +181,12 @@ export async function request<T>(
   retries = 0,
   deadlineMode: 'total' | 'idle' = 'total',
   fetcher: typeof fetch = fetch,
+  sessionTransport?: RequestDeadlineAgent,
 ): Promise<T> {
   // Enforce the host allowlist before the API key ever leaves the machine.
   assertAllowedHost(url);
 
-  const transport = new RequestDeadlineAgent();
+  const transport = sessionTransport || new RequestDeadlineAgent();
   try {
     let attempt = 0;
     while (true) {
@@ -277,7 +278,7 @@ export async function request<T>(
       }
     }
   } finally {
-    await transport.destroy().catch(() => undefined);
+    if (!sessionTransport) await transport.destroy().catch(() => undefined);
   }
 }
 
@@ -286,30 +287,143 @@ export function uploadRequest<T>(url: string, options: RequestInit): Promise<T> 
   return request<T>(url, options, transferIdleTimeoutMs(), 0, 'idle');
 }
 
+/** Control-plane calls in one upload share their connection while retaining
+ * host/redirect checks and an independent total deadline for every request. */
+export function createArtifactControlSession() {
+  const transport = new RequestDeadlineAgent();
+  return {
+    request: <T>(url: string, options: RequestInit, budget: number, retries: number) =>
+      request<T>(url, options, budget, retries, 'total', objectFetch as unknown as typeof fetch, transport),
+    close: () => transport.destroy().catch(() => undefined),
+  };
+}
+
 /** A temporary object channel carries bytes and checksum only, never API keys.
  * Its URL is validated by the Worker upload caller; errors never print it. */
-export async function uploadArtifactObject(url: string, bytes: Uint8Array,
-  headers: Record<string,string>, signal: AbortSignal): Promise<void> {
-  const transport = new RequestDeadlineAgent();
-  const controller = new AbortController();
-  const abort = () => controller.abort(signal.reason);
-  if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});
-  let timer = requestDeadline(()=>controller.abort(),transferIdleTimeoutMs());
-  transport.progress=()=>{
-    timer.dispose();
-    timer=requestDeadline(()=>controller.abort(),transferIdleTimeoutMs());
+export function createArtifactUploadTransport() {
+  // One pool per upload session; per-request deadlines stay independent.
+  // A stalled object cannot have its deadline extended by another active PUT.
+  const transport = new Agent({
+    connections: 8,
+    headersTimeout: 0,
+    bodyTimeout: 0,
+  });
+  return {
+    async upload(
+      url: string,
+      bytes: Uint8Array,
+      headers: Record<string, string>,
+      signal: AbortSignal,
+    ) {
+      const controller = new AbortController();
+      const abort = () => controller.abort(signal.reason);
+      if (signal.aborted) abort();
+      else signal.addEventListener('abort', abort, { once: true });
+      let finished = false;
+      let timer = requestDeadline(
+        () => controller.abort(),
+        transferIdleTimeoutMs(),
+      );
+      const progress = () => {
+        if (finished || controller.signal.aborted) return;
+        timer.dispose();
+        timer = requestDeadline(
+          () => controller.abort(),
+          transferIdleTimeoutMs(),
+        );
+      };
+      const dispatcher: Dispatcher = Object.create(transport);
+      dispatcher.dispatch = (options, handler) => {
+        const body = Readable.from(
+          (async function* () {
+            for (let offset = 0; offset < bytes.length; offset += 65_536)
+              yield bytes.subarray(offset, offset + 65_536);
+          })(),
+          { objectMode: false, highWaterMark: 65_536 },
+        );
+        const monitored = new Proxy(handler, {
+          get(target, key) {
+            const value = Reflect.get(target, key);
+            if (
+              [
+                'onBodySent',
+                'onResponseStarted',
+                'onHeaders',
+                'onData',
+              ].includes(String(key))
+            )
+              return (...args: any[]) => {
+                progress();
+                return typeof value === 'function'
+                  ? value.apply(target, args)
+                  : undefined;
+              };
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+        return transport.dispatch(
+          { ...options, body, headersTimeout: 0, bodyTimeout: 0 },
+          monitored,
+        );
+      };
+      try {
+        const response = await objectFetch(url, {
+          method: 'PUT',
+          body: bytes as BodyInit,
+          headers,
+          redirect: 'manual',
+          signal: controller.signal,
+          dispatcher,
+        } as any);
+        if (!response.ok) {
+          await response.body?.cancel();
+          throw new Error(
+            `Worker object upload failed (HTTP ${response.status})`,
+          );
+        }
+        await response.arrayBuffer();
+      } catch (error) {
+        if (signal.aborted)
+          throw signal.reason instanceof Error
+            ? signal.reason
+            : new Error('Worker upload cancelled');
+        if (
+          error instanceof Error &&
+          /^Worker object upload failed/.test(error.message)
+        )
+          throw error;
+        // Never include a signed URL or raw transport message in the public error.
+        const code = (error as any)?.cause?.code;
+        const safeCode =
+          typeof code === 'string' && /^[A-Z0-9_]{1,64}$/.test(code)
+            ? ` (${code})`
+            : '';
+        throw new Error(
+          'Worker object upload failed or stalled' +
+            safeCode +
+            '; no deployment was started',
+        );
+      } finally {
+        finished = true;
+        timer.dispose();
+        signal.removeEventListener('abort', abort);
+      }
+    },
+    close: () => transport.destroy().catch(() => undefined),
   };
+}
+
+export async function uploadArtifactObject(
+  url: string,
+  bytes: Uint8Array,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+): Promise<void> {
+  const transport = createArtifactUploadTransport();
   try {
-    const response=await objectFetch(url,{method:'PUT',body:bytes as BodyInit,headers,
-      redirect:'manual',signal:controller.signal,dispatcher:transport} as any);
-    if(!response.ok)throw new Error(`Worker object upload failed (HTTP ${response.status})`);
-    await response.arrayBuffer();
-  } catch(error) {
-    if(signal.aborted)throw signal.reason instanceof Error?signal.reason:new Error('Worker upload cancelled');
-    if(error instanceof Error && /^Worker object upload failed/.test(error.message))throw error;
-    throw new Error('Worker object upload failed or stalled; no deployment was started');
+    await transport.upload(url, bytes, headers, signal);
   } finally {
-    timer.dispose();signal.removeEventListener('abort',abort);await transport.destroy().catch(()=>undefined);
+    await transport.close();
   }
 }
 

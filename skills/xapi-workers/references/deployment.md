@@ -185,6 +185,25 @@ This example assumes the generated Wrangler config represents the target environ
 
 Set `build.output` to the generated `.worker.bundle`, omit `build.main`, and set `assets.directory` to the generated client directory. `--dry-run` only creates the local Cloudflare upload artifact; `xapi workers push` remains the only publisher. The CLI sends the complete modules/assets set as one immutable Artifact: direct checksummed R2 upload and server sealing when available, otherwise the authenticated legacy multipart channel. The import report must show every unmapped Wrangler field; never split a framework application into per-file API uploads to work around an import problem.
 
+Direct upload progress is written to stderr; JSON stdout remains the final result.
+The CLI uploads content through a reusable, bounded connection pool. Files remain
+one complete-project Artifact, not separate deployments. After upload, xAPI
+persists confirmation and reports `QUEUED`, `CONFIRMING`, `READY`, or `FAILED`.
+A continuing large-file transfer uses an idle deadline; Artifact confirmation has
+its own bounded wait. If the CLI disconnects or reports an unresolved confirmation:
+
+```bash
+xapi workers upload-status <worker-id> --upload <upload-id> --format json
+```
+
+Read `progress.stage`, `completedFiles`, and `totalFiles`. `READY` includes the
+immutable Artifact. Rerun the original `workers push` to reuse it and continue
+publication. `FAILED` includes a safe error code: correct the cause and explicitly
+retry. Do not create a different Worker, modify the Artifact, or assume that an
+accepted confirmation published the application. Confirmation does not reserve
+funds or initiate a deployment. A service restart can recover accepted verification
+work; it does not automatically replay a publication.
+
 The complete-project upload channel accepts up to 64 MiB of uncompressed
 Worker modules and 100 MiB of combined module/static-asset content; each static
 asset is limited to 25 MiB. There is no 200-module cutoff. A single-file build

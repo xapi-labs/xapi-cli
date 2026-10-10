@@ -91,6 +91,7 @@ ADVANCED ARTIFACT PRIMITIVES (custom CI and recovery only)
 
   upload <worker-id> --file dist/index.mjs|dist/ [--main worker.js]
   artifacts <worker-id>
+  upload-status <worker-id> --upload UPLOAD_ID
   build <worker-id> --project . --entrypoint src/index.ts --command "npm run build"
   builds <worker-id>
   deploy <worker-id> --artifact ARTIFACT_ID --env preview|production
@@ -381,7 +382,7 @@ const COMMON_FLAGS = new Set(["help", "format"]);
 function options() {
   const cfg = getConfig();
   requireApiKey(cfg);
-  return { apiHost: XAPI_API_HOST, apiKey: cfg.apiKey!, operationWait: {
+  return { apiHost: XAPI_API_HOST, apiKey: cfg.apiKey!, artifactUploadProgress: (message:string)=>console.error(message), operationWait: {
     onWait: (event: import('../workers-operation-wait.ts').WorkerOperationWaitEvent) => {
       process.stderr.write(event.phase === 'ready'
         ? `Operation ${event.operationId} finished; submitting the current request.\n`
@@ -1116,6 +1117,12 @@ export async function workersCommand(
       );
       return;
     }
+    case "upload-status":
+      assertFlags(flags,["upload"]);
+      output(await client.workerArtifactUploadStatus(options(),
+        oneId(rest,"usage: xapi-to workers upload-status <worker-id> --upload UPLOAD_ID"),
+        required(flags.upload,"--upload")));
+      return;
     case "artifacts":
       assertFlags(flags);
       output(

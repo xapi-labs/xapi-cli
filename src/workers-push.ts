@@ -1159,7 +1159,7 @@ export async function pushWorkerProject(
     }
     const artifact = await ensureArtifact(
       api,
-      options.clientOptions,
+      {...options.clientOptions,artifactUploadProgress:options.onProgress},
       workerState.id,
       bundle,
       options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))),

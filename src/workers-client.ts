@@ -12,6 +12,7 @@ export interface WorkersClientOptions {
   apiKey: string;
   operationWait?: WorkerOperationWaitOptions;
   artifactUploadTimeoutMs?: number;
+  artifactUploadProgress?: (message:string)=>void;
 }
 
 export async function workerRetention(options: WorkersClientOptions, id: string, environment: string, path = "", body?: Record<string, unknown>) {
@@ -156,6 +157,11 @@ export function rollbackWorker(
   );
 }
 
+export function workerArtifactUploadStatus(options:WorkersClientOptions,id:string,uploadId:string) {
+  return request<unknown>(url(options,`/${encodeURIComponent(id)}/artifact-uploads/${encodeURIComponent(uploadId)}/status`),
+    {headers:headers(options)},30_000,2);
+}
+
 export function listWorkerArtifacts(options: WorkersClientOptions, id: string) {
   return request<unknown>(
     url(options, `/${encodeURIComponent(id)}/artifacts`),
@@ -175,7 +181,7 @@ export async function uploadWorkerArtifact(
   const provider=await workerArtifactProviderStatus(options) as {directUpload?:boolean};
   if(provider?.directUpload===true)
     return uploadDirectWorkerArtifact(input,url(options,`/${encodeURIComponent(id)}/artifact-uploads`),
-      headers(options,true),options.artifactUploadTimeoutMs,options.operationWait?.signal);
+      headers(options,true),options.artifactUploadTimeoutMs,options.operationWait?.signal,options.artifactUploadProgress);
   const multipart = workerArtifactNeedsMultipart(input);
   return uploadRequest<unknown>(
     url(options, `/${encodeURIComponent(id)}/artifacts${multipart ? "/bundle" : ""}`),
