@@ -105,6 +105,33 @@ The generated health endpoint checks transport only. Use the returned routing
 readiness to distinguish a root hostname from `PATH_FALLBACK`; do not invent
 per-page forwarding rules or count health 200 as application acceptance.
 
+An unmodified application that emits root URLs such as `/_next/...`, `/assets/...`
+or `/api/...` needs a root hostname, unless its native build and server routes
+are configured for the supplied base path. A working `/w/<ref>/<env>/` HTML
+response alone does not prove these URLs belong to that Worker. Use a verified
+owned custom domain when the test platform has no default hostname; never
+borrow a production domain or rewrite arbitrary HTML in the Dispatcher.
+
+`init .` preserves an existing Wrangler configuration or generated
+`.wrangler/deploy/config.json` entrypoint before generating a static adapter.
+If a later build produces a real server entrypoint, re-import that generated
+configuration with `init --from-wrangler <path> --force`, review the configuration,
+and package its complete native dry-run bundle. React/Vite dependencies alone
+do not distinguish a SPA from a server-rendered application.
+
+During builds, assets fields absent from `xapi.worker.json` inherit the selected
+Wrangler configuration; explicitly declared xAPI fields override it, including
+`false`, `none`, and empty arrays. Previously imported fields remain explicit
+overrides: remove an optional override if it should follow Wrangler changes.
+Directories resolve relative to the file declaring them. Do not silently
+overwrite a customer's deliberate configuration.
+
+For copied projects, build from tracked source with the lockfile rather than
+reusing another directory's generated caches or node_modules. Generated caches
+can embed absolute build-machine paths even when all files upload successfully.
+Preserve tracked public build configuration; a file named `.env.production`
+is not automatically a private credential file.
+
 For an APAC-oriented service, initialize or edit the environment desired state
 with `defaultResourceLocation: "apac"` and `placementMode: "smart"`. The first
 setting applies only when xAPI creates new D1/R2 resources; the second emits
@@ -341,6 +368,21 @@ xapi workers plan --env preview --format json
 xapi workers push --env preview --non-interactive
 xapi workers inspect --env preview --format json
 ```
+
+Record the active deployment, immutable Artifact and actual public hostname.
+Then use a real browser to load the page, follow an internal link and refresh
+that deep URL; verify the application's declared CSS/JS have the correct MIME
+and are not HTML error pages. Exercise a real UI action and its server API,
+and verify persisted data after an update. Record font failures, application
+errors and unrelated browser-extension errors separately. A path fallback that
+cannot load the application's root URLs is an incomplete web acceptance result,
+not evidence that the customer must rewrite their application.
+
+Platform service deployment and CF integration deployment are separate release
+steps. Maintainers must bind the serving Dispatcher/Tail version to the exact
+candidate code, verify existing bindings, Secret authentication, Queue consumer
+and DLQ configuration, then verify native callbacks and ledger attribution.
+An API health response does not prove these edge components were updated.
 
 For xAPI platform maintainers, keep Worker implementation changes on one Worker feature branch; Sandbox changes stay separate. The backend platform integrates an authorized release through `dev → staging → main`, completing the checks at each stage. The separate CLI repository uses its own development PR to `main` and Release Please release review; do not invent CLI staging branches or publish a feature checkout. These repository flows are distinct from a customer's preview-to-production Worker promotion. Local source/tests are not evidence that the platform has been deployed or that a CLI package is published; package version/tag/publication remains governed by Release Please.
 

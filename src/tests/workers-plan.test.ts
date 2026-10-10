@@ -76,6 +76,26 @@ function unexpected(name: string): () => Promise<never> {
 }
 
 describe("workers plan", () => {
+  test("shows Wrangler-only static routing and reserves its binding before a build exists", async () => {
+    const root = project();
+    const wrangler = { assets: { directory: "dist/client", binding: "ASSETS", not_found_handling: "single-page-application" } };
+    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify(wrangler));
+    const options = {
+      cwd: root, environment: "preview" as const,
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
+      client: {
+        listWorkers: async () => [],
+        getWorker: unexpected("getWorker"),
+        getWorkerVariableState: unexpected("getWorkerVariableState"),
+        listWorkerResources: unexpected("listWorkerResources"),
+        listWorkerSecrets: unexpected("listWorkerSecrets"),
+      },
+    };
+    expect((await createWorkerPlan(options)).actions).toContainEqual(expect.objectContaining({ kind: "routing", operation: "MANUAL" }));
+    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify({ ...wrangler, vars: { ASSETS: "public value" } }));
+    await expect(createWorkerPlan(options)).rejects.toThrow("Artifact public variable conflicts with an explicit binding");
+  });
+
   test.each(["Chat", "constructor", "prototype", "toString", "hasOwnProperty"].flatMap(name =>
     [true, false].map(exists => ({ name, exists }))))("plans exact binding identities without inherited-object collisions: %p", async ({ name, exists }) => {
     const root = project({ linked: true, bundle: "export default {fetch(){return new Response('ok')}}" });

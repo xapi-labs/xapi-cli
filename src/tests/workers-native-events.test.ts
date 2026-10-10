@@ -172,7 +172,13 @@ function platform(): {client:PushClient & PromotionClient; trace:string[]; deplo
     getWorkerArtifactVariableConfiguration:async(_o,_id,artifactId)=>({artifactId,contentSha256:artifacts.find(row=>row.id===artifactId)?.contentSha256,variables:[],bindingNames:[],keepBindings:[]}),
     updateWorkerSchedule:async()=>{throw Error('unexpected schedule update')},
     listWorkerResources:async()=>resourceRows,listWorkerSecrets:async()=>[],listWorkerArtifacts:async()=>artifacts,
-    uploadWorkerArtifact:async(_o,_id,input)=>{if(!('moduleCode' in input))throw Error('unexpected bundle');const artifact={id:'artifact',contentSha256:createHash('sha256').update(input.moduleCode).digest('hex')};artifacts.push(artifact);trace.push('upload');return artifact;},
+    uploadWorkerArtifact:async(_o,id,input)=>{
+      if(!('moduleCode' in input))throw Error('unexpected bundle');
+      const bytes=Buffer.from(input.moduleCode,'utf8');
+      const artifact={id:'artifact',workerId:id,idempotencyKey:input.idempotencyKey,
+        contentSha256:createHash('sha256').update(bytes).digest('hex'),sizeBytes:bytes.length};
+      artifacts.push(artifact);trace.push('upload');return artifact;
+    },
     deployWorker:async(_o,_id,input)=>{const row={id:`deploy-${input.environment}`,artifactId:input.artifactId,environmentId:`env-${input.environment}`,idempotencyKey:input.idempotencyKey,status:'DEPLOYING'};deployments.push(row);trace.push('deploy');return row;},
     listWorkerSchedules:async()=>schedules,
     configureWorkerQueueConsumer:async(_o,_id,env,id,input)=>{expect(deployments.some(row=>row.environmentId===`env-${env}` && row.status==='ACTIVE')).toBe(true);expect(id).toBe('owned-jobs');trace.push(`queue-${env}`);Object.assign(resourceRows[0],{config:{nativeConsumer:input}});return{status:'CONFIGURED'};},

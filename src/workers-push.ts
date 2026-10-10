@@ -29,6 +29,7 @@ import {
   type WorkerDeploymentPlan,
 } from "./workers-plan.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
+import { WorkerArtifactConfirmationPendingError } from "./workers-direct-upload.ts";
 import {
   remoteWorkerResourceState,
   resourceReadyForDeployment,
@@ -607,27 +608,45 @@ async function ensureArtifact(
   options: WorkersClientOptions,
   workerId: string,
   bundle: LoadedWorkerArtifact,
+  sleep: (milliseconds: number) => Promise<void>,
 ): Promise<UnknownRecord> {
   const idempotencyKey = stableKey(
     "xapi-worker-artifact-v1",
     workerId,
     bundle.contentSha256,
   );
-  const find = async () =>
-    records(await api.listWorkerArtifacts(options, workerId), "Artifacts").find(
+  const validate = (artifact: UnknownRecord) => {
+    if (!text(artifact.id) || artifact.contentSha256 !== bundle.contentSha256 ||
+        artifact.sizeBytes !== bundle.sizeBytes ||
+        (artifact.workerId !== undefined && artifact.workerId !== workerId)) {
+      throw new WorkerPushError("xAPI Artifact identity does not match the local bundle", {
+        artifactId: text(artifact.id),
+      });
+    }
+    return artifact;
+  };
+  const find = async () => {
+    const artifact = records(await api.listWorkerArtifacts(options, workerId), "Artifacts").find(
       (item) => item.contentSha256 === bundle.contentSha256,
     );
+    return artifact ? validate(artifact) : undefined;
+  };
   const prior = await find();
   if (prior) return prior;
   try {
-    return record(
+    return validate(record(
       await api.uploadWorkerArtifact(options, workerId, {
         ...bundle.upload,
         idempotencyKey,
       }),
       "Artifact",
-    );
+    ));
   } catch (error) {
+    if (error instanceof WorkerArtifactConfirmationPendingError) {
+      const reconciled = await find();
+      if (reconciled) return reconciled;
+      throw new WorkerPushError(error.message, { workerId, ...error.recovery });
+    }
     if (error instanceof HttpError && error.status === 413 && "bundle" in bundle.upload) {
       throw new WorkerPushError(
         "The xAPI control plane rejected the complete-project upload before Artifact creation",
@@ -640,15 +659,33 @@ async function ensureArtifact(
       );
     }
     if (!shouldReconcileWrite(error)) throw error;
-    const reconciled = await find();
-    if (reconciled) return reconciled;
-    return record(
-      await api.uploadWorkerArtifact(options, workerId, {
-        ...bundle.upload,
-        idempotencyKey,
-      }),
-      "Artifact",
-    );
+    // Confirmation may still be committing after a proxy/transport timeout.
+    // Brief reads let that write settle before reusing the same immutable key.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt) await sleep(attempt * 250);
+      const reconciled = await find();
+      if (reconciled) return reconciled;
+    }
+    try {
+      return validate(record(
+        await api.uploadWorkerArtifact(options, workerId, {
+          ...bundle.upload,
+          idempotencyKey,
+        }),
+        "Artifact",
+      ));
+    } catch (retryError) {
+      if (retryError instanceof WorkerArtifactConfirmationPendingError) {
+        const reconciled = await find();
+        if (reconciled) return reconciled;
+        throw new WorkerPushError(retryError.message, { workerId, ...retryError.recovery });
+      }
+      if (!shouldReconcileWrite(retryError) &&
+          !(retryError instanceof Error && retryError.message === "Worker upload has missing files")) throw retryError;
+      const reconciled = await find();
+      if (reconciled) return reconciled;
+      throw retryError;
+    }
   }
 }
 
@@ -1125,6 +1162,7 @@ export async function pushWorkerProject(
       options.clientOptions,
       workerState.id,
       bundle,
+      options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))),
     );
     const artifactId = text(artifact.id);
     if (!artifactId)
@@ -1204,7 +1242,7 @@ export async function pushWorkerProject(
         idempotencyKey: deployed.idempotencyKey,
       },
       publicUrl,
-      ...(linkedProject.config.assets ? { routing: {
+      ...("bundle" in bundle.upload && bundle.upload.bundle.assets ? { routing: {
         mode: text(finalEnvironment.routingMode),
         webAppReady: finalEnvironment.webAppReady === true,
         publicOrigin: text(finalEnvironment.publicOrigin),

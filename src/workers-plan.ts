@@ -493,7 +493,7 @@ async function localArtifact(project: LoadedWorkerProject, environment: "preview
     return { variables: workerVariableDeclaration({
       vars: readWranglerPublicVars(project, environment) as Record<string, unknown> | undefined,
       keepBindings: settings.keepBindings,
-    }, workerArtifactBindingNames({ assets: project.config.assets, versionMetadata: settings.versionMetadata })) };
+    }, workerArtifactBindingNames({ assets: settings.assets, versionMetadata: settings.versionMetadata })) };
   }
   try {
     const artifact = await loadWorkerProjectBundle(project, environment);
@@ -749,6 +749,7 @@ export async function createWorkerPlan(
 ): Promise<WorkerDeploymentPlan> {
   const project = loadWorkerProject(options.cwd, options.configPath);
   validatePlanInputs(project);
+  const effectiveAssets = readWranglerDeploymentSettings(project, options.environment).assets;
   const desired = project.config.environments[options.environment];
   const api = options.client || workersClient;
   const actions: WorkerPlanAction[] = [];
@@ -920,7 +921,7 @@ export async function createWorkerPlan(
   prerequisiteBlocked =
     compareSecrets(actions, desired.secrets, remoteSecrets) ||
     prerequisiteBlocked;
-  if (project.config.assets) {
+  if (effectiveAssets) {
     const ready = remoteEnvironmentState?.webAppReady;
     if (ready === true) {
       add(actions, "NO_CHANGE", "routing", options.environment, "Web application has a dedicated hostname", undefined, {

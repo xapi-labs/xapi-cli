@@ -1330,7 +1330,9 @@ export function workerArtifactDirectUpload(input: WorkerArtifactUploadRequest) {
     return {path:file.path,contentType:file.contentType,sha256:hash,size:bytes.length};
   };
   const {modules,assets,...settings}=bundle;
-  return {files,input:{idempotencyKey:input.idempotencyKey,kind:'bundle' in input?'bundle':'module',
+  const identityBytes='bundle' in input?storedBundleBytes(bundle):Buffer.from(input.moduleCode,'utf8');
+  return {files,identity:{contentSha256:sha256(identityBytes),sizeBytes:identityBytes.length},
+    input:{idempotencyKey:input.idempotencyKey,kind:'bundle' in input?'bundle':'module',
     manifest:{...settings,version:2,modules:modules.map(entry),
       ...(assets?{assets:{...assets,files:assets.files.map(entry)}}:{})}}};
 }

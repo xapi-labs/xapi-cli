@@ -1,5 +1,8 @@
 import { requestDeadline } from "./request-deadline.ts";
 import { spawn } from "node:child_process";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { STATIC_APPLICATION_WORKER_SOURCE } from "./workers-framework-init.ts";
 import type { LoadedWorkerArtifact } from "./workers-artifact.ts";
 import {
   loadWorkerArtifactInput,
@@ -16,6 +19,8 @@ import { workerEnvironmentContainers, resolveWorkerProjectPath } from "./workers
 import {
   readWranglerDeploymentSettings,
   readWranglerPublicVars,
+  findGeneratedWranglerConfig,
+  parseWrangler,
 } from "./workers-wrangler-import.ts";
 
 const BUILD_TIMEOUT_MS = 15 * 60_000;
@@ -119,15 +124,30 @@ export async function loadWorkerProjectBundle(
   );
   try {
     const settings = readWranglerDeploymentSettings(project, environment, project.config.build.output.endsWith(".bundle") ? "application/vnd.xapi.worker-bundle+json" : undefined);
+    // A static initializer cannot stand in for a server produced by the real
+    // application build. Only the generated adapter is guarded; custom Worker
+    // entrypoints and ordinary SPA output retain their existing behavior.
+    if (project.config.build.output === "xapi-worker/index.mjs" && existsSync(path) &&
+        readFileSync(path, "utf8") === STATIC_APPLICATION_WORKER_SOURCE) {
+      const generated = findGeneratedWranglerConfig(project.rootDir);
+      if (generated) {
+        const native = parseWrangler(resolveWorkerProjectPath(project, generated, "generated Wrangler configuration")).config;
+        const main = typeof native.main === "string" ? resolve(project.rootDir, dirname(generated), native.main) : undefined;
+        if (main && existsSync(main) && statSync(main).isFile() && main !== path) throw new WorkerProjectBuildError(
+          `The application build produced a native Worker entrypoint. Preserve its server behavior: run xapi workers init --from-wrangler ${generated} --force, review the import report and build.output, then use the project's Wrangler deploy --dry-run --outfile packaging script before plan/push`,
+          { remoteChangesApplied: false, generatedWrangler: generated, serverEntrypoint: main },
+        );
+      }
+    }
     const built = await loadWorkerArtifactInput(
       path,
       project.config.build.main,
-      project.config.assets
+      settings.assets
         ? {
-            ...project.config.assets,
+            ...settings.assets,
             directory: resolveWorkerProjectPath(
               project,
-              project.config.assets.directory,
+              settings.assets.directory,
               "assets.directory",
             ),
           }
@@ -146,8 +166,8 @@ export async function loadWorkerProjectBundle(
         (resource) => resource.bindingName,
       ),
       ...(project.config.environments[environment].secrets || []),
-      ...(project.config.assets?.binding
-        ? [project.config.assets.binding]
+      ...(settings.assets?.binding
+        ? [settings.assets.binding]
         : []),
     ]);
     const versionBinding =

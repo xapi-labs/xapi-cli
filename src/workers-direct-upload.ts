@@ -1,9 +1,25 @@
 import {fetch as stableFetch} from 'undici/index.js';
-import { request, uploadArtifactObject } from './client.ts';
+import { HttpError, isRetryableRequestError, request, uploadArtifactObject } from './client.ts';
 import { workerArtifactDirectUpload, type WorkerArtifactUploadRequest } from './workers-artifact.ts';
 
 type UploadPage = {uploadId:string;expiresAt:string;nextCursor:number|null;
   files:Array<{sha256:string;size:number;url:string;headers:Record<string,string>}>};
+type UploadStatus = {uploadId:string;status:string;artifact?:unknown};
+const CONFIRM_STATUS_ATTEMPTS=5;
+const CONFIRM_STATUS_INTERVAL_MS=1_000;
+
+/** A sent confirmation can still commit; preparing another upload is not recovery. */
+export class WorkerArtifactConfirmationPendingError extends Error {
+  readonly recovery:Record<string,unknown>;
+  constructor(uploadId:string,idempotencyKey:string,status:string,statusEndpoint:string,failure:unknown) {
+    super('Worker Artifact confirmation is unresolved; no deployment was started');
+    this.name='WorkerArtifactConfirmationPendingError';
+    this.recovery={errorCode:'worker_artifact_confirmation_pending',uploadId,idempotencyKey,status,statusEndpoint,
+      firstFailure:{type:failure instanceof Error?failure.name:'UnknownError',
+        ...(failure instanceof HttpError?{status:failure.status}:{})},
+      next:'Check the owned upload status; once READY, rerun the original workers push command to reuse the immutable Artifact'};
+  }
+}
 
 export async function uploadDirectWorkerArtifact(input:WorkerArtifactUploadRequest,
   apiUrl:string, headers:HeadersInit, timeoutMs=900_000, callerSignal?:AbortSignal) {
@@ -16,6 +32,52 @@ export async function uploadDirectWorkerArtifact(input:WorkerArtifactUploadReque
   const signal=controller.signal;
   const directRequest=<T>(url:string,init:RequestInit,budget:number,retries:number)=>
     request<T>(url,init,budget,retries,'total',stableFetch as unknown as typeof fetch);
+  const workerId=decodeURIComponent(new URL(apiUrl).pathname.split('/').at(-2)!);
+  const readyArtifact=(value:unknown)=>{
+    const artifact=value as Record<string,unknown>|undefined;
+    if(!artifact || typeof artifact!=='object' || Array.isArray(artifact) ||
+      typeof artifact.id!=='string' || !artifact.id ||
+      artifact.contentSha256!==prepared.identity.contentSha256 ||
+      artifact.sizeBytes!==prepared.identity.sizeBytes ||
+      (artifact.workerId!==undefined && artifact.workerId!==workerId) ||
+      (artifact.idempotencyKey!==undefined && artifact.idempotencyKey!==input.idempotencyKey))
+      throw new Error('Worker confirmed artifact does not match the upload identity');
+    return artifact;
+  };
+  let observedStatus='UNAVAILABLE';
+  const recoverReady=async(uploadId:string,attempts=1)=>{
+    for(let attempt=0;attempt<attempts;attempt++) {
+      signal.throwIfAborted();
+      let status:UploadStatus|undefined;
+      let statusRead=false;
+      try {
+        status=await directRequest<UploadStatus>(apiUrl+'/'+encodeURIComponent(uploadId)+'/status',
+          {headers,signal},5_000,0);
+        statusRead=true;
+      } catch(error) {
+        signal.throwIfAborted();
+        // Older control planes do not expose status; retain the original failure.
+        if(error instanceof HttpError && [404,405].includes(error.status)){observedStatus='UNAVAILABLE';return undefined;}
+        if(!isRetryableRequestError(error) && !(error instanceof HttpError && error.status>=500))throw error;
+        observedStatus='UNAVAILABLE';
+        if(attempt===attempts-1)return undefined;
+      }
+      if(statusRead && !status)throw new Error('Invalid Worker upload status');
+      if(status) {
+        if(status.uploadId!==uploadId)throw new Error('Invalid Worker upload status');
+        observedStatus=status.status;
+        if(status.status==='READY')return readyArtifact(status.artifact);
+        if(status.status==='EXPIRED')return undefined;
+        if(!['UPLOADING','CONFIRMING'].includes(status.status))throw new Error('Invalid Worker upload status');
+      }
+      if(attempt<attempts-1)await new Promise<void>((resolve,reject)=>{
+        const onAbort=()=>{clearTimeout(timer);reject(signal.reason);};
+        const timer=setTimeout(()=>{signal.removeEventListener('abort',onAbort);resolve();},CONFIRM_STATUS_INTERVAL_MS);
+        signal.addEventListener('abort',onAbort,{once:true});
+      });
+    }
+    return undefined;
+  };
   try {
     signal.throwIfAborted();
     let page=await directRequest<UploadPage>(apiUrl,{method:'POST',headers,
@@ -52,10 +114,24 @@ export async function uploadDirectWorkerArtifact(input:WorkerArtifactUploadReque
       page=await directRequest<UploadPage>(apiUrl+'/'+encodeURIComponent(uploadId)+'?cursor='+cursor,
         {headers,signal},30_000,1);
     }
-    if(sent.size!==prepared.files.size)throw new Error('Worker upload has missing files');
+    if(sent.size!==prepared.files.size) {
+      // A concurrent confirmation can compact a reused session between pages.
+      const ready=await recoverReady(uploadId);
+      if(ready)return ready;
+      throw new Error('Worker upload has missing files');
+    }
     signal.throwIfAborted();
-    return await directRequest<unknown>(apiUrl+'/'+encodeURIComponent(uploadId)+'/confirm',
-      {method:'POST',headers,signal},Math.min(timeoutMs,900_000),0);
+    try {
+      return await directRequest<unknown>(apiUrl+'/'+encodeURIComponent(uploadId)+'/confirm',
+        {method:'POST',headers,signal},Math.min(timeoutMs,900_000),0);
+    } catch(error) {
+      signal.throwIfAborted();
+      if(!isRetryableRequestError(error) && !(error instanceof HttpError && error.status>=500))throw error;
+      const ready=await recoverReady(uploadId,CONFIRM_STATUS_ATTEMPTS);
+      if(ready)return ready;
+      throw new WorkerArtifactConfirmationPendingError(uploadId,input.idempotencyKey,observedStatus,
+        new URL(apiUrl).pathname+'/'+encodeURIComponent(uploadId)+'/status',error);
+    }
   } finally {
     clearTimeout(timer);callerSignal?.removeEventListener('abort',cancel);
   }

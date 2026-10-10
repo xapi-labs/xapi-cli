@@ -429,7 +429,7 @@ export async function createWorkerPromotionPlan(
     production,
     resources,
     secrets,
-    Boolean(project.config.assets),
+    Boolean(readWranglerDeploymentSettings(project, "production").assets),
   );
   const nativePlan = nativeDeploymentPlan(project, "production");
   for (const event of await planWorkerNativeEvents(project,"production",resources,api,options.clientOptions))

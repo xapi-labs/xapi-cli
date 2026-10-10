@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   mkdirSync,
@@ -21,13 +21,16 @@ import {
   WORKER_PROJECT_SCHEMA_URL,
   loadWorkerProject,
 } from "../workers-project.ts";
-import {attachWorkerNativeMetadata,loadWorkerArtifact} from '../workers-artifact.ts';
+import {attachWorkerNativeMetadata,loadWorkerArtifact,workerArtifactDirectUpload} from '../workers-artifact.ts';
+import {cleanupNativeWorkerUpload,cleanupNativeWorkerUploadChildren,nativeWorkerUpload} from './workers-direct-upload-native.ts';
+afterAll(cleanupNativeWorkerUpload);
 
 const roots: string[] = [];
 const workerId = "22222222-2222-4222-8222-222222222222";
 const originalXapiKey = process.env.XAPI_KEY;
 
-afterEach(() => {
+afterEach(async () => {
+  await cleanupNativeWorkerUploadChildren();
   if (originalXapiKey === undefined) delete process.env.XAPI_KEY;
   else process.env.XAPI_KEY = originalXapiKey;
   for (const root of roots.splice(0)) {
@@ -817,6 +820,113 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     expect(platform.calls.uploadArtifact).toBe(1);
     expect(platform.calls.deploy).toBe(1);
   });
+
+  test.each(["legacy-race", "pending", "old-api", "delayed-ready"] as const)("recovers owned immutable confirmation safely: %s", async mode => {
+    const root=fixture({linked:true});
+    const configPath=join(root,'xapi.worker.json');
+    const config=JSON.parse(readFileSync(configPath,'utf8'));
+    config.build={command:'fake-build',output:'dist',main:'worker.mjs'};
+    writeFileSync(configPath,JSON.stringify(config));
+    const platform=fakePlatform({exists:true});
+    let prepared:ReturnType<typeof workerArtifactDirectUpload>;
+    let immutable:{id:string;workerId:string;idempotencyKey:string;contentSha256:string;sizeBytes:number};
+    let host='';let prepares=0,confirms=0,puts=0,statusReads=0;
+    let confirming=false;
+    let releaseCommit!:()=>void;
+    const commitBarrier=new Promise<void>(resolve=>{releaseCommit=resolve;});
+    let confirmation:Promise<void>|undefined;
+    const keys:string[]=[];
+    const json=(value:unknown)=>Response.json(value);
+    const page=(cursor:number)=>{
+      const files=[...prepared.files].slice(cursor,cursor+128).map(([sha256,bytes])=>({sha256,size:bytes.length,
+        url:host+'/object/'+sha256,headers:{'x-amz-checksum-sha256':Buffer.from(sha256,'hex').toString('base64')}}));
+      return {uploadId:'same-owned-session',expiresAt:new Date(Date.now()+900000).toISOString(),files,
+        nextCursor:cursor+files.length<prepared.files.size?cursor+files.length:null};
+    };
+    const server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(req){
+      const path=new URL(req.url).pathname+new URL(req.url).search;
+      const body=Buffer.from(await req.arrayBuffer());
+      if(path.startsWith('/object/')) {
+        puts++;const sha256=path.split('/').at(-1)!;
+        expect(req.headers.get('xapi-key')??undefined).toBeUndefined();
+        expect(body.equals(prepared.files.get(sha256)!)).toBe(true);return new Response();
+      }
+      if(path.endsWith('/status')) {
+        statusReads++;
+        if(mode==='old-api'){return new Response(null,{status:404});}
+        if(mode==='delayed-ready'&&statusReads===2){releaseCommit();await confirmation;}
+        return json({uploadId:'same-owned-session',status:confirming?'UPLOADING':'READY',
+          ...(!confirming?{artifact:immutable}:{})});
+      }
+      if(path.endsWith('/confirm')) {
+        confirms++;confirming=true;
+        confirmation=commitBarrier.then(()=>{platform.state.artifacts.push(immutable);confirming=false;});
+        return new Response('simulated lost confirmation response',{status:502});
+      }
+      if(req.method==='POST') {
+        prepares++;keys.push(JSON.parse(body.toString()).idempotencyKey);
+        if(prepares===2)expect(confirming).toBe(true);
+        return json(page(0));
+      }
+      const cursor=Number(new URL(path,host).searchParams.get('cursor'));
+      if(mode==='legacy-race'&&prepares===2&&cursor===128) {
+        // First confirmation's transaction wins after prepare reused the session.
+        releaseCommit();await confirmation;
+        return json({...page(cursor),files:[],nextCursor:null});
+      }
+      return json(page(cursor));
+    }});
+    host='http://127.0.0.1:'+server.port;
+    platform.client.uploadWorkerArtifact=async(_options,_id,input)=>{
+      platform.calls.uploadArtifact++;prepared=workerArtifactDirectUpload(input);
+      immutable={id:'first-confirmation-artifact',workerId,idempotencyKey:input.idempotencyKey,...prepared.identity};
+      const apiUrl=host+'/api/v1/workers/'+workerId+'/artifact-uploads';
+      const headers={'XAPI-KEY':'test-key','Content-Type':'application/json'};
+      if(mode==='legacy-race'&&platform.calls.uploadArtifact===1) {
+        // Preserve the old client's protocol behavior to reproduce its retry race.
+        let oldPage=await (await fetch(apiUrl,{method:'POST',headers,body:JSON.stringify(prepared.input)})).json() as ReturnType<typeof page>;
+        while(true) {
+          for(const file of oldPage.files)await fetch(file.url,{method:'PUT',body:new Uint8Array(prepared.files.get(file.sha256)!),headers:file.headers});
+          if(oldPage.nextCursor===null)break;
+          oldPage=await (await fetch(apiUrl+'/same-owned-session?cursor='+oldPage.nextCursor,{headers})).json() as ReturnType<typeof page>;
+        }
+        const response=await fetch(apiUrl+'/same-owned-session/confirm',{method:'POST',headers});
+        throw new HttpError(response.status,'simulated legacy confirmation transport failure');
+      }
+      return nativeWorkerUpload(input,apiUrl,headers);
+    };
+    try {
+      const pushOptions={cwd:root,environment:'preview' as const,
+        clientOptions:{apiHost:'localhost:3003',apiKey:'test-key'},client:platform.client,confirm:async()=>true,
+        runBuild:async()=>{
+          mkdirSync(join(root,'dist'),{recursive:true});
+          writeFileSync(join(root,'dist/worker.mjs'),'export default {fetch(){return new Response("ok")}}');
+          for(let i=0;i<256;i++)writeFileSync(join(root,`dist/chunk-${i}.txt`),`distinct ${i}`);
+        },fetchPublic:(async()=>new Response('ok')) as unknown as typeof fetch,sleep:async()=>undefined};
+      if(mode==='pending'||mode==='old-api') {
+        const failure=await pushWorkerProject(pushOptions).catch(error=>error as WorkerPushError);
+        expect(failure).toBeInstanceOf(WorkerPushError);
+        expect((failure as WorkerPushError).recovery).toMatchObject({errorCode:'worker_artifact_confirmation_pending',
+          uploadId:'same-owned-session',status:mode==='pending'?'UPLOADING':'UNAVAILABLE',firstFailure:{type:'HttpError',status:502}});
+        expect({prepares,confirms,puts,statusReads}).toEqual({prepares:1,confirms:1,puts:257,statusReads:mode==='pending'?5:1});
+        expect(platform.calls.uploadArtifact).toBe(1);expect(platform.calls.deploy).toBe(0);
+        expect(platform.state.artifacts).toHaveLength(0);
+        releaseCommit();await confirmation;
+      }
+      const result=await pushWorkerProject(pushOptions);
+      expect(result.artifact).toEqual({id:immutable!.id,contentSha256:immutable!.contentSha256,sizeBytes:immutable!.sizeBytes});
+      expect(prepared!.files.size).toBe(257);
+      expect({prepares,confirms,puts,statusReads}).toEqual(mode==='legacy-race'
+        ?{prepares:2,confirms:1,puts:385,statusReads:1}
+        :(mode==='pending'||mode==='old-api')?{prepares:1,confirms:1,puts:257,statusReads:mode==='pending'?5:1}:{prepares:1,confirms:1,puts:257,statusReads:2});
+      if(mode==='legacy-race')expect(keys[0]).toBe(keys[1]);
+      expect(platform.state.artifacts).toHaveLength(1);
+      expect(platform.calls.deploy).toBe(1);expect(platform.state.deployments[0].artifactId).toBe(immutable!.id);
+    } finally {
+      releaseCommit();
+      server.stop(true);
+    }
+  },30_000);
 
   test("a new explicit push follows native confirmation without replaying the failed operation", async () => {
     const root = fixture({linked:true});

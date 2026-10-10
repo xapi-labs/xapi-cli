@@ -94,6 +94,7 @@ export interface ImportWranglerProjectResult {
 }
 
 export interface WranglerDeploymentSettings {
+  assets?: WorkerProjectConfig["assets"];
   compatibilityDate?: string;
   compatibilityFlags: string[];
   cacheOptions?: WorkerCacheOptions;
@@ -228,7 +229,7 @@ function stableEntries(
   );
 }
 
-function parseWrangler(path: string): {
+export function parseWrangler(path: string): {
   format: "jsonc" | "toml";
   config: UnknownRecord;
 } {
@@ -292,6 +293,36 @@ function parseWrangler(path: string): {
   return { format: extension === ".toml" ? "toml" : "jsonc", config };
 }
 
+/** Frameworks publish this pointer after building; it identifies the native
+ * configuration without inferring server behavior from package dependencies. */
+export function findGeneratedWranglerConfig(rootDir: string): string | undefined {
+  const pointer = resolve(rootDir, ".wrangler/deploy/config.json");
+  if (!existsSync(pointer)) return undefined;
+  const redirect = parseWrangler(pointer).config.configPath;
+  const path = typeof redirect === "string"
+    ? portableProjectPath(rootDir, dirname(pointer), redirect)
+    : undefined;
+  if (!path) throw new WorkerProjectConfigError(
+    "wrangler_invalid_deploy_pointer",
+    "Generated .wrangler/deploy/config.json must reference a Wrangler configuration inside this project",
+  );
+  // Read it now so a stale or invalid pointer cannot silently become a static app.
+  parseWrangler(resolve(rootDir, path));
+  return path;
+}
+
+function wranglerAssetCandidate(source: UnknownRecord, sourceDir: string, rootDir: string) {
+  return {
+    directory: typeof source.directory === "string"
+      ? relative(rootDir, resolve(sourceDir, source.directory)).split(sep).join("/") || "."
+      : source.directory,
+    ...(source.binding !== undefined ? { binding: source.binding } : {}),
+    ...(source.html_handling !== undefined ? { htmlHandling: source.html_handling } : {}),
+    ...(source.not_found_handling !== undefined ? { notFoundHandling: source.not_found_handling } : {}),
+    ...(source.run_worker_first !== undefined ? { runWorkerFirst: source.run_worker_first } : {}),
+  };
+}
+
 function compatibilityEntry(
   entries: WranglerCompatibilityEntry[],
   category: WranglerCompatibilityCategory,
@@ -336,21 +367,7 @@ function staticAssets(
     return undefined;
   }
   const source = previewAssets || productionAssets!;
-  const sourceDirectory = source.directory;
-  const absoluteDirectory =
-    typeof sourceDirectory === "string"
-      ? resolve(sourceDir, sourceDirectory)
-      : undefined;
-  const projectDirectory = absoluteDirectory
-    ? relative(rootDir, absoluteDirectory).split(sep).join("/")
-    : sourceDirectory;
-  const candidate = {
-    directory: projectDirectory,
-    ...(source.binding !== undefined ? { binding: source.binding } : {}),
-    ...(source.html_handling !== undefined ? { htmlHandling: source.html_handling } : {}),
-    ...(source.not_found_handling !== undefined ? { notFoundHandling: source.not_found_handling } : {}),
-    ...(source.run_worker_first !== undefined ? { runWorkerFirst: source.run_worker_first } : {}),
-  };
+  const candidate = wranglerAssetCandidate(source, sourceDir, rootDir);
   const parsed = workerProjectConfigSchema.shape.assets.safeParse(candidate);
   if (!parsed.success) {
     compatibilityEntry(entries, "UNSUPPORTED", "assets", `Static assets are invalid: ${parsed.error.issues[0]?.message || "invalid configuration"}`);
@@ -1047,6 +1064,13 @@ function workerBuildScript(
   ) {
     return "build:worker";
   }
+  if (outfileFromScript(scripts.build)) return "build";
+  // A project's native packaging script can have any name. Only select an
+  // unambiguous local dry-run; never infer a cloud deploy as the build command.
+  const nativeBuilds = Object.entries(scripts).filter(([, command]) =>
+    /\bwrangler\s+deploy\b/.test(command) && /(?:^|\s)--dry-run(?:\s|$)/.test(command) &&
+    outfileFromScript(command));
+  if (nativeBuilds.length === 1) return nativeBuilds[0]![0];
   return scripts.build ? "build" : undefined;
 }
 
@@ -1091,7 +1115,7 @@ function inferredBuild(
   const mainOutput =
     wranglerMain &&
     /\.(?:m?js)$/.test(wranglerMain) &&
-    (sourceDir === rootDir || wranglerMain.includes("/"))
+    (sourceDir === rootDir || wranglerMain.includes("/") || existsSync(resolve(sourceDir, wranglerMain)))
       ? portableProjectPath(rootDir, sourceDir, wranglerMain)
       : undefined;
   const output = options.buildOutput || scriptOutput || mainOutput;
@@ -1532,6 +1556,19 @@ export function readWranglerDeploymentSettings(
   const { config } = parseWrangler(path);
   const selection = selectedConfig(config, environment);
   const selected = selection.config;
+  const rawAssets = record(selected.assets);
+  // Wrangler supplies defaults at build time. Fields explicitly present in
+  // xapi.worker.json override them, including false and "none". Resolve each
+  // directory relative to the file declaring it before merging.
+  const assetCandidate = rawAssets || project.config.assets
+    ? { ...(rawAssets ? wranglerAssetCandidate(rawAssets, dirname(path), project.rootDir) : {}),
+        ...project.config.assets }
+    : undefined;
+  const parsedAssets = workerProjectConfigSchema.shape.assets.safeParse(assetCandidate);
+  if (!parsedAssets.success) throw new WorkerProjectConfigError(
+    "wrangler_invalid_assets",
+    `Invalid ${environment} assets configuration: ${parsedAssets.error.issues[0]?.message || "invalid configuration"}`,
+  );
   const metadata = wranglerNativeMetadata(selected);
   const nativeBundleRequired = Object.keys(selected).filter(key => key !== 'env' &&
     !SUPPORTED_TOP_LEVEL.has(key) && !MANAGED_TOP_LEVEL.has(key) &&
@@ -1566,6 +1603,7 @@ export function readWranglerDeploymentSettings(
     );
   }
   return {
+    ...(parsedAssets.data ? { assets: parsedAssets.data } : {}),
     ...(nativeBundleRequired.length ? {nativeBundleRequired} : {}),
     requiredSecrets: [...new Set([...project.config.environments[environment].secrets, ...secretNames(selected, selection.prefix, environment, [])])].sort(),
     ...(date ? { compatibilityDate: date } : {}),

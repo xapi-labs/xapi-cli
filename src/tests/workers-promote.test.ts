@@ -457,8 +457,14 @@ describe("workers promote", () => {
     expect(platform.calls.deploy).toBe(1);
   });
 
-  test("surfaces path-fallback review without blocking compatible static web apps", async () => {
-    const root = fixture({ assets: true });
+  test.each([true, false])("surfaces path-fallback review for static web apps (explicit xAPI assets: %s)", async (explicitAssets) => {
+    const root = fixture({ assets: explicitAssets });
+    if (!explicitAssets) {
+      const path = join(root, "wrangler.jsonc");
+      const config = JSON.parse(readFileSync(path, "utf8"));
+      config.assets = { directory: "dist/client", binding: "ASSETS", not_found_handling: "single-page-application" };
+      writeFileSync(path, JSON.stringify(config));
+    }
     const fallback = fakePlatform({ webAppReady: false });
     const blocked = await createWorkerPromotionPlan({
       cwd: root,
