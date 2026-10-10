@@ -356,12 +356,12 @@ export async function createWorkerPromotionPlan(
   worker: UnknownRecord;
   artifact: UnknownRecord;
   nativePlan: NativeDeploymentPlan;
+  compatibility: ReturnType<typeof readWranglerDeploymentSettings>;
 }> {
   if (options.to !== "production") {
     throw new WorkerPushError("workers promote requires --to production");
   }
   const project = loadWorkerProject(options.cwd, options.configPath);
-  const compatibility = readWranglerDeploymentSettings(project, "production");
   const workerId = project.config.workerId;
   if (!workerId) {
     throw new WorkerPushError(
@@ -412,6 +412,7 @@ export async function createWorkerPromotionPlan(
       "ACTIVE preview deployment is missing immutable Artifact metadata",
     );
   }
+  const compatibility = readWranglerDeploymentSettings(project, "production", text(artifact.mediaType));
   const [resources, secrets, currentVariables, declaration] = await Promise.all([
     api
       .listWorkerResources(options.clientOptions, workerId, "production")
@@ -476,7 +477,7 @@ export async function createWorkerPromotionPlan(
         (item.status === "MANUAL" && item.kind === "resource"),
     ),
   };
-  return { plan, worker, artifact, nativePlan };
+  return { plan, worker, artifact, nativePlan, compatibility };
 }
 
 export async function promoteWorkerProject(
@@ -484,8 +485,8 @@ export async function promoteWorkerProject(
 ): Promise<WorkerPromotionResult> {
   const api = options.client || (workersClient as PromotionClient);
   const project = loadWorkerProject(options.cwd, options.configPath);
-  const compatibility = readWranglerDeploymentSettings(project, "production");
   const prepared = await createWorkerPromotionPlan({ ...options, client: api });
+  const compatibility = prepared.compatibility;
   options.onPlan?.(prepared.plan);
   if (!prepared.plan.canPromote) {
     const blockingChecks = prepared.plan.production.checks.filter(
@@ -512,7 +513,7 @@ export async function promoteWorkerProject(
     }
   }
   if (JSON.stringify(loadWorkerProject(project.rootDir, project.configPath).config) !== JSON.stringify(project.config) ||
-      JSON.stringify(readWranglerDeploymentSettings(project, "production")) !== JSON.stringify(compatibility))
+      JSON.stringify(readWranglerDeploymentSettings(project, "production", text(prepared.artifact.mediaType))) !== JSON.stringify(compatibility))
     throw new WorkerPushError("Production configuration changed after plan; rerun promote to review it before applying changes");
   const wait =
     options.sleep ||

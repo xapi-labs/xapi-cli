@@ -106,13 +106,42 @@ test('consumer-only queues get stable bindings and multiple producer names use o
 
 test('unsupported consumer fields and trigger fields cannot disappear during partial import or later push', () => {
   for (const [config,path,error] of [
-    [{...wrangler,queues:{...wrangler.queues,consumers:[{queue:'logical-jobs',type:'http'}]}},'queues.consumers[0]','Invalid Queue consumer'],
+    [{...wrangler,queues:{...wrangler.queues,consumers:[{queue:'logical-jobs',type:'http'}]}},'queues.consumers[0].type','consumer type'],
     [{...wrangler,triggers:{crons:[cron],unknown:'value'}},'triggers.unknown','only maps crons'],
   ] as const) {
     const {root,imported} = workspace(config,true);
     expect(imported.report.entries).toContainEqual(expect.objectContaining({category:'UNSUPPORTED',path}));
     expect(()=>readWranglerNativeEvents(loadWorkerProject(root),'preview')).toThrow(error);
   }
+});
+
+test.each([
+  {type:'http_pull'}, {type:'worker'}, {visibility_timeout_ms:30000}, {type:'http_pull',visibility_timeout_ms:0},
+])('reports pull-only or explicit consumer type fields as unsupported, never a supported Worker mapping: %p', extra => {
+  const config={...wrangler,queues:{...wrangler.queues,consumers:[{queue:'logical-jobs',...extra}]}};
+  const blocked=workspace(config);
+  expect(blocked.imported.wrote).toBe(false);
+  expect(blocked.imported.report.compatible).toBe(false);
+  for(const key of Object.keys(extra)) {
+    expect(blocked.imported.report.entries).toContainEqual(expect.objectContaining({category:'UNSUPPORTED',
+      path:`queues.consumers[0].${key}`,message:expect.stringContaining('workers resources queue-consumer configure')}));
+  }
+  expect(blocked.imported.report.deploymentPlan.filter(step=>step.kind==='QUEUE_CONSUMER')
+    .every(step=>step.status==='REQUIRES_MAPPING')).toBe(true);
+  const partial=workspace(config,true);
+  expect(partial.imported.wrote).toBe(true);
+  expect(partial.imported.config?.environments.preview).not.toHaveProperty('queueConsumers');
+  expect(()=>readWranglerNativeEvents(loadWorkerProject(partial.root),'preview')).toThrow('HTTP Pull');
+});
+
+test('an unsupported pull step cannot borrow a supported mapping from another declaration of the same Queue',()=>{
+  const {imported}=workspace({...wrangler,queues:{...wrangler.queues,
+    consumers:[{queue:'logical-jobs',type:'http_pull'},{queue:'logical-jobs'}]}});
+  expect(imported.wrote).toBe(false);
+  const steps=imported.report.deploymentPlan.filter(step=>step.kind==='QUEUE_CONSUMER');
+  expect(steps.filter(step=>step.configuration.type==='http_pull')).toHaveLength(2);
+  for(const step of steps.filter(step=>step.configuration.type==='http_pull'))
+    expect(step.status).toBe('REQUIRES_MAPPING');
 });
 
 test('read-only plan detects consumer resets and preserved remote handlers without adding a deployment gate', async () => {

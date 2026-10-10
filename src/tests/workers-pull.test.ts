@@ -18,6 +18,40 @@ function fixture(){const parent=mkdtempSync(join(tmpdir(),'worker-pull-'));roots
   return {root,wrangler,source,remote};
 }
 describe('deployment configuration pull',()=>{
+  it('compares required Secret names from both project and Wrangler while preserving the complete snapshot',async()=>{
+    const f=fixture();const path=join(f.root,'xapi.worker.json');const config=JSON.parse(readFileSync(path,'utf8'));
+    config.environments.preview.secrets=['PROJECT_KEY','SHARED_KEY'];writeFileSync(path,JSON.stringify(config));
+    const wrangler=JSON.parse(readFileSync(f.wrangler,'utf8'));
+    wrangler.secrets={required:['WRANGLER_KEY','SHARED_KEY']};writeFileSync(f.wrangler,JSON.stringify(wrangler));
+    const before=readFileSync(f.wrangler,'utf8');
+    const remote={...f.remote,configuration:{...f.remote.configuration,requiredSecrets:['REMOTE_KEY','SHARED_KEY'],
+      artifactId:'snapshot-artifact',resourceIds:{STATE:'owned-id'},future_field:{enabled:false}}};
+    const result=await pullWorkerDeploymentConfiguration({cwd:f.root,environment:'preview',clientOptions:options,
+      outputPath:'required-secrets.json',client:async()=>remote});
+    expect(result.differences).toContainEqual({field:'requiredSecrets',
+      local:['PROJECT_KEY','SHARED_KEY','WRANGLER_KEY'],remote:['REMOTE_KEY','SHARED_KEY']});
+    expect(result.differences.some((difference:any)=>['artifactId','resourceIds','future_field'].includes(difference.field))).toBe(false);
+    expect(JSON.parse(readFileSync(result.savedPath!,'utf8')).configuration).toEqual(remote.configuration);
+    expect(readFileSync(f.wrangler,'utf8')).toBe(before);
+    expect(readFileSync(path,'utf8')).toBe(JSON.stringify(config));
+  });
+  it('compares required Secret names as a set and distinguishes clearing requirements from an empty legacy envelope',async()=>{
+    const f=fixture();const path=join(f.root,'xapi.worker.json');const config=JSON.parse(readFileSync(path,'utf8'));
+    config.environments.preview.secrets=['B','A'];writeFileSync(path,JSON.stringify(config));
+    const base={cwd:f.root,environment:'preview' as const,clientOptions:options};
+    const ordered=await pullWorkerDeploymentConfiguration({...base,client:async()=>({...f.remote,
+      configuration:{...f.remote.configuration,requiredSecrets:['B','A','A']}})});
+    expect(ordered.differences.some((difference:any)=>difference.field==='requiredSecrets')).toBe(false);
+    config.environments.preview.secrets=[];writeFileSync(path,JSON.stringify(config));
+    const cleared=await pullWorkerDeploymentConfiguration({...base,client:async()=>f.remote});
+    expect(cleared.differences).toContainEqual({field:'requiredSecrets',local:[],remote:['TOKEN']});
+    for(const requiredSecrets of [undefined,null,[]]) {
+      const result=await pullWorkerDeploymentConfiguration({...base,client:async()=>({...f.remote,
+        configuration:{...f.remote.configuration,requiredSecrets}})});
+      expect(result.differences.some((difference:any)=>difference.field==='requiredSecrets')).toBe(false);
+    }
+  });
+
   it('reads remote once, displays differences and saves unknown native fields without touching Wrangler',async()=>{
     const f=fixture();let calls=0;
     const result=await pullWorkerDeploymentConfiguration({cwd:f.root,environment:'preview',clientOptions:options,

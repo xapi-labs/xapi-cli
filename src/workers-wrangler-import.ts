@@ -515,8 +515,13 @@ function nativeEvents(config: UnknownRecord, resources: DesiredResource[], prefi
   (Array.isArray(queues?.consumers) ? queues.consumers : []).forEach((raw,index) => {
     const path = `${prefix}queues.consumers[${index}]`; const item = record(raw);
     if (!item || typeof item.queue !== "string" || !item.queue) { compatibilityEntry(entries,"UNSUPPORTED",path,"Queue consumer requires its logical queue name",{environment}); return; }
-    const supported = new Set(["queue","max_batch_size","max_batch_timeout","max_retries","retry_delay","max_concurrency","dead_letter_queue","type","visibility_timeout_ms"]);
-    for (const key of Object.keys(item)) if (!supported.has(key)) compatibilityEntry(entries,"UNSUPPORTED",`${path}.${key}`,"The backend Queue consumer API has no mapping for this native field",{environment});
+    const supported = new Set(["queue","max_batch_size","max_batch_timeout","max_retries","retry_delay","max_concurrency","dead_letter_queue"]);
+    const unsupported = Object.keys(item).filter(key => !supported.has(key));
+    for (const key of unsupported) compatibilityEntry(entries,"UNSUPPORTED",`${path}.${key}`,
+      key === "type" || key === "visibility_timeout_ms"
+        ? `${key === "type" ? "Wrangler Worker consumers do not select a consumer type" : "visibility_timeout_ms is an HTTP Pull lease setting, not a Worker push setting"}. Remove this field from queues.consumers; configure HTTP Pull separately with workers resources queue-consumer configure --body using type http_pull and settings.`
+        : "The backend Queue consumer API has no mapping for this native field",{environment});
+    if (unsupported.length) return;
     if (seen.has(item.queue)) { compatibilityEntry(entries,"UNSUPPORTED",path,"Duplicate Queue consumer declarations cannot map to one owned consumer",{environment}); return; }
     seen.add(item.queue);
     const bindingName = resolveQueue(item.queue,`${path}.queue`); if (!bindingName) return;
@@ -1343,7 +1348,8 @@ export function importWranglerProject(
     if (action.kind !== 'QUEUE_CONSUMER') continue;
     const events = action.environment === 'preview' ? previewEvents : productionEvents;
     const consumer = events.queueConsumers.find(item => item.queue === action.configuration.queue);
-    if (consumer) action.bindingName = consumer.bindingName;
+    if (consumer && !Object.hasOwn(action.configuration, "type") && !Object.hasOwn(action.configuration, "visibility_timeout_ms")) action.bindingName = consumer.bindingName;
+    else action.status = "REQUIRES_MAPPING";
   }
   previewResources.sort((a,b) => a.bindingName.localeCompare(b.bindingName));
   productionResources.sort((a,b) => a.bindingName.localeCompare(b.bindingName));

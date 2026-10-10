@@ -12,6 +12,8 @@ const canonical=(value:unknown):string=>JSON.stringify(value&&typeof value==='ob
 // Compare only the empty public-vars envelope as absent. Keep all actual values
 // and future envelope fields; the saved native snapshot remains untouched.
 const comparable=(field:string,value:unknown):unknown=>{
+  if(field==='requiredSecrets')return Array.isArray(value)&&value.every(item=>typeof item==='string')
+    ? [...new Set(value)].sort() : value??[];
   if(field==='queueBindingAliases'||field==='nativeMetadata')return value??{};
   if(field!=='variables')return value;
   if(value==null)return {};
@@ -35,7 +37,7 @@ export async function pullWorkerDeploymentConfiguration(options:{cwd?:string;con
   if(!remote||remote.version!==1)throw new Error('Invalid Worker deployment snapshot');
   const local=readWranglerDeploymentSettings(project,options.environment);
   const comparison={compatibilityDate:local.compatibilityDate,compatibilityFlags:local.compatibilityFlags,
-    variables:local.variables,nativeMetadata:local.nativeMetadata,queueBindingAliases:local.queueBindingAliases};
+    requiredSecrets:local.requiredSecrets,variables:local.variables,nativeMetadata:local.nativeMetadata,queueBindingAliases:local.queueBindingAliases};
   const differences=Object.entries(comparison).filter(([key,value])=>
     canonical(comparable(key,value))!==canonical(comparable(key,remote[key])))
     .map(([field,local])=>({field,local:local??null,remote:remote[field]??null}));

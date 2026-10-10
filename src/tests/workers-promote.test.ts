@@ -197,6 +197,41 @@ function fakePlatform(
 }
 
 describe("workers promote", () => {
+  test.each([
+    { artifactId: "artifact-latest", mediaType: "application/vnd.xapi.worker-bundle.v1+json", bundle: true },
+    { artifactId: "artifact-older", mediaType: "application/vnd.xapi.worker-bundle.v2+json", bundle: true },
+    { artifactId: "artifact-latest", mediaType: "application/javascript+module", bundle: false },
+    { artifactId: "artifact-older", mediaType: undefined, bundle: false },
+  ])("uses the selected Artifact media type in both production plan and request: $artifactId $mediaType", async ({ artifactId, mediaType, bundle }) => {
+    const root = fixture();
+    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify({ name: "promote-agent",
+      env: { preview: { vars: { PREVIEW_ONLY: "preview-marker" }, limits: { cpu_ms: 10 } } } }));
+    const platform = fakePlatform();
+    const getWorker = platform.client.getWorker;
+    platform.client.getWorker = async (...args) => {
+      const worker = await getWorker(...args) as { artifacts: Array<Record<string, unknown>> };
+      return { ...worker, artifacts: worker.artifacts.map(artifact => ({ ...artifact,
+        mediaType: artifact.id === artifactId ? mediaType : "application/vnd.xapi.worker-bundle.v2+json" })) };
+    };
+    const getVariables = platform.client.getWorkerArtifactVariableConfiguration;
+    platform.client.getWorkerArtifactVariableConfiguration = async (...args) => ({
+      ...await getVariables(...args) as Record<string, unknown>, variables: [{ name: "PREVIEW_ONLY", type: "plain_text" }] });
+    const requests: Array<Parameters<PromotionClient["deployWorker"]>[2]> = [];
+    const deploy = platform.client.deployWorker;
+    platform.client.deployWorker = async (api, id, request) => { requests.push(request); return deploy(api, id, request); };
+    const result = await promoteWorkerProject({ cwd: root, to: "production", artifactId,
+      clientOptions: { apiHost: "localhost:3003", apiKey: "test" }, client: platform.client,
+      confirm: async () => true, sleep: async () => undefined,
+      fetchPublic: (async () => Response.json({ ok: true })) as unknown as typeof fetch });
+    expect(requests).toHaveLength(1);
+    expect(requests[0].artifactId).toBe(artifactId);
+    expect(requests[0].nativeMetadata).toEqual(bundle ? {} : undefined);
+    expect(requests[0].queueBindingAliases).toEqual(bundle ? {} : undefined);
+    expect(requests[0].variables).toEqual(bundle ? { vars: {} } : undefined);
+    expect(result.plan.variables?.map(variable => variable.name)).toEqual(bundle ? [] : ["PREVIEW_ONLY"]);
+    expect(JSON.stringify(requests)).not.toContain("cpu_ms");
+  });
+
   for (const recovers of [true, false]) {
     test(`initial access authorization ${recovers ? "recovers" : "times out"} without another deployment`, async () => {
       const platform = fakePlatform();
