@@ -1140,7 +1140,7 @@ export async function pushWorkerProject(
       api,
       options.clientOptions,
       workerState.id,
-      linkedProject.config.environments.preview.secrets,
+      compatibility.requiredSecrets || [],
     );
     if (missing.length) {
       throw new WorkerPushError(

@@ -123,7 +123,7 @@ export async function loadWorkerProjectBundle(
     "build.output",
   );
   try {
-    const settings = readWranglerDeploymentSettings(project, environment, project.config.build.output.endsWith(".bundle") ? "application/vnd.xapi.worker-bundle+json" : undefined);
+    const settings = readWranglerDeploymentSettings(project, environment, project.config.build.output.endsWith(".bundle") ? "application/vnd.xapi.worker-bundle.v2+json" : undefined);
     // A static initializer cannot stand in for a server produced by the real
     // application build. Only the generated adapter is guarded; custom Worker
     // entrypoints and ordinary SPA output retain their existing behavior.
@@ -165,7 +165,7 @@ export async function loadWorkerProjectBundle(
       ...project.config.environments[environment].resources.map(
         (resource) => resource.bindingName,
       ),
-      ...(project.config.environments[environment].secrets || []),
+      ...(settings.requiredSecrets || []),
       ...(settings.assets?.binding
         ? [settings.assets.binding]
         : []),
@@ -191,7 +191,7 @@ export async function loadWorkerProjectBundle(
       bundle,
       settings,
       project.config.environments[environment].resources,
-      project.config.environments[environment].secrets,
+      settings.requiredSecrets || [],
     );
     return bundle;
   } catch (error) {

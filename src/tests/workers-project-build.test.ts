@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadWorkerProject } from "../workers-project.ts";
@@ -279,4 +279,35 @@ test("a generated assets-only configuration does not reject an ordinary SPA", as
     writeFileSync(join(root, ".wrangler/deploy/config.json"), JSON.stringify({ configPath: "../../dist/wrangler.json" }));
   });
   expect(artifact.upload).toMatchObject({ bundle: { assets: { config: { notFoundHandling: "single-page-application" } } } });
+});
+
+
+test("Wrangler-only required Secrets collide with public variables before upload", async () => {
+  const config = project(false, false);
+  writeFileSync(join(config.rootDir, "wrangler.jsonc"), JSON.stringify({
+    compatibility_date: "2026-09-10", secrets: { required: ["WRANGLER_ONLY"] },
+    vars: { WRANGLER_ONLY: "public-value" },
+  }));
+  await expect(loadWorkerProjectBundle(config, "preview")).rejects.toThrow("Duplicate Worker binding");
+});
+
+test("production native bundle explicitly clears preview-only ordinary metadata", async () => {
+  const config = project(true);
+  const output = join(config.rootDir, config.config.build.output);
+  writeFileSync(output, readFileSync(output, "utf8").replace(
+    '"compatibility_date":"2026-09-10"',
+    '"compatibility_date":"2026-09-10","limits":{"cpu_ms":1234},"placement":{"mode":"smart"}',
+  ));
+  writeFileSync(join(config.rootDir, "wrangler.jsonc"), JSON.stringify({
+    compatibility_date: "2026-09-10",
+    env: {
+      preview: { limits: { cpu_ms: 1234 }, placement: { mode: "smart" } },
+      production: { compatibility_date: "2026-09-10" },
+    },
+  }));
+  const preview = await loadWorkerProjectBundle(config, "preview");
+  const production = await loadWorkerProjectBundle(config, "production");
+  expect(preview.upload).toMatchObject({bundle:{nativeMetadata:{limits:{cpu_ms:1234},placement:{mode:"smart"}}}});
+  expect("bundle" in production.upload && production.upload.bundle.nativeMetadata).toEqual({});
+  expect(preview.contentSha256).not.toBe(production.contentSha256);
 });

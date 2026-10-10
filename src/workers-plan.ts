@@ -754,8 +754,10 @@ export async function createWorkerPlan(
 ): Promise<WorkerDeploymentPlan> {
   const project = loadWorkerProject(options.cwd, options.configPath);
   validatePlanInputs(project);
-  const effectiveAssets = readWranglerDeploymentSettings(project, options.environment).assets;
-  const desired = project.config.environments[options.environment];
+  const compatibility = readWranglerDeploymentSettings(project, options.environment);
+  const effectiveAssets = compatibility.assets;
+  const desired = {...project.config.environments[options.environment],
+    secrets: compatibility.requiredSecrets || []};
   const api = options.client || workersClient;
   const actions: WorkerPlanAction[] = [];
   let remote: UnknownRecord | undefined;

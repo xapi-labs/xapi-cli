@@ -640,3 +640,24 @@ describe("workers promote", () => {
     expect(platform.calls.deploy).toBe(0);
   });
 });
+
+
+test("production preflight blocks a Wrangler-only missing required Secret", async () => {
+  const root=fixture();
+  writeFileSync(join(root,"wrangler.jsonc"),JSON.stringify({name:"promote-agent",env:{production:{secrets:{required:["WRANGLER_ONLY"]}}}}));
+  const platform=fakePlatform();
+  const options={cwd:root,to:"production" as const,clientOptions:{apiHost:"localhost:3003",apiKey:"test"},client:platform.client};
+  const {plan}=await createWorkerPromotionPlan(options);
+  expect(plan.canPromote).toBe(false);
+  expect(plan.production.checks).toContainEqual(expect.objectContaining({key:"WRANGLER_ONLY",kind:"secret",status:"BLOCKED"}));
+  await expect(promoteWorkerProject({...options,nonInteractive:true})).rejects.toThrow();
+  expect(platform.calls.deploy).toBe(0);
+});
+
+test("production vars collide with Wrangler-only required Secrets before changes", async () => {
+  const root=fixture();
+  writeFileSync(join(root,"wrangler.jsonc"),JSON.stringify({name:"promote-agent",env:{production:{secrets:{required:["WRANGLER_ONLY"]},vars:{WRANGLER_ONLY:"public"}}}}));
+  const platform=fakePlatform({secrets:["MODEL_KEY","WRANGLER_ONLY"]});
+  await expect(createWorkerPromotionPlan({cwd:root,to:"production",clientOptions:{apiHost:"localhost:3003",apiKey:"test"},client:platform.client})).rejects.toThrow("conflicts with an");
+  expect(platform.calls.deploy).toBe(0);
+});

@@ -1596,3 +1596,21 @@ describe("R2 readiness during push", () => {
     expect(platform.calls.deploy).toBe(0);
   });
 });
+
+
+test("bootstrap handles Wrangler-only required Secrets before Artifact upload", async () => {
+  const root=fixture();
+  writeFileSync(join(root,"wrangler.jsonc"),JSON.stringify({name:"push-agent",secrets:{required:["WRANGLER_ONLY"]}}));
+  const platform=fakePlatform();
+  let caught: WorkerPushError|undefined;
+  try {
+    await pushWorkerProject({cwd:root,environment:"preview",clientOptions:{apiHost:"localhost:3003",apiKey:"test"},
+      client:platform.client,confirm:async()=>true,runBuild:async()=>{
+        mkdirSync(join(root,"dist"),{recursive:true});writeFileSync(join(root,"dist/worker.mjs"),"export default {fetch(){return new Response('ok')}}");
+      }});
+  } catch(error){caught=error as WorkerPushError;}
+  expect(caught?.recovery.missingSecrets).toEqual(["WRANGLER_ONLY"]);
+  expect(platform.calls.uploadArtifact).toBe(0);
+  expect(platform.calls.deploy).toBe(0);
+  expect(loadWorkerProject(root).config.workerId).toBe(workerId);
+});

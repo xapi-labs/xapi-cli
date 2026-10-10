@@ -346,7 +346,10 @@ export function attachWorkerNativeMetadata(artifact: LoadedWorkerArtifact, metad
       if (JSON.stringify(base.nativeMetadata?.[key]) !== JSON.stringify(value))
         throw new WorkerArtifactError('Wrangler bundle native metadata ' + key + ' differs from selected configuration; rebuild before publishing');
     }
-    return artifact;
+    // A selected environment can explicitly clear ordinary deployment options.
+    // Keep the emitted modules and native bindings authoritative; only remove
+    // the ordinary metadata when the caller supplies this empty intent.
+    if (Object.keys(metadata).length || base.nativeMetadata === undefined) return artifact;
   }
   const { nativeMetadata: _previous, ...rest } = base;
   const ordinary = configured.ordinary;

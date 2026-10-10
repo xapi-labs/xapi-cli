@@ -427,7 +427,7 @@ export async function createWorkerPromotionPlan(
   ]);
   const checked = productionChecks(
     workerId,
-    project.config.environments.production,
+    {...project.config.environments.production, secrets: compatibility.requiredSecrets || []},
     production,
     resources,
     secrets,
@@ -447,7 +447,7 @@ export async function createWorkerPromotionPlan(
     schemaVersion: 1,
     variables: planWorkerVariables(effectiveDeclaration, currentVariables, [
       ...project.config.environments.production.resources.map(resource => resource.bindingName),
-      ...project.config.environments.production.secrets,
+      ...(compatibility.requiredSecrets || []),
       ...secrets.map(secret => text(secret.bindingName)!),
     ], production.bindings).map(variable => compatibility.variables === undefined ? variable : {
       ...variable,
