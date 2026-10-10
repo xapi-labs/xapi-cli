@@ -1576,6 +1576,12 @@ export function readWranglerDeploymentSettings(
     `Invalid ${environment} assets configuration: ${parsedAssets.error.issues[0]?.message || "invalid configuration"}`,
   );
   const metadata = wranglerNativeMetadata(selected);
+  // A nonempty deployment metadata override overlays the preview Artifact.
+  // Tail consumers do not inherit in Wrangler named environments (default []).
+  // Preserve {}'s full-reset semantics, including removal of version_metadata.
+  if (environment === 'production' && Object.keys(metadata).length &&
+      /^application\/vnd\.xapi\.worker-bundle\.v[12]\+json$/.test(artifactMediaType || '') &&
+      metadata.tail_consumers === undefined) metadata.tail_consumers = [];
   const nativeBundleRequired = Object.keys(selected).filter(key => key !== 'env' &&
     !SUPPORTED_TOP_LEVEL.has(key) && !MANAGED_TOP_LEVEL.has(key) &&
     !REENTER_TOP_LEVEL.has(key) && !PUBLIC_VARIABLE_TOP_LEVEL.has(key) && !IGNORED_TOP_LEVEL.has(key) && !structurallyEmpty(selected[key]));

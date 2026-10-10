@@ -9,6 +9,22 @@ import {deploymentPrefix} from '../workers-deployment-state.ts';
 import {importWranglerProject,readWranglerDeploymentSettings} from '../workers-wrangler-import.ts';
 import {loadWorkerProject} from '../workers-project.ts';
 const roots:string[]=[];afterEach(()=>roots.splice(0).forEach(p=>rmSync(p,{recursive:true,force:true})));
+test('production bundle metadata clears non-inherited Tail while retaining root native options', () => {
+ const root=mkdtempSync(join(tmpdir(),'production-tail-'));roots.push(root);writeFileSync(join(root,'package.json'),'{}');
+ const inherited={placement:{mode:'smart'},logpush:false,observability:{enabled:true,logs:{persist:false,new_native_option:0}},version_metadata:{binding:'ROOT_VERSION'}};
+ const previewTail=[{service:'preview-logger',environment:'preview'}];
+ writeFileSync(join(root,'wrangler.jsonc'),JSON.stringify({name:'native-tail',main:'index.mjs',...inherited,tail_consumers:previewTail,
+  env:{preview:{tail_consumers:previewTail},production:{limits:{cpu_ms:50}}}}));
+ importWranglerProject({cwd:root,wranglerPath:'wrangler.jsonc'});
+ const project=loadWorkerProject(root),media='application/vnd.xapi.worker-bundle.v2+json';
+ expect(readWranglerDeploymentSettings(project,'production',media).nativeMetadata).toEqual({...inherited,limits:{cpu_ms:50},tail_consumers:[]});
+ expect(readWranglerDeploymentSettings(project,'preview',media).nativeMetadata?.tail_consumers).toEqual(previewTail);
+ const productionTail=[{service:'production-logger',environment:'production'}];
+ writeFileSync(join(root,'wrangler.jsonc'),JSON.stringify({name:'native-tail',...inherited,env:{production:{limits:{cpu_ms:50},tail_consumers:productionTail}}}));
+ expect(readWranglerDeploymentSettings(project,'production',media).nativeMetadata).toEqual({...inherited,limits:{cpu_ms:50},tail_consumers:productionTail});
+ writeFileSync(join(root,'wrangler.jsonc'),JSON.stringify({name:'native-tail',env:{production:{}}}));
+ expect(readWranglerDeploymentSettings(project,'production',media).nativeMetadata).toEqual({});
+});
 test('ordinary fields and nested future fields remain lossless without runtime option allowlists',()=>{
  const input={placement:{mode:'targeted',region:'aws:us-east-1'},limits:{cpu_ms:4000,new_native_budget:0},
   observability:{enabled:true,logs:{persist:false,future_setting:{enabled:true}}},logpush:false,cache_options:{enabled:true,new_native_cache:true},future_option:{versions:[1,false,null]}};

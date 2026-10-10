@@ -123,6 +123,13 @@ export function getWorkerArtifactVariableConfiguration(options: WorkersClientOpt
   );
 }
 
+export function getWorkerArtifact(options: WorkersClientOptions, id: string, artifactId: string) {
+  return request<unknown>(
+    url(options, `/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(artifactId)}`),
+    { headers: headers(options) }, 30_000, 2,
+  );
+}
+
 export function deployWorker(
   options: WorkersClientOptions,
   id: string,

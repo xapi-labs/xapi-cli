@@ -9,6 +9,7 @@ import {
   listWorkers,
   getWorkerVariableState,
   getWorkerArtifactVariableConfiguration,
+  getWorkerArtifact,
   runWorkerScheduleNow,
   listWorkerDomains,
   createWorkerDomainChallenge,
@@ -44,9 +45,11 @@ describe("workers client", () => {
     })) as unknown as typeof fetch) as any;
     await getWorkerVariableState(options, "worker/1", "production");
     await getWorkerArtifactVariableConfiguration(options, "worker/1", "artifact/1");
+    await getWorkerArtifact(options, "worker/1", "artifact/1");
     expect(fetchSpy.mock.calls.map((call: any[]) => call[0])).toEqual([
       "https://test.xapi.to/api/v1/workers/worker%2F1/environments/production/variables",
       "https://test.xapi.to/api/v1/workers/worker%2F1/artifacts/artifact%2F1/variable-configuration",
+      "https://test.xapi.to/api/v1/workers/worker%2F1/artifacts/artifact%2F1",
     ]);
     for (const [, init] of fetchSpy.mock.calls as any[]) {
       expect(init.headers["XAPI-KEY"]).toBe(options.apiKey);

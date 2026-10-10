@@ -195,6 +195,9 @@ function fakePlatform(
     };
   };
   const client: PromotionClient = {
+    getWorkerArtifact: async (_options, _id, artifactId) => ({
+      ...artifacts.find(artifact => artifact.id === artifactId), assetCount: 1,
+    }),
     getWorkerVariableState: async () => ({ environment: "production", activeDeploymentId: productionDeployments.find(item => item.status === "ACTIVE")?.id || null, exists: productionDeployments.some(item => item.status === "ACTIVE"), variables: [] }),
     getWorkerArtifactVariableConfiguration: async (_options, _id, artifactId) => ({ artifactId, contentSha256: artifacts.find(item => item.id === artifactId)!.contentSha256, keepBindings: [], variables: [], bindingNames: [] }),
     getWorker: async () => snapshot(),
@@ -231,6 +234,105 @@ function fakePlatform(
 }
 
 describe("workers promote", () => {
+  test.each([
+    { keep_vars: false, artifactKeep: ['json'], expected: 'REMOVE' },
+    { keep_vars: true, artifactKeep: [], expected: 'RETAIN' },
+    { keep_vars: undefined, artifactKeep: ['json'], expected: 'REMOVE' },
+  ])('plans public retention from the production request: $keep_vars', async ({ keep_vars, artifactKeep, expected }) => {
+    const root = fixture();
+    writeFileSync(join(root, 'wrangler.jsonc'), JSON.stringify({ keep_vars, env: { production: { vars: {} } } }));
+    const platform = fakePlatform(), getWorker = platform.client.getWorker;
+    platform.client.getWorker = async (...args) => {
+      const worker = await getWorker(...args) as { artifacts: Array<Record<string, unknown>> };
+      return { ...worker, artifacts: worker.artifacts.map(artifact => ({ ...artifact,
+        mediaType: 'application/vnd.xapi.worker-bundle.v2+json' })) };
+    };
+    platform.client.getWorkerVariableState = async () => ({ environment: 'production',
+      activeDeploymentId: null, exists: true, variables: [{ name: 'PROD_CONFIG', type: 'json' }] });
+    platform.client.getWorkerArtifactVariableConfiguration = async () => ({ artifactId: 'artifact-latest',
+      contentSha256: 'a'.repeat(64), keepBindings: artifactKeep, variables: [], bindingNames: [] });
+    const requests: Array<Parameters<PromotionClient['deployWorker']>[2]> = [];
+    const deploy = platform.client.deployWorker;
+    platform.client.deployWorker = async (api, id, input) => { requests.push(input); return deploy(api, id, input); };
+    await promoteWorkerProject({ cwd: root, to: 'production',
+      clientOptions: { apiHost: 'localhost:3003', apiKey: 'test' }, client: platform.client,
+      confirm: async plan => {
+        expect(plan.variables).toContainEqual(expect.objectContaining({ name: 'PROD_CONFIG', decision: expected }));
+        return true;
+      }, sleep: async () => undefined, fetchPublic: (async () => Response.json({ ok: true })) as unknown as typeof fetch });
+    expect(requests).toHaveLength(1);
+    expect(requests[0].variables).toEqual({ vars: {} });
+    expect(requests[0].nativeMetadata).toEqual(keep_vars === undefined ? {}
+      : { keep_bindings: keep_vars ? ['plain_text', 'json'] : [], tail_consumers: [] });
+  });
+
+  test.each([0, 1])('cleared version Secret collision requires immutable proof of no assets: %s', async assetCount => {
+    const root = fixture();
+    writeFileSync(join(root, 'wrangler.jsonc'), JSON.stringify({ env: {
+      preview: { version_metadata: { binding: 'RELEASE' } }, production: { secrets: { required: ['RELEASE'] } },
+    } }));
+    const platform = fakePlatform({ secrets: ['MODEL_KEY', 'RELEASE'] }), getWorker = platform.client.getWorker;
+    platform.client.getWorker = async (...args) => {
+      const worker = await getWorker(...args) as { artifacts: Array<Record<string, unknown>> };
+      return { ...worker, artifacts: worker.artifacts.map(artifact => ({ ...artifact,
+        mediaType: 'application/vnd.xapi.worker-bundle.v2+json' })) };
+    };
+    platform.client.getWorkerArtifactVariableConfiguration = async () => ({ artifactId: 'artifact-latest',
+      contentSha256: 'a'.repeat(64), keepBindings: [], variables: [], bindingNames: ['RELEASE'] });
+    platform.client.getWorkerArtifact = async () => ({ id: 'artifact-latest', contentSha256: 'a'.repeat(64), assetCount });
+    const requests: Array<Parameters<PromotionClient['deployWorker']>[2]> = [];
+    const deploy = platform.client.deployWorker;
+    platform.client.deployWorker = async (api, id, input) => { requests.push(input); return deploy(api, id, input); };
+    const options = { cwd: root, to: 'production' as const, nonInteractive: true,
+      clientOptions: { apiHost: 'localhost:3003', apiKey: 'test' }, client: platform.client,
+      sleep: async () => undefined, fetchPublic: (async () => Response.json({ ok: true })) as unknown as typeof fetch };
+    if (assetCount === 0) {
+      const result = await promoteWorkerProject(options);
+      expect(result.plan.canPromote).toBe(true);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].nativeMetadata).toEqual({});
+      expect(requests[0].requiredSecrets).toEqual(['MODEL_KEY', 'RELEASE']);
+    } else {
+      await expect(promoteWorkerProject(options)).rejects.toMatchObject({
+        message: 'Cannot distinguish immutable assets from cleared or replaced version bindings: RELEASE',
+        recovery: { errorCode: 'worker_artifact_binding_metadata_unavailable', remoteChangesApplied: false },
+      });
+      expect(requests).toHaveLength(0);
+    }
+    expect(platform.calls.createResource).toBe(0);
+  });
+
+  test.each([
+    { id: 'wrong', contentSha256: 'a'.repeat(64), assetCount: 0 },
+    { id: 'artifact-latest', contentSha256: 'b'.repeat(64), assetCount: 0 },
+    { id: 'artifact-latest', contentSha256: 'a'.repeat(64) },
+  ])('does not clear Artifact bindings on missing or mismatched immutable metadata', async details => {
+    const root = fixture();
+    writeFileSync(join(root, 'wrangler.jsonc'), JSON.stringify({ version_metadata: { binding: 'NEW_VERSION' } }));
+    const platform = fakePlatform();
+    platform.client.getWorkerArtifactVariableConfiguration = async () => ({ artifactId: 'artifact-latest',
+      contentSha256: 'a'.repeat(64), keepBindings: [], variables: [], bindingNames: ['OLD_VERSION'] });
+    platform.client.getWorkerArtifact = async () => details;
+    await expect(promoteWorkerProject({ cwd: root, to: 'production', nonInteractive: true,
+      clientOptions: { apiHost: 'localhost:3003', apiKey: 'test' }, client: platform.client }))
+      .rejects.toThrow('missing or mismatched Artifact asset metadata');
+    expect(platform.calls.deploy).toBe(0);
+    expect(platform.calls.createResource).toBe(0);
+  });
+
+  test('required Secrets still conflict with an effective production version binding', async () => {
+    const root = fixture();
+    writeFileSync(join(root, 'wrangler.jsonc'), JSON.stringify({ env: {
+      production: { version_metadata: { binding: 'RELEASE' }, secrets: { required: ['RELEASE'] } },
+    } }));
+    const platform = fakePlatform({ secrets: ['MODEL_KEY', 'RELEASE'] });
+    await expect(promoteWorkerProject({ cwd: root, to: 'production', nonInteractive: true,
+      clientOptions: { apiHost: 'localhost:3003', apiKey: 'test' }, client: platform.client }))
+      .rejects.toThrow('Duplicate Worker binding: RELEASE');
+    expect(platform.calls.deploy).toBe(0);
+    expect(platform.calls.createResource).toBe(0);
+  });
+
   test('keeps supported production native fields expressible without a new build or workflow',async()=>{
     const root=fixture(),path=join(root,'wrangler.jsonc'),config=JSON.parse(readFileSync(path,'utf8'));
     const metadata={placement:{mode:'off'},limits:{cpu_ms:50},logpush:false,keep_assets:false,tags:['owner']};
@@ -348,7 +450,7 @@ describe("workers promote", () => {
     expect(plan.variables?.map(({ name, decision }) => ({ name, decision }))).toEqual([
       { name: "ASSETS", decision: "REPLACE" }, { name: "ENV_CONFIG", decision: "SET" }, { name: "JSON_STRING", decision: "SET" },
       { name: "MODEL_KEY", decision: "REPLACE" }, { name: "REMOVE_TEXT", decision: "REMOVE" },
-      { name: "RETAIN_JSON", decision: "RETAIN" }, { name: "STATE", decision: "REPLACE" }, { name: "VERSION", decision: "REPLACE" },
+      { name: "RETAIN_JSON", decision: "REMOVE" }, { name: "STATE", decision: "REPLACE" }, { name: "VERSION", decision: "REPLACE" },
     ]);
     expect(plan.variables).toContainEqual(expect.objectContaining({ name: "JSON_STRING", type: "json" }));
     expect(JSON.stringify(plan)).not.toContain("LOCAL_ONLY");

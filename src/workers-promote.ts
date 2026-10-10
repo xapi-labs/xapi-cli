@@ -17,10 +17,12 @@ import {
 import { workerEnvironmentContainers, loadWorkerProject } from "./workers-project.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
 import { conflictingWorkerSecretBinding } from "./workers-binding-validation.ts";
+import type { WorkerVariableType } from "./workers-artifact.ts";
 
 type UnknownRecord = Record<string, unknown>;
 
 export interface PromotionClient extends DeploymentClient, ManagedResourceClient, NativeDeploymentClient {
+  getWorkerArtifact?(options: WorkersClientOptions, id: string, artifactId: string): Promise<unknown>;
   getWorkerVariableState(options: WorkersClientOptions, id: string, environment: "preview" | "production"): Promise<unknown>;
   getWorkerArtifactVariableConfiguration(options: WorkersClientOptions, id: string, artifactId: string): Promise<unknown>;
   listWorkerResources(
@@ -451,7 +453,45 @@ export async function createWorkerPromotionPlan(
     api.getWorkerArtifactVariableConfiguration(options.clientOptions, workerId, artifactId)
       .then(value => readWorkerArtifactVariableConfiguration(value, artifactId, contentSha256)),
   ]);
-  checkSecretBindings(declaration.bindingNames);
+  const metadata = compatibility.nativeMetadata;
+  const resetsMetadata = metadata !== undefined && !Object.keys(metadata).length;
+  let bindingNames = declaration.bindingNames;
+  if (bindingNames.length && (resetsMetadata || metadata?.version_metadata !== undefined)) {
+    // The existing immutable Artifact endpoint can prove that a bundle has no
+    // assets. In that case its only built-in binding is version metadata. Never
+    // infer a historical Artifact's binding types from today's local Wrangler.
+    const readArtifact = api.getWorkerArtifact;
+    if (!readArtifact) throw new WorkerPushError('Cannot read immutable Artifact binding metadata', {
+      remoteChangesApplied: false,
+    });
+    const details = record(await readArtifact.call(api, options.clientOptions, workerId, artifactId), 'Artifact');
+    if (details.id !== artifactId || details.contentSha256 !== contentSha256 ||
+        !Number.isInteger(details.assetCount) || Number(details.assetCount) < 0) {
+      throw new WorkerPushError('xAPI returned missing or mismatched Artifact asset metadata', {
+        remoteChangesApplied: false,
+      });
+    }
+    if (details.assetCount === 0) bindingNames = [];
+    // With assets the current name-only API cannot distinguish the immutable
+    // assets binding from a cleared/replaced version binding; keep both safe.
+    else {
+      const requestedNames = new Set([
+        ...(compatibility.requiredSecrets || []), ...Object.keys(compatibility.variables?.vars || {}),
+      ]);
+      const ambiguous = bindingNames.filter(name => requestedNames.has(name) &&
+        name !== (metadata?.version_metadata as { binding?: string } | undefined)?.binding);
+      if (ambiguous.length) throw new WorkerPushError(
+        'Cannot distinguish immutable assets from cleared or replaced version bindings: ' + ambiguous.join(', '), {
+          errorCode: 'worker_artifact_binding_metadata_unavailable',
+          artifactId, remoteChangesApplied: false,
+          next: 'Read the selected Artifact and its variable-configuration through the Workers API; promotion needs binding types to verify this collision',
+        });
+    }
+  }
+  if (metadata?.version_metadata !== undefined) {
+    bindingNames = [...new Set([...bindingNames, (metadata.version_metadata as { binding: string }).binding])];
+  }
+  checkSecretBindings(bindingNames);
   const checked = productionChecks(
     workerId,
     {...project.config.environments.production, secrets: compatibility.requiredSecrets || []},
@@ -460,11 +500,18 @@ export async function createWorkerPromotionPlan(
     secrets,
     Boolean(compatibility.assets),
   );
-  // The deployment request replaces Artifact vars even when the override is empty.
-  // Retention types and non-variable bindings still come from the immutable Artifact.
-  const effectiveDeclaration = compatibility.variables === undefined ? declaration : {
+  // Match backend order: a variables override clears Artifact public retention,
+  // then nativeMetadata can reset or explicitly restore the retained types.
+  let keepBindings = compatibility.variables === undefined ? declaration.keepBindings : [];
+  if (resetsMetadata) keepBindings = [];
+  else if (Array.isArray(metadata?.keep_bindings)) keepBindings = metadata.keep_bindings
+    .filter((type): type is WorkerVariableType => type === 'plain_text' || type === 'json');
+  const effectiveDeclaration = {
     ...declaration,
-    variables: workerVariableDeclaration(compatibility.variables).variables,
+    bindingNames,
+    keepBindings,
+    variables: compatibility.variables === undefined ? declaration.variables
+      : workerVariableDeclaration(compatibility.variables).variables,
   };
   const nativePlan = nativeDeploymentPlan(project, "production");
   for (const event of await planWorkerNativeEvents(project,"production",resources,api,options.clientOptions))
