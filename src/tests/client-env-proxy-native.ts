@@ -114,7 +114,14 @@ if (process.argv[2] === '--probe') {
       assert.deepEqual(await (await fetch('http://' + process.argv[4] + '/read')).json(), { ok: true });
       console.log(JSON.stringify({ result: 'passed', deadlineDispatches: 0 }));`);
     const preload = join(configRoot, mode === 'require-delete-env' ? 'clear_env.cjs' : 'clear_env.mjs');
-    await writeFile(preload, 'delete process.env.NODE_USE_ENV_PROXY;');
+    const dotenvPreload = mode.startsWith('env-file');
+    await writeFile(preload, dotenvPreload
+      ? `import assert from 'node:assert/strict';
+        assert.match(process.env.NODE_OPTIONS, /--use-env-proxy --import/);
+        delete process.env.NODE_OPTIONS;`
+      : 'delete process.env.NODE_USE_ENV_PROXY;');
+    const envFile = join(configRoot, 'proxy_startup.env');
+    await writeFile(envFile, `NODE_OPTIONS='--use-env-proxy --import "${preload}"'\n`);
     const configDirect = ['config-direct', 'config-underscore-direct', 'config-false-env', 'default-config-false-env',
       'config-false-env-options', 'config-false-env-flag', 'config-underscore-false-env', 'config-false-env-preload'].includes(mode);
     const nodeOptions = mode === 'config-absent-env' ? {} : { 'use-env-proxy': !configDirect };
@@ -151,6 +158,11 @@ if (process.argv[2] === '--probe') {
         if (mode === 'config-false-env-flag') flags.push('--use-env-proxy');
       }
       if (mode.startsWith('default-config')) flags.splice(0, flags.length, '--experimental-default-config-file');
+      if (dotenvPreload) {
+        const name = mode.includes('if-exists') ? '--env-file-if-exists' : '--env-file';
+        const flag = mode.endsWith('underscore') ? `--${name.slice(2).replace(/-/g, '_')}` : name;
+        flags.splice(0, flags.length, `${flag}=${envFile}`);
+      }
       const beforeProxy = proxyConnects;
       const beforeTarget = targetRequests;
       const child = spawn(process.execPath, [...flags, probe === 'native' ? nativeProbe : fileURLToPath(import.meta.url), '--probe', probe,

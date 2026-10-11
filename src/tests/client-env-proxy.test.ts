@@ -29,7 +29,8 @@ for (const mode of ['flag', 'env', 'options', 'no-proxy', 'disabled', 'direct',
   'flag-underscore', 'options-underscore', 'config-underscore', 'config-underscore-direct', 'negative-underscore',
   'config-false-env', 'default-config-false-env', 'config-absent-env', 'config-false-env-options', 'config-false-env-flag',
   'config-underscore-false-env', 'disabled-env', 'preload-delete-env', 'preload-options-delete-env', 'require-delete-env',
-  'config-false-env-preload']) {
+  'config-false-env-preload', 'env-file-preload', 'env-file-if-exists-preload',
+  'env-file-preload-underscore', 'env-file-if-exists-preload-underscore']) {
   test.skipIf(!node || (mode.includes('config') && !configSupported))(`native environment proxy routing is preserved (${mode}, ${version})`, async () => {
     const root = mkdtempSync(join(process.cwd(), '.env-proxy-test-'));
     try {
@@ -42,10 +43,11 @@ for (const mode of ['flag', 'env', 'options', 'no-proxy', 'disabled', 'direct',
       const direct = ['disabled', 'disabled-env', 'direct', 'config-disabled', 'config-direct',
         'config-underscore-direct', 'negative-underscore'].includes(mode);
       // Node 22/24 differ on false config plus NODE_USE_ENV_PROXY=1. Aliased
-      // config loading also varies. Compare actual no-CLI native routing, not
+      // config/dotenv loading also varies. Compare actual no-CLI native routing, not
       // getOptionValue or the adapter's own prediction; bypasses must fail.
       const nativePrecedence = ['config-false-env', 'default-config-false-env', 'config-underscore',
-        'config-underscore-false-env', 'config-false-env-preload'].includes(mode);
+        'config-underscore-false-env', 'config-false-env-preload',
+        'env-file-preload-underscore', 'env-file-if-exists-preload-underscore'].includes(mode);
       expect([0, 1]).toContain(report.native.proxyConnects);
       const expected = nativePrecedence ? report.native.proxyConnects
         : direct || ['no-proxy', 'config-no-proxy'].includes(mode) ? 0 : 1;

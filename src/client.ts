@@ -71,9 +71,11 @@ function preserveNativeFetch(): boolean {
   const optionNames = [...envOptions.map(value => value.replace(/"/g, '')), ...process.execArgv]
     .map(option => option.split('=', 1)[0].replace(/_/g, '-'));
   // Startup modules can mutate environment variables after native proxy setup.
+  // Dotenv can supply NODE_OPTIONS preloads that then remove their own options.
   // Keep Node's transport when that state cannot be reconstructed safely.
   if (configHasPreload || optionNames.some(name => name.startsWith('-r') ||
-      ['--require', '--import', '--loader', '--experimental-loader'].includes(name))) return true;
+      ['--require', '--import', '--loader', '--experimental-loader',
+        '--env-file', '--env-file-if-exists'].includes(name))) return true;
   if (!process.allowedNodeEnvironmentFlags.has('--use-env-proxy')) return false;
   const environmentEnabled = process.env.NODE_USE_ENV_PROXY === '1';
   let enabled = process.versions.node.startsWith('22.')
