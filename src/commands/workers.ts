@@ -109,7 +109,7 @@ RESOURCES, BILLING, AND LIFECYCLE
   environment <worker-id> <environment> [--daily-usd USD] [--data-location apac] [--placement smart]
   billing-status
   billing ledger <worker-id> --env ENV [--all] [--snapshot-time ISO] [--json]
-  retention show|quote|accept|pause|resume|keep-paused|delete <worker-id> --env ENV
+  retention show|quote|accept|resume|delete <worker-id> --env ENV
   billing prices|overview|usage|ledger|forecast|risk|lifecycle <worker-id> --env preview|production
   domains list <worker-id>
   domains challenge <worker-id> --env ENV --hostname HOSTNAME --format json
@@ -835,7 +835,7 @@ export async function workersCommand(
     case "retention": {
       assertFlags(flags, ["env", "type", "price-version", "yes", "json"]);
       const [action, id, ...extra] = rest;
-      if (!id || extra.length || !["show", "quote", "accept", "pause", "resume", "keep-paused", "delete"].includes(action)) err("usage: workers retention show|quote|accept|pause|resume|keep-paused|delete <worker-id> --env ENV");
+      if (!id || extra.length || !["show", "quote", "accept", "resume", "delete"].includes(action)) err("usage: workers retention show|quote|accept|resume|delete <worker-id> --env ENV");
       const env = environment(flags.env);
       const retentionOutputMode = workerBillingOutputMode(flags);
       if (["accept", "delete"].includes(action) && flags.yes !== "true") err("--yes is required to accept automatic reserve-exhaustion deletion or delete this environment");
@@ -853,7 +853,7 @@ export async function workersCommand(
         if (result.retentionHours) console.log(`Legacy retention estimate: ${result.retentionHours} hours. This does not authorize automatic deletion.`);
         if (result.estimateBasisHours) console.log(`Freeze estimate basis: ${result.estimateBasisHours} hours; minimum preservation is seven full days, not a fixed deletion deadline.`);
         if (result.policyVersion === "retention-v3" || state.retentionPolicyVersion === "retention-v3") {
-          console.log("Manual recovery does not happen just by recharging. At least seven full days are protected; afterward, remaining spendable retention funds extend preservation until exhausted, then system cleanup applies. Owner deletion is available at any time.");
+          console.log("Manual recovery does not happen just by recharging. At least seven full days are protected; afterward, remaining spendable retention funds extend preservation until exhausted, then system cleanup applies. User deletion is unavailable during financial retention; add sufficient funds and explicitly recover first. System cleanup remains independent.");
           if (result.environmentDeposit?.fundingMode === 'UNIFIED_WORKER_DEPOSIT_V1') console.log(`Environment deposit remaining: $${result.environmentDeposit.remainingUsd}; frozen funds are not an additional fee.`);
           if (result.reserveBudget) console.log(`Remaining for retention: $${result.reserveBudget.retentionSpendableUsd ?? "unknown"}; cleanup allowance: $${result.reserveBudget.cleanupReserveUsd ?? "unknown"}`);
         }

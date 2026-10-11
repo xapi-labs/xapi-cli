@@ -128,6 +128,26 @@ test("configures consumer and scheduled handler after code, reuses existing sche
   expect(seen).toHaveLength(3);
 });
 
+test("AFTER_CODE preserves paused Queue configuration receipts without automatic resume", async () => {
+  const calls: string[] = [];
+  const desired = { ...plan, crons: [], cronsConfigured: false,
+    consumers: [{ ...plan.consumers[0], configuration: { queue: "logical-jobs", max_batch_size: 7 } }] };
+  const receipt = { status: "CONFIGURED", activation: "ON_RESUME", paused: true };
+  const api = {
+    async listWorkerResources() { calls.push("resources"); return resources; },
+    async configureWorkerQueueConsumer(_o: unknown, _w: string, env: string, id: string, input: unknown) {
+      calls.push("configure");
+      expect(env).toBe("preview"); expect(id).toBe("queue-id");
+      expect(input).toEqual(desired.consumers[0].configuration);
+      return receipt;
+    },
+    async workerRetention() { throw new Error("must not resume"); },
+  };
+  expect(await applyNativeDeploymentPhase(api, options, "worker", "preview", desired, "AFTER_CODE"))
+    .toEqual([{ bindingName: "JOBS", ...receipt }]);
+  expect(calls).toEqual(["resources", "configure"]);
+});
+
 test("preserves completed remote migration receipts when the next file fails", async () => {
   const receipt = { status: "APPLIED", remote: true, name: "0001.sql" };
   let count = 0;

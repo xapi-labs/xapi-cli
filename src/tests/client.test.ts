@@ -361,34 +361,35 @@ describe('client.request', () => {
 
 describe('request-scoped Node transport deadlines', () => {
   it('overrides fetch parser deadlines, closes the scoped agent and leaves the global dispatcher unchanged', async () => {
-    const { Agent, getGlobalDispatcher } = await import('undici/index.js');
+    const { Agent, fetch: libraryFetch, getGlobalDispatcher } = await import('undici/index.js');
     const globalDispatcher = getGlobalDispatcher();
     let transport: any; let dispatched: any;
-    const dispatchSpy = spyOn(Agent.prototype, 'dispatch').mockImplementation(((options: any) => { dispatched = options; return true; }) as any);
-    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (_url: any, init: any) => {
-      transport = init.dispatcher;
-      expect(init.signal).toBeInstanceOf(AbortSignal);
-      expect(init.signal.aborted).toBe(false);
-      transport.dispatch({ origin: 'http://localhost', path: '/', method: 'POST', headersTimeout: 300_000, bodyTimeout: 300_000 }, {});
-      return OK();
-    }) as any);
+    const dispatchSpy = spyOn(Agent.prototype, 'dispatch').mockImplementation(function(this: any, options: any, handler: any) {
+      transport = this; dispatched = options;
+      queueMicrotask(() => {
+        handler.onConnect(() => {});
+        handler.onHeaders(200, [], () => {}, 'OK');
+        handler.onData(Buffer.from('{"ok":true}'));
+        handler.onComplete([]);
+      });
+      return true;
+    } as any);
     try {
-      expect(await request<{ok:boolean}>('https://action.xapi.to/long-exec', { method: 'POST' }, 1_230_000)).toEqual({ ok: true });
+      expect(await request<{ok:boolean}>('https://action.xapi.to/long-exec', { method: 'GET' }, 1_230_000, 0, 'total', libraryFetch as unknown as typeof fetch)).toEqual({ ok: true });
       expect(dispatched.headersTimeout).toBe(0); expect(dispatched.bodyTimeout).toBe(0);
       expect(transport.destroyed).toBe(true); expect(getGlobalDispatcher()).toBe(globalDispatcher);
-      expect(fetchSpy).toHaveBeenCalledTimes(1);
-    } finally { fetchSpy.mockRestore(); dispatchSpy.mockRestore(); }
+      expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    } finally { dispatchSpy.mockRestore(); }
   });
 
   it('still aborts a stalled write at its explicit deadline without resending it', async () => {
-    let transport: any;
     const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(((_url: any, init: any) => {
-      transport = init.dispatcher;
+      expect('dispatcher' in init).toBe(false);
       return new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(new DOMException('deadline abort', 'AbortError'))));
     }) as any);
     try {
       await expect(request('https://action.xapi.to/long-exec', { method: 'POST' }, 15)).rejects.toThrow('timed out after 15ms');
-      expect(fetchSpy).toHaveBeenCalledTimes(1); expect(transport.destroyed).toBe(true);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
     } finally { fetchSpy.mockRestore(); }
   });
 });

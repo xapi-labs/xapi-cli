@@ -190,7 +190,11 @@ test("inline upload and multipart manifest carry canonical retention and JSON-st
     { name: "STRING", type: "json", json: "hello" },
     { name: "TEXT", type: "plain_text", text: "hi" },
   ] });
-  const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async () => Response.json({directUpload:false})) as unknown as typeof fetch);
+  let inline: any;
+  const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (target, init) => {
+    if (init?.body) inline = await new Request(target, init).json();
+    return Response.json({directUpload:false});
+  }) as typeof fetch);
   try {
     await uploadWorkerArtifact({ apiHost: "test.xapi.to", apiKey: "test-only" }, "worker/id", { ...artifact.upload, idempotencyKey: "variable-options" });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
@@ -198,7 +202,6 @@ test("inline upload and multipart manifest carry canonical retention and JSON-st
     const [target, init] = fetchSpy.mock.calls[1];
     expect(target).toBe("https://test.xapi.to/api/v1/workers/worker%2Fid/artifacts");
     expect(init!.method).toBe("POST");
-    const inline = JSON.parse(init!.body as string);
     expect(inline.bundle).toMatchObject({keepBindings:["plain_text","json"],varTypes:{STRING:"json"},vars:{STRING:"hello",TEXT:"hi"}});
     expect(JSON.stringify(inline)).not.toContain("secret_text");
     const form = workerArtifactMultipart({...artifact.upload,idempotencyKey:"variable-options"});

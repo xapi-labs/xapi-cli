@@ -94,7 +94,9 @@ xapi workers secrets status <worker-id> --env preview
 
 JSON lists required Secret names, not values or an exclusive allowlist. Removing a name does not delete its value. Value writes are independent for each environment/key; unrelated resource work and code publication do not create a global Secret lock. The first write to an absent script may briefly coordinate script initialization.
 
-Code deploy, promotion, rollback, pause, and resume preserve provider secrets with Cloudflare native binding inheritance. They do not read values from xAPI or copy values between environments. A missing required binding should block activation rather than opening a route with incomplete runtime configuration.
+Code deploy, promotion, rollback, system suspension, and resume preserve provider secrets with Cloudflare native binding inheritance. They do not read values from xAPI or copy values between environments. A missing required binding should block activation rather than opening a route with incomplete runtime configuration.
+
+During financial retention (`retentionStartedAt` is non-null), adding, rotating or deleting Secrets is blocked along with other user writes. Add sufficient funds and explicitly recover the environment first; do not repeatedly retry Secret writes. See [billing.md](billing.md).
 
 Delete only with explicit authorization:
 

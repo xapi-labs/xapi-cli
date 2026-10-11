@@ -7,16 +7,13 @@ import {fileURLToPath} from 'node:url';
 
 // Exercise the source CLI and actual child build over local HTTP, without
 // building dist, reading credentials or contacting a real provider.
-interface PauseScenario {
+interface HealthScenario {
   healthStatus: number;
   lifecycle?: Record<string, unknown> | null;
-  queryFails?: boolean;
-  snapshot?: "wrong-worker" | "wrong-environment" | "changed-deployment" | "inactive-deployment" | "wrong-deployment-environment";
   deploymentStatus?: string;
-  enabled?: boolean;
 }
 
-async function fixture(scenario?: PauseScenario) {
+async function fixture(scenario?: HealthScenario) {
   const root=mkdtempSync(join(tmpdir(),'workers-json-output-'));
   const workerId='22222222-2222-4222-8222-222222222222';
   let artifact:any={id:'artifact-v2',contentSha256:'old',sizeBytes:1};
@@ -39,7 +36,6 @@ async function fixture(scenario?: PauseScenario) {
     expect(request.headers.get('XAPI-KEY')).toBe('local-output-fixture');
     if(path.endsWith('/retention')){
       retentionReads++;
-      if(scenario?.queryFails)return Response.json({error:'status unavailable'},{status:400});
       return Response.json({enabled:true,lifecycle:scenario?.lifecycle});
     }
     if(path==='/api/v1/workers/artifact-provider/status')return Response.json({directUpload:false});
@@ -64,15 +60,10 @@ async function fixture(scenario?: PauseScenario) {
     if(path.endsWith('/domains'))return Response.json([]);
     if(path.endsWith('/resources')||path.endsWith('/secrets')||path.endsWith('/schedules'))return Response.json([]);
     if(path.endsWith('/artifacts'))return Response.json([artifact]);
-    if(path===`/api/v1/workers/${workerId}`)return Response.json({id:retentionReads && scenario?.snapshot==='wrong-worker'?'other-worker':workerId,name:'JSON Fixture',slug:'json-fixture',
-      environments:[{id:retentionReads && scenario?.snapshot==='wrong-environment'?'env-production':'env-preview',name:'PREVIEW',
-        enabled:scenario?.enabled ?? !scenario,dailyBudgetUsd:null,
-        activeDeploymentId:retentionReads && scenario?.snapshot==='changed-deployment'?'other-deployment':active,
-        publicUrl:'https://public-output.example.test/business/preview'},
-        {id:'env-production',name:'PRODUCTION',dailyBudgetUsd:null}],artifacts:[artifact],
-      deployments:retentionReads ? deployments.map(d=>({...d,
-        status:scenario?.snapshot==='inactive-deployment'?'UNKNOWN':d.status,
-        environmentId:scenario?.snapshot==='wrong-deployment-environment'?'env-production':d.environmentId})) : deployments});
+    if(path===`/api/v1/workers/${workerId}`)return Response.json({id:workerId,name:'JSON Fixture',slug:'json-fixture',
+      environments:[{id:'env-preview',name:'PREVIEW',enabled:!scenario,dailyBudgetUsd:null,
+        activeDeploymentId:active,publicUrl:'https://public-output.example.test/business/preview'},
+        {id:'env-production',name:'PRODUCTION',dailyBudgetUsd:null}],artifacts:[artifact],deployments});
     throw Error('Unexpected test read '+path);
   }});
   writeFileSync(join(root,'wrangler.jsonc'),JSON.stringify({name:'json-fixture',main:'src/index.ts',compatibility_date:'2026-10-01'}));
@@ -144,65 +135,28 @@ const ownerPaused = {
   state:'SUSPENDED_GRACE',pauseReason:'USER',manualDeletionRequestedAt:null,resumeRequestedAt:null,
 };
 
-describe('push to an owner-paused environment over actual CLI HTTP requests',()=>{
-  for(const format of ['json','table'])test(`ACTIVE plus confirmed owner pause reports deployment success in ${format}`,async()=>{
-    const f=await fixture({healthStatus:403,lifecycle:ownerPaused});try{
-      const result=await f.cli(['push','--env','preview','--non-interactive'],format);
-      if(result.exitCode!==0)throw Error(result.stderr);
-      expect(result.exitCode).toBe(0);
-      if(format==='json'){
-        const receipt=JSON.parse(result.stdout);
-        expect(receipt).toMatchObject({status:'ACTIVE',deployment:{id:'pushed',status:'ACTIVE'},
-          healthReady:false,paused:true,publicAccessStatus:'PAUSED',health:{status:403,attempts:10}});
-        expect(receipt.commands.inspect).toContain('--env preview');
-        expect(receipt.commands.resume).toBe(`xapi workers retention resume ${ownerPaused.workerId} --env preview`);
-        expect(receipt.message).toContain('Deployment succeeded');
-        expect(receipt.message).toContain('do not republish');
-        expect(result.stdout.trim().split('\n')).toHaveLength(1);
-      }else{
-        expect(result.stdout).toContain('deployment succeeded; environment remains owner-paused');
-        expect(result.stdout).toContain('Deployment   pushed');
-        expect(result.stdout).toContain('health is not ready');
-        expect(result.stdout).toContain('Resume: xapi workers retention resume');
-        expect(result.stdout).toContain('After resuming, check health:');
-        expect(result.stdout).not.toContain('health check passed');
-      }
-      expect(f.healthReads).toBe(10);expect(f.retentionReads).toBe(1);expect(f.writes).toBe(2);
-      expect(result.stdout+result.stderr).not.toContain('local-output-fixture');
-    }finally{f.cleanup();}
-  },10000);
-
-  const failures: Array<[string,Partial<PauseScenario>]> = [
-    ['non-paused tenant spoofed 403',{lifecycle:{...ownerPaused,state:'ACTIVE',pauseReason:null},enabled:true}],
-    ['management query failure',{queryFails:true}],
-    ['missing lifecycle evidence',{lifecycle:null}],
-    ['lifecycle environment mismatch',{lifecycle:{...ownerPaused,environmentId:'env-production'}}],
-    ['lifecycle worker mismatch',{lifecycle:{...ownerPaused,workerId:'other-worker'}}],
-    ['Worker snapshot mismatch',{snapshot:'wrong-worker'}],
-    ['environment snapshot mismatch',{snapshot:'wrong-environment'}],
-    ['active deployment changed',{snapshot:'changed-deployment'}],
-    ['deployment no longer ACTIVE',{snapshot:'inactive-deployment'}],
-    ['deployment environment mismatch',{snapshot:'wrong-deployment-environment'}],
-    ['environment not disabled',{enabled:true}],
-    ['pause still in progress',{lifecycle:{...ownerPaused,state:'SUSPENDING'}}],
-    ['resume pending',{lifecycle:{...ownerPaused,resumeRequestedAt:'2026-10-10T00:00:00Z'}}],
-    ['deletion pending',{lifecycle:{...ownerPaused,manualDeletionRequestedAt:'2026-10-10T00:00:00Z'}}],
-    ['billing pause',{lifecycle:{...ownerPaused,pauseReason:'INSUFFICIENT_BALANCE'}}],
-    ['owner pause with real health 500',{healthStatus:500}],
+describe('failed push health over actual CLI HTTP requests',()=>{
+  const scenarios: Array<[string,HealthScenario]> = [
+    ['legacy owner-pause evidence',{healthStatus:403,lifecycle:ownerPaused}],
+    ['system funding retention',{healthStatus:403,lifecycle:{...ownerPaused,pauseReason:'INSUFFICIENT_BALANCE',retentionStartedAt:'2026-10-11T00:00:00Z'}}],
+    ['tenant spoofed 403 without lifecycle evidence',{healthStatus:403}],
+    ['HTTP 500',{healthStatus:500}],
   ];
-  for(const [name,override] of failures)test(`${name} preserves health failure and never republishes`,async()=>{
-    const f=await fixture({healthStatus:403,lifecycle:ownerPaused,...override});try{
-      const result=await f.cli(['push','--env','preview','--non-interactive']);
-      expect(result.exitCode).toBe(1);expect(result.stdout).toBe('');
-      expect(result.stderr).toContain('Deployment is ACTIVE but its health check failed');
-      const failure=JSON.parse(result.stderr.trim().split('\n').at(-1)!);
-      expect(failure.detail).toMatchObject({releasedDeploymentId:'pushed',deploymentStatus:'ACTIVE',healthReady:false,lastStatus:override.healthStatus || 403});
-      expect(f.writes).toBe(2);expect(f.healthReads).toBe(10);
-      expect(result.stderr).not.toContain('local-output-fixture');
-    }finally{f.cleanup();}
-  },10000);
+  for(const [name,scenario] of scenarios)for(const format of ['json','table'])
+    test(`${name} remains a health failure in ${format} without lifecycle overrides or replay`,async()=>{
+      const f=await fixture(scenario);try{
+        const result=await f.cli(['push','--env','preview','--non-interactive'],format);
+        expect(result.exitCode).toBe(1);expect(result.stdout).toBe('');
+        expect(result.stderr).toContain('Deployment is ACTIVE but its health check failed');
+        const failure=JSON.parse(result.stderr.trim().split('\n').at(-1)!);
+        expect(failure.detail).toMatchObject({releasedDeploymentId:'pushed',deploymentStatus:'ACTIVE',healthReady:false,lastStatus:scenario.healthStatus});
+        expect(f.writes).toBe(2);expect(f.healthReads).toBe(10);expect(f.retentionReads).toBe(0);
+        expect(result.stderr).not.toContain('deployment succeeded; environment remains owner-paused');
+        expect(result.stderr).not.toContain('local-output-fixture');
+      }finally{f.cleanup();}
+    },10000);
 
-  test('UNKNOWN deployment never reaches health or pause override and is not replayed',async()=>{
+  test('UNKNOWN deployment never reaches health and is not replayed',async()=>{
     const f=await fixture({healthStatus:403,lifecycle:ownerPaused,deploymentStatus:'UNKNOWN'});try{
       const result=await f.cli(['push','--env','preview','--non-interactive']);
       expect(result.exitCode).toBe(1);expect(result.stdout).toBe('');
