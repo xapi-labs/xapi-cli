@@ -30,6 +30,7 @@ import {
   updateWorkerEnvironment,
   workerRetention,
   deleteWorker,
+  WorkerWriteUnknownError,
 } from "../workers-client.ts";
 import { RequestTimeoutError } from "../client.ts";
 
@@ -66,6 +67,49 @@ describe("workers client", () => {
     expect(target).toEndWith('/worker-1');
     expect(init.method).toBe('DELETE');
   });
+  for (const action of ['pause', 'resume', 'keep-paused', 'delete', 'whole-worker-delete']) {
+    for (const code of ['UND_ERR_SOCKET', 'ECONNRESET', 'ETIMEDOUT']) {
+      it(`preserves ${code} and read-only recovery for ${action} without replay`, async () => {
+        const cause = Object.assign(new Error('socket disconnected'), { code });
+        const original = new TypeError('fetch failed', { cause });
+        fetchSpy = spyOn(globalThis, 'fetch').mockRejectedValue(original) as any;
+        const pending = action === 'whole-worker-delete'
+          ? deleteWorker(options, 'worker-1')
+          : workerRetention(options, 'worker-1', 'preview', '/actions', { action });
+        const error = await pending.catch(error => error);
+        expect(error).toBeInstanceOf(WorkerWriteUnknownError);
+        if (!(error instanceof WorkerWriteUnknownError)) throw error;
+        expect(error.cause).toBe(original);
+        expect((error.cause as Error).cause).toBe(cause);
+        expect(error.code).toBe(code);
+        expect(error.message).toContain(code);
+        expect(error.message).toContain(action === 'whole-worker-delete'
+          ? 'xapi workers get worker-1 --format json'
+          : 'xapi workers retention show worker-1 --env preview --format json');
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+      });
+    }
+  }
+  for (const original of [
+    new TypeError('invalid request option'),
+    new TypeError('fetch failed', { cause: Object.assign(new Error('invalid onError method'), { code: 'UND_ERR_INVALID_ARG' }) }),
+    new DOMException('cancelled', 'AbortError'),
+    new SyntaxError('invalid JSON'),
+  ]) {
+    it(`preserves non-transport failure ${original.message}`, async () => {
+      fetchSpy = spyOn(globalThis, 'fetch').mockRejectedValue(original) as any;
+      expect(await deleteWorker(options, 'worker-1').catch(error => error)).toBe(original);
+      expect(await workerRetention(options, 'worker-1', 'preview', '/actions', { action: 'pause' }).catch(error => error)).toBe(original);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+  }
+  it('does not relabel a non-lifecycle retention write', async () => {
+    const original = new TypeError('fetch failed');
+    fetchSpy = spyOn(globalThis, 'fetch').mockRejectedValue(original) as any;
+    expect(await workerRetention(options, 'worker-1', 'preview', '/accept', {}).catch(error => error)).toBe(original);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves upstream whole-Worker deletion conflicts", async () => {
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response('upstream conflict', { status: 409 })) as any;
     await expect(deleteWorker(options, 'worker-1')).rejects.toThrow('HTTP 409: upstream conflict');

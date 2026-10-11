@@ -2,7 +2,7 @@
  * HTTP client - thin wrapper around fetch with timeout/retry
  */
 
-import { Agent, fetch as objectFetch, type Dispatcher } from 'undici/index.js';
+import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici/index.js';
 import { scheme, assertAllowedHost } from './config.ts';
 import { open, rm } from 'node:fs/promises';
 import { once } from 'node:events';
@@ -10,6 +10,15 @@ import { resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { requestDeadline } from './request-deadline.ts';
+
+// Pair fetch and Agent from the same undici version: Node's bundled fetch may
+// speak a newer dispatcher protocol (notably Node 26). Keep explicit fetchers
+// and existing global fetch overrides usable by embedders and tests.
+const runtimeFetch = globalThis.fetch;
+const matchedFetch = undiciFetch as unknown as typeof fetch;
+function defaultFetch(): typeof fetch {
+  return globalThis.fetch === runtimeFetch ? matchedFetch : globalThis.fetch;
+}
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const EXECUTE_TIMEOUT_MS = 60_000;
@@ -41,8 +50,9 @@ export class HttpError extends Error {
     detail: string,
     public readonly retryAfterMs?: number,
     public readonly responseBody?: unknown,
+    options?: ErrorOptions,
   ) {
-    super(`HTTP ${status}: ${detail}`);
+    super(`HTTP ${status}: ${detail}`, options);
     this.name = 'HttpError';
   }
 }
@@ -134,7 +144,7 @@ function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
   });
 }
 
-// A scoped dispatcher prevents Node's fetch implementation from reintroducing
+// A scoped dispatcher prevents fetch from reintroducing
 // its own 300-second parser deadlines. The request AbortSignal owns the deadline.
 class RequestDeadlineAgent extends Agent {
   progress?: () => void;
@@ -180,7 +190,7 @@ export async function request<T>(
   timeoutMs = DEFAULT_TIMEOUT_MS,
   retries = 0,
   deadlineMode: 'total' | 'idle' = 'total',
-  fetcher: typeof fetch = fetch,
+  fetcher: typeof fetch = defaultFetch(),
   sessionTransport?: RequestDeadlineAgent,
 ): Promise<T> {
   // Enforce the host allowlist before the API key ever leaves the machine.
@@ -224,7 +234,11 @@ export async function request<T>(
             attempt++;
             continue;
           }
-          const text = await res.text();
+          const text = await res.text().catch((cause: unknown) => {
+            // Headers already establish a definite HTTP failure, even if its
+            // body is interrupted. Do not relabel it as an unknown write.
+            throw new HttpError(res.status, 'could not read error response', retryAfterMs, undefined, { cause });
+          });
           let responseBody: unknown;
           try { responseBody = JSON.parse(text); } catch { /* Plain upstream errors stay plain. */ }
           throw new HttpError(res.status, text.slice(0, 300), retryAfterMs, responseBody);
@@ -255,7 +269,7 @@ export async function request<T>(
         }
         return body;
       } catch (e) {
-        if (timedOut) {
+        if (timedOut && !(e instanceof HttpError)) {
           const timeoutError = new RequestTimeoutError(timeoutMs);
           if (attempt < retries) {
             await sleep(backoffDelayMs(attempt), callerSignal);
@@ -293,7 +307,7 @@ export function createArtifactControlSession() {
   const transport = new RequestDeadlineAgent();
   return {
     request: <T>(url: string, options: RequestInit, budget: number, retries: number) =>
-      request<T>(url, options, budget, retries, 'total', objectFetch as unknown as typeof fetch, transport),
+      request<T>(url, options, budget, retries, 'total', matchedFetch, transport),
     close: () => transport.destroy().catch(() => undefined),
   };
 }
@@ -405,7 +419,7 @@ export function createArtifactUploadTransport() {
         );
       };
       try {
-        const response = await objectFetch(url, {
+        const response = await undiciFetch(url, {
           method: 'PUT',
           body: bytes as BodyInit,
           headers,
@@ -631,6 +645,7 @@ export async function actionStream(
   opts: ClientOptions,
   httpMethod?: string,
 ): Promise<void> {
+  const transport = new RequestDeadlineAgent();
   const controller = new AbortController();
   let timedOut = false;
   let activeTimeoutMs = EXECUTE_TIMEOUT_MS;
@@ -645,10 +660,10 @@ export async function actionStream(
   };
   resetTimeout(EXECUTE_TIMEOUT_MS);
   const url = `${baseUrl(opts)}/v1/actions/execute`;
-  assertAllowedHost(url);
 
   try {
-    const res = await fetch(url, {
+    assertAllowedHost(url);
+    const res = await defaultFetch()(url, {
       method: 'POST',
       headers: {
         ...headers(opts.apiKey),
@@ -662,7 +677,8 @@ export async function actionStream(
       }),
       redirect: 'manual',
       signal: controller.signal,
-    });
+      dispatcher: transport,
+    } as RequestInit);
     if (res.status >= 300 && res.status < 400) {
       throw new Error(
         `refusing to follow redirect to "${res.headers.get('location') ?? '?'}" `
@@ -699,6 +715,7 @@ export async function actionStream(
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
+    await transport.destroy().catch(() => undefined);
   }
 }
 
@@ -718,6 +735,7 @@ export async function actionDownload(
   outputPath: string,
   httpMethod?: string,
 ): Promise<ActionDownloadResult> {
+  const transport = new RequestDeadlineAgent();
   const controller = new AbortController();
   let timedOut = false;
   let activeTimeoutMs = EXECUTE_TIMEOUT_MS;
@@ -749,7 +767,7 @@ export async function actionDownload(
 
     const url = `${baseUrl(opts)}/v1/actions/execute`;
     assertAllowedHost(url);
-    const res = await fetch(url, {
+    const res = await defaultFetch()(url, {
       method: 'POST',
       headers: headers(opts.apiKey),
       body: JSON.stringify({
@@ -760,7 +778,8 @@ export async function actionDownload(
       }),
       redirect: 'manual',
       signal: controller.signal,
-    });
+      dispatcher: transport,
+    } as RequestInit);
     if (res.status >= 300 && res.status < 400) {
       throw new Error(
         `refusing to follow redirect to "${res.headers.get('location') ?? '?'}" `
@@ -809,6 +828,7 @@ export async function actionDownload(
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
+    await transport.destroy().catch(() => undefined);
     if (!complete && file) {
       await file.close().catch(() => undefined);
       await rm(target, { force: true }).catch(() => undefined);

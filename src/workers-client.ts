@@ -16,6 +16,35 @@ export interface WorkersClientOptions {
   artifactUploadProgress?: (message:string)=>void;
 }
 
+/** A write may have reached the server before the transport lost its response. */
+export class WorkerWriteUnknownError extends Error {
+  constructor(subject: string, recovery: string, cause: Error, public readonly code?: string) {
+    super(`${subject} result is UNKNOWN: ${cause.message}${code ? ` (${code})` : ''}. The server may still complete it; no write was retried. Check with: ${recovery}`, { cause });
+    this.name = 'WorkerWriteUnknownError';
+  }
+}
+
+function unknownWriteError(error: unknown, subject: string, recovery: string): WorkerWriteUnknownError | undefined {
+  if (!(error instanceof Error) || error instanceof HttpError || error.name === 'AbortError') return;
+  const seen = new Set<Error>();
+  let code: string | undefined;
+  for (let current: unknown = error; current instanceof Error && !seen.has(current); current = current.cause) {
+    seen.add(current);
+    const candidate = (current as Error & { code?: unknown }).code;
+    if (typeof candidate === 'string' && /^(UND_ERR_(SOCKET|CONNECT_TIMEOUT|HEADERS_TIMEOUT|BODY_TIMEOUT)|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH)$/.test(candidate)) {
+      code = candidate;
+      break;
+    }
+    if (candidate !== undefined) return;
+  }
+  // Do not turn validation/programming errors or definite HTTP rejections into
+  // ambiguous results. The original error chain is retained for diagnostics.
+  if (error instanceof RequestTimeoutError || code ||
+      (error instanceof TypeError && /^(fetch failed|terminated|network error)$/i.test(error.message))) {
+    return new WorkerWriteUnknownError(subject, recovery, error, code);
+  }
+}
+
 export async function workerRetention(options: WorkersClientOptions, id: string, environment: string, path = "", body?: Record<string, unknown>) {
   // These actions synchronously control several upstream resources. A lost
   // response does not cancel the action and must never trigger a write replay.
@@ -27,8 +56,10 @@ export async function workerRetention(options: WorkersClientOptions, id: string,
       ...(body ? { body: JSON.stringify(body) } : {}),
     }, lifecycleAction ? 120_000 : 30_000, body ? 0 : 2);
   } catch (error) {
-    if (lifecycleAction && error instanceof RequestTimeoutError) {
-      throw new Error(`Worker retention action result is UNKNOWN: ${error.message}. The server may still complete it; no write was retried. Check with: xapi workers retention show ${id} --env ${environment} --format json`, { cause: error });
+    if (lifecycleAction) {
+      const unknown = unknownWriteError(error, 'Worker retention action',
+        `xapi workers retention show ${id} --env ${environment} --format json`);
+      if (unknown) throw unknown;
     }
     throw error;
   }
@@ -289,9 +320,8 @@ export async function deleteWorker(options: WorkersClientOptions, id: string) {
       headers: headers(options),
     }, 120_000, 0);
   } catch (error) {
-    if (error instanceof RequestTimeoutError) {
-      throw new Error(`Worker deletion result is UNKNOWN: ${error.message}. The server may still complete it; no write was retried. Check with: xapi workers get ${id} --format json`, { cause: error });
-    }
+    const unknown = unknownWriteError(error, 'Worker deletion', `xapi workers get ${id} --format json`);
+    if (unknown) throw unknown;
     throw error;
   }
 }
