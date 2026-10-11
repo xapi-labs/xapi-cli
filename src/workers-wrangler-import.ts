@@ -1,10 +1,15 @@
-import { validNativeCron } from './workers-cron.ts';
-import { createHash } from 'node:crypto';
 import {
   normalizeNativeWorkerOptions,
+  normalizeWorkerObservability,
+  type WorkerVariableType,
+  type WorkerObservability,
   type WorkerCacheOptions,
   type WorkerVersionMetadata,
 } from "./workers-artifact.ts";
+import { normalizeWorkerNativeMetadata } from './workers-native-metadata.ts';
+import { WORKER_CLASS_IDENTIFIER, isWorkerBindingName } from './workers-binding-validation.ts';
+import { normalizeWorkerPublicVariables, type WorkerPublicVariables } from './workers-artifact.ts';
+import { WRANGLER_NON_INHERITED_FIELDS } from './workers-wrangler-environment.generated.ts';
 import {
   existsSync,
   lstatSync,
@@ -13,10 +18,12 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { basename, dirname, extname, relative, resolve, sep } from "node:path";
 import { parse as parseJsonc, printParseErrorCode } from "jsonc-parser";
 import { parse as parseToml } from "smol-toml";
 import {
+  loadWorkerProject,
   assertWorkerContainerBindings,
   WORKER_PROJECT_CONFIG_FILE,
   WORKER_PROJECT_SCHEMA_URL,
@@ -24,12 +31,11 @@ import {
   type WorkerProjectConfig,
   WorkerProjectConfigError,
   workerProjectConfigSchema,
+  workerQueueConsumerSchema,
   resolveWorkerProjectPath,
 } from "./workers-project.ts";
 
 const MAX_WRANGLER_BYTES = 512 * 1024;
-const BINDING_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
-const CLASS_NAME = /^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/;
 
 export type WranglerCompatibilityCategory =
   | "SUPPORTED"
@@ -55,7 +61,7 @@ export interface WranglerImportReport {
   entries: WranglerCompatibilityEntry[];
   summary: Record<WranglerCompatibilityCategory, number>;
   deploymentPlan: Array<{
-    phase: "BEFORE_CODE" | "CODE" | "AFTER_CODE";
+    phase: "EXPLICIT_COMMAND" | "CODE" | "AFTER_CODE";
     kind: "D1_MIGRATIONS" | "WORKER" | "QUEUE_CONSUMER" | "CRON";
     environment: "preview" | "production";
     status: "SUPPORTED" | "REQUIRES_MAPPING";
@@ -72,8 +78,8 @@ export interface ImportWranglerProjectOptions {
   buildCommand?: string;
   buildOutput?: string;
   buildMain?: string;
-  previewDailyBudgetUsd?: number;
-  productionDailyBudgetUsd?: number;
+  previewDailyBudgetUsd?: number | null;
+  productionDailyBudgetUsd?: number | null;
   defaultResourceLocation?: "wnam" | "enam" | "weur" | "eeur" | "apac" | "oc";
   placementMode?: "off" | "smart";
 }
@@ -88,10 +94,20 @@ export interface ImportWranglerProjectResult {
 }
 
 export interface WranglerDeploymentSettings {
+  assets?: WorkerProjectConfig["assets"];
   compatibilityDate?: string;
   compatibilityFlags: string[];
   cacheOptions?: WorkerCacheOptions;
   versionMetadata?: WorkerVersionMetadata;
+  keepBindings?: WorkerVariableType[];
+  observability?: WorkerObservability;
+  uploadSourceMaps?: boolean;
+  queueBindingAliases?: Record<string, string>;
+  nativeMetadata?: Record<string, unknown>;
+  nativeMetadataIsComplete?: boolean;
+  nativeBundleRequired?: string[];
+  requiredSecrets?: string[];
+  variables?: WorkerPublicVariables;
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -114,6 +130,10 @@ const SUPPORTED_TOP_LEVEL = new Set([
   "assets",
   "cache",
   "version_metadata",
+  "observability",
+  "upload_source_maps",
+  "keep_vars",
+  "placement", "limits", "logpush", "cache_options", "keep_assets", "tags", "tail_consumers",
 ]);
 const MANAGED_TOP_LEVEL = new Set([
   "kv_namespaces",
@@ -136,8 +156,6 @@ const IGNORED_TOP_LEVEL = new Set([
   "route",
   "routes",
   "dev",
-  "observability",
-  "placement",
   "minify",
   "no_bundle",
   "find_additional_modules",
@@ -146,14 +164,9 @@ const IGNORED_TOP_LEVEL = new Set([
   "rules",
   "build",
   "usage_model",
-  "keep_vars",
   "send_metrics",
-  "logpush",
-  "upload_source_maps",
   "legacy_assets",
   "site",
-  "limits",
-  "tail_consumers",
   // Wrangler-generated framework configs can include build-time defaults that
   // have already been applied to the emitted Worker bundle. They are not
   // control-plane settings and do not need an xAPI desired-state mapping.
@@ -179,20 +192,20 @@ function structurallyEmpty(value: unknown): boolean {
 }
 
 function discoverProjectRoot(cwd: string, sourcePath: string): string {
+  cwd = realpathSync(cwd);
   const sourceDir = dirname(sourcePath);
   const fromCwd = relative(cwd, sourcePath);
-  if (
-    fromCwd &&
-    fromCwd !== ".." &&
-    !fromCwd.startsWith(`..${sep}`) &&
-    existsSync(resolve(cwd, "package.json"))
-  ) {
+  const withinCwd = Boolean(fromCwd && fromCwd !== ".." && !fromCwd.startsWith(`..${sep}`));
+  if (withinCwd && existsSync(resolve(cwd, "package.json"))) {
     return realpathSync(cwd);
   }
 
   let cursor = sourceDir;
   while (true) {
     if (existsSync(resolve(cursor, "package.json"))) return cursor;
+    // An explicitly selected local project may be package-less. Do not import
+    // into an unrelated ancestor package merely because this folder is nested.
+    if (withinCwd && cursor === cwd) return cwd;
     const parent = dirname(cursor);
     if (parent === cursor) return sourceDir;
     cursor = parent;
@@ -217,7 +230,7 @@ function stableEntries(
   );
 }
 
-function parseWrangler(path: string): {
+export function parseWrangler(path: string): {
   format: "jsonc" | "toml";
   config: UnknownRecord;
 } {
@@ -281,6 +294,36 @@ function parseWrangler(path: string): {
   return { format: extension === ".toml" ? "toml" : "jsonc", config };
 }
 
+/** Frameworks publish this pointer after building; it identifies the native
+ * configuration without inferring server behavior from package dependencies. */
+export function findGeneratedWranglerConfig(rootDir: string): string | undefined {
+  const pointer = resolve(rootDir, ".wrangler/deploy/config.json");
+  if (!existsSync(pointer)) return undefined;
+  const redirect = parseWrangler(pointer).config.configPath;
+  const path = typeof redirect === "string"
+    ? portableProjectPath(rootDir, dirname(pointer), redirect)
+    : undefined;
+  if (!path) throw new WorkerProjectConfigError(
+    "wrangler_invalid_deploy_pointer",
+    "Generated .wrangler/deploy/config.json must reference a Wrangler configuration inside this project",
+  );
+  // Read it now so a stale or invalid pointer cannot silently become a static app.
+  parseWrangler(resolve(rootDir, path));
+  return path;
+}
+
+function wranglerAssetCandidate(source: UnknownRecord, sourceDir: string, rootDir: string) {
+  return {
+    directory: typeof source.directory === "string"
+      ? relative(rootDir, resolve(sourceDir, source.directory)).split(sep).join("/") || "."
+      : source.directory,
+    ...(source.binding !== undefined ? { binding: source.binding } : {}),
+    ...(source.html_handling !== undefined ? { htmlHandling: source.html_handling } : {}),
+    ...(source.not_found_handling !== undefined ? { notFoundHandling: source.not_found_handling } : {}),
+    ...(source.run_worker_first !== undefined ? { runWorkerFirst: source.run_worker_first } : {}),
+  };
+}
+
 function compatibilityEntry(
   entries: WranglerCompatibilityEntry[],
   category: WranglerCompatibilityCategory,
@@ -297,12 +340,12 @@ function bindingName(
   entries: WranglerCompatibilityEntry[],
   environment: "preview" | "production",
 ): string | undefined {
-  if (typeof value !== "string" || !BINDING_NAME.test(value)) {
+  if (typeof value !== "string" || !isWorkerBindingName(value)) {
     compatibilityEntry(
       entries,
       "UNSUPPORTED",
       path,
-      "Binding name must match ^[A-Z][A-Z0-9_]{0,63}$ before xAPI can manage it",
+      "Binding name must be a nonempty string",
       { environment },
     );
     return undefined;
@@ -325,21 +368,7 @@ function staticAssets(
     return undefined;
   }
   const source = previewAssets || productionAssets!;
-  const sourceDirectory = source.directory;
-  const absoluteDirectory =
-    typeof sourceDirectory === "string"
-      ? resolve(sourceDir, sourceDirectory)
-      : undefined;
-  const projectDirectory = absoluteDirectory
-    ? relative(rootDir, absoluteDirectory).split(sep).join("/")
-    : sourceDirectory;
-  const candidate = {
-    directory: projectDirectory,
-    ...(source.binding !== undefined ? { binding: source.binding } : {}),
-    ...(source.html_handling !== undefined ? { htmlHandling: source.html_handling } : {}),
-    ...(source.not_found_handling !== undefined ? { notFoundHandling: source.not_found_handling } : {}),
-    ...(source.run_worker_first !== undefined ? { runWorkerFirst: source.run_worker_first } : {}),
-  };
+  const candidate = wranglerAssetCandidate(source, sourceDir, rootDir);
   const parsed = workerProjectConfigSchema.shape.assets.safeParse(candidate);
   if (!parsed.success) {
     compatibilityEntry(entries, "UNSUPPORTED", "assets", `Static assets are invalid: ${parsed.error.issues[0]?.message || "invalid configuration"}`);
@@ -362,10 +391,6 @@ function containerApplications(
   const previewContainers = preview.containers;
   const productionContainers = production.containers;
   if (previewContainers === undefined && productionContainers === undefined) return undefined;
-  if (JSON.stringify(previewContainers) !== JSON.stringify(productionContainers)) {
-    compatibilityEntry(entries, 'UNSUPPORTED', 'containers', 'Environment-specific Container application settings are not portable; use one shared Container configuration');
-    return undefined;
-  }
   const source = Array.isArray(previewContainers) ? previewContainers : productionContainers;
   if (!Array.isArray(source)) {
     compatibilityEntry(entries, 'UNSUPPORTED', 'containers', 'Wrangler containers must be an array');
@@ -389,7 +414,10 @@ function containerApplications(
       }
     }
     const candidate = {
-      name: item.name,
+      // Wrangler permits an omitted application name. Keep a stable logical
+      // identity across updates; the backend supplies the tenant/environment
+      // scoped physical name. Explicit user names retain their meaning.
+      name: item.name ?? `container-${createHash('sha256').update(String(item.class_name)).digest('hex').slice(0, 12)}`,
       className: item.class_name,
       image: item.image,
       ...(item.instance_type !== undefined ? { instanceType: item.instance_type } : {}),
@@ -437,11 +465,96 @@ function physicalFields(
   }
 }
 
+function referencedQueues(config: UnknownRecord): Map<string,string[]> {
+  const groups = new Map<string,string[]>(), queues = record(config.queues);
+  for (const p of array(queues?.producers)) if (typeof p.queue === 'string' && typeof p.binding === 'string')
+    groups.set(p.queue, [...(groups.get(p.queue) || []), p.binding]);
+  for (const c of array(queues?.consumers)) for (const name of [c.queue,c.dead_letter_queue])
+    if (typeof name === 'string' && !groups.has(name)) groups.set(name, []);
+  return groups;
+}
+
+function primaryQueueBinding(bindings: string[], resources: DesiredResource[], preferred?: string): string | undefined {
+  if (preferred && resources.some(resource => resource.type === 'queue' && resource.bindingName === preferred)) return preferred;
+  const names = [...new Set(bindings)].sort((a, b) => a.localeCompare(b));
+  const existing = names.filter(name => resources.some(resource => resource.type === 'queue' && resource.bindingName === name));
+  // Adding another producer is a new reference, not a new Queue identity.
+  return existing.length === 1 ? existing[0] : names[0];
+}
+
+type NativeEvents = { queueConsumers: NonNullable<WorkerProjectConfig["environments"]["preview"]["queueConsumers"]>; crons: string[]; queueBindingAliases?: Record<string, string> };
+function nativeEvents(config: UnknownRecord, resources: DesiredResource[], prefix: string, environment: "preview"|"production", entries: WranglerCompatibilityEntry[], queueBindings: Record<string,string> = {}): NativeEvents {
+  const queues = record(config.queues);
+  const queueConsumers: NativeEvents["queueConsumers"] = [];
+  const logical = new Map<string, string[]>();
+  const queueBindingAliases: Record<string, string> = Object.create(null);
+  for (const producer of array(queues?.producers)) {
+    if (typeof producer.queue === "string" && typeof producer.binding === "string") logical.set(producer.queue, [...(logical.get(producer.queue) || []), producer.binding]);
+  }
+  const resolvedQueueNames = new Map<string,string>();
+  const resolveQueue = (name: string, path: string) => {
+    const bindings = [...new Set(logical.get(name) || [])];
+    bindings.sort((a,b) => a.localeCompare(b));
+    const binding = primaryQueueBinding(bindings, resources, queueBindings[name]) || `QUEUE_${createHash("sha256").update(name).digest("hex").slice(0,16)}`;
+    const otherQueue = resolvedQueueNames.get(binding);
+    if (otherQueue !== undefined && otherQueue !== name) {
+      compatibilityEntry(entries,'UNSUPPORTED',path,`Logical Queues ${otherQueue} and ${name} cannot share managed resource ${binding}; reassigning an existing primary binding to a different Queue needs an explicit resource migration`,{environment});
+      return undefined;
+    }
+    resolvedQueueNames.set(binding,name);
+    const existing = resources.find(resource => resource.bindingName === binding);
+    if (existing && existing.type !== "queue") { compatibilityEntry(entries,"UNSUPPORTED",path,"Queue mapping conflicts with a declared resource type",{environment}); return undefined; }
+    if (!existing) resources.push({type:"queue",bindingName:binding});
+    return binding;
+  };
+  for (const [name, bindings] of logical) {
+    const primary = resolveQueue(name, `${prefix}queues.producers`);
+    if (primary) for (const alias of [...new Set(bindings)]) if (alias !== primary) queueBindingAliases[alias] = primary;
+  }
+  if (queues?.consumers !== undefined && !Array.isArray(queues.consumers)) compatibilityEntry(entries,"UNSUPPORTED",`${prefix}queues.consumers`,"Queue consumers must be an array",{environment});
+  const seen = new Set<string>();
+  (Array.isArray(queues?.consumers) ? queues.consumers : []).forEach((raw,index) => {
+    const path = `${prefix}queues.consumers[${index}]`; const item = record(raw);
+    if (!item || typeof item.queue !== "string" || !item.queue) { compatibilityEntry(entries,"UNSUPPORTED",path,"Queue consumer requires its logical queue name",{environment}); return; }
+    const supported = new Set(["queue","max_batch_size","max_batch_timeout","max_retries","retry_delay","max_concurrency","dead_letter_queue"]);
+    const unsupported = Object.keys(item).filter(key => !supported.has(key));
+    for (const key of unsupported) compatibilityEntry(entries,"UNSUPPORTED",`${path}.${key}`,
+      key === "type" || key === "visibility_timeout_ms"
+        ? `${key === "type" ? "Wrangler Worker consumers do not select a consumer type" : "visibility_timeout_ms is an HTTP Pull lease setting, not a Worker push setting"}. Remove this field from queues.consumers; configure HTTP Pull separately with workers resources queue-consumer configure --body using type http_pull and settings.`
+        : "The backend Queue consumer API has no mapping for this native field",{environment});
+    if (unsupported.length) return;
+    if (seen.has(item.queue)) { compatibilityEntry(entries,"UNSUPPORTED",path,"Duplicate Queue consumer declarations cannot map to one owned consumer",{environment}); return; }
+    seen.add(item.queue);
+    const bindingName = resolveQueue(item.queue,`${path}.queue`); if (!bindingName) return;
+    let deadLetterBinding: string|undefined;
+    if (item.dead_letter_queue !== undefined) {
+      if (typeof item.dead_letter_queue !== "string" || !item.dead_letter_queue || item.dead_letter_queue === item.queue) { compatibilityEntry(entries,"UNSUPPORTED",`${path}.dead_letter_queue`,"Dead-letter Queue must be a different Queue in the same environment",{environment}); return; }
+      deadLetterBinding = resolveQueue(item.dead_letter_queue,`${path}.dead_letter_queue`); if (!deadLetterBinding) return;
+    }
+    const {queue,dead_letter_queue,...settings} = item;
+    const parsed = workerQueueConsumerSchema.safeParse({bindingName,queue,...settings,...(deadLetterBinding ? {deadLetterBinding} : {})});
+    if (!parsed.success) { compatibilityEntry(entries,"UNSUPPORTED",path,`Invalid Queue consumer settings: ${parsed.error.issues[0]?.message}`,{environment}); return; }
+    queueConsumers.push(parsed.data);
+    compatibilityEntry(entries,"MANAGED",path,"Configure the owned Queue host after deployment, preserving native batching, retry and dead-letter settings",{environment,bindingName});
+  });
+  if (queueConsumers.length) compatibilityEntry(entries,"MANAGED",`${prefix}queues.consumers`,"Configure owned Queue consumers after deployment through the single native event executor",{environment});
+  const trigger = record(config.triggers); let crons: string[] = [];
+  if (config.triggers !== undefined && !trigger) compatibilityEntry(entries,"UNSUPPORTED",`${prefix}triggers`,"Triggers must be an object",{environment});
+  for (const key of Object.keys(trigger || {})) if (key !== "crons") compatibilityEntry(entries,"UNSUPPORTED",`${prefix}triggers.${key}`,"The backend schedule API only maps crons",{environment});
+  if (trigger?.crons !== undefined) {
+    if (!Array.isArray(trigger.crons) || trigger.crons.some(value => typeof value !== "string" || !value.trim())) compatibilityEntry(entries,"UNSUPPORTED",`${prefix}triggers.crons`,"Cron triggers must be nonempty strings",{environment});
+    else { crons = [...new Set((trigger.crons as string[]).map(value=>value.trim()))]; if (crons.length) compatibilityEntry(entries,"MANAGED",`${prefix}triggers.crons`,"Create UTC scheduled-handler triggers with the backend scheduler and tracked run receipts",{environment}); }
+  }
+  return {queueConsumers,crons,...(Object.keys(queueBindingAliases).length ? {queueBindingAliases} : {})};
+}
+
 function resourceList(
   config: UnknownRecord,
   prefix: string,
   environment: "preview" | "production",
   entries: WranglerCompatibilityEntry[],
+  previousResources: DesiredResource[] = [],
+  queueBindings: Record<string,string> = {},
 ): DesiredResource[] {
   const resources: DesiredResource[] = [];
   const add = (
@@ -455,20 +568,20 @@ function resourceList(
     const name = bindingName(rawName, `${path}.binding`, entries, environment);
     if (!name) return;
     if (
-      type === "durable_object" &&
-      (typeof className !== "string" || !CLASS_NAME.test(className))
+      (type === "durable_object" || (type === "workflow" && className !== undefined)) &&
+      (typeof className !== "string" || !WORKER_CLASS_IDENTIFIER.test(className))
     ) {
       compatibilityEntry(
         entries,
         "UNSUPPORTED",
         `${path}.class_name`,
-        "Durable Object class_name is required and must be a JavaScript class identifier",
+        "The exported class_name must be a JavaScript class identifier",
         { environment, bindingName: name },
       );
       return;
     }
     const resource: DesiredResource =
-      type === "durable_object"
+      (type === "durable_object" || (type === "workflow" && className !== undefined))
         ? { type, bindingName: name, className: className as string }
         : { type, bindingName: name };
     resources.push(resource);
@@ -497,7 +610,7 @@ function resourceList(
       item.binding,
       `${prefix}d1_databases[${index}]`,
       item,
-      new Set(["binding", "migrations_dir", "migrations_table"]),
+      new Set(["binding", "migrations_dir", "migrations_table", "migrations_pattern"]),
     ),
   );
   array(config.r2_buckets).forEach((item, index) =>
@@ -534,38 +647,39 @@ function resourceList(
     }
   }
   const queues = record(config.queues);
-  array(queues?.producers).forEach((item, index) =>
-    add(
-      "queue",
-      item.binding,
-      `${prefix}queues.producers[${index}]`,
-      item,
-      new Set(["binding"]),
-    ),
-  );
-  const queueNames = new Set<string>();
-  for (const consumer of array(queues?.consumers)) {
-    if (typeof consumer.queue === 'string') queueNames.add(consumer.queue);
-    if (typeof consumer.dead_letter_queue === 'string') queueNames.add(consumer.dead_letter_queue);
-    const allowed = new Set(['queue', 'max_batch_size', 'max_batch_timeout', 'max_retries', 'max_concurrency', 'retry_delay', 'dead_letter_queue']);
-    for (const key of Object.keys(consumer)) if (!allowed.has(key))
-      compatibilityEntry(entries, 'UNSUPPORTED', `${prefix}queues.consumers.${key}`, 'Unsupported Queue consumer option', { environment });
+  const queueProducers = new Map<string, string[]>();
+  for (const item of array(queues?.producers)) if (typeof item.queue === 'string' && typeof item.binding === 'string')
+    queueProducers.set(item.queue, [...(queueProducers.get(item.queue) || []), item.binding]);
+  const primaryQueues = new Map([...queueProducers].map(([queue, bindings]) => [queue, primaryQueueBinding(bindings, previousResources, queueBindings[queue])]));
+  array(queues?.producers).forEach((item, index) => {
+    const primary = typeof item.queue === 'string' ? primaryQueues.get(item.queue) : undefined;
+    if (primary && !array(queues?.producers).some(p => p.binding === primary) && !resources.some(resource => resource.type === 'queue' && resource.bindingName === primary) &&
+        previousResources.some(resource => resource.type === 'queue' && resource.bindingName === primary))
+      resources.push(previousResources.find(resource => resource.type === 'queue' && resource.bindingName === primary)!);
+    if (typeof item.queue === 'string' && primary !== item.binding) {
+      if (!bindingName(item.binding, `${prefix}queues.producers[${index}].binding`, entries, environment)) return;
+      compatibilityEntry(entries, "MANAGED", `${prefix}queues.producers[${index}]`, "Additional producer binding aliases the same owned Queue; no second resource or retention hold", {environment, bindingName: String(item.binding)});
+      return;
+    }
+    add("queue", item.binding, `${prefix}queues.producers[${index}]`, item, new Set(["binding", "queue"]));
+  });
+  // Consumers and dead-letter references keep their original Queue resource,
+  // even when every producer binding has been removed.
+  for (const queue of referencedQueues(config).keys()) {
+    const prior = previousResources.find(resource => resource.type === 'queue' && resource.bindingName === queueBindings[queue]);
+    if (prior && !resources.some(resource => resource.bindingName === prior.bindingName)) resources.push(prior);
   }
-  for (const name of queueNames) {
-    if (!array(queues?.producers).some(item => item.queue === name))
-      resources.push({ type: 'queue', bindingName: queueBinding(config, name) });
-  }
-  if (queueNames.size) compatibilityEntry(entries, 'MANAGED', `${prefix}queues.consumers`,
-    'Platform event adapter invokes queue(batch), preserving explicit acknowledgements, retries and binary bodies; CF owns delivery and dead-letter routing.', { environment });
-  array(config.workflows).forEach((item, index) =>
-    add(
-      "workflow",
-      item.binding,
-      `${prefix}workflows[${index}]`,
-      item,
-      new Set(["binding"]),
-    ),
-  );
+  array(config.workflows).forEach((item, index) => {
+    const path = `${prefix}workflows[${index}]`;
+    if (item.script_name !== undefined) {
+      compatibilityEntry(entries, "UNSUPPORTED", `${path}.script_name`,
+        "An external Workflow script cannot be remapped to this project's class; import the owning project separately",
+        { environment });
+      return;
+    }
+    add("workflow", item.binding, path, item,
+      new Set(["binding", "class_name"]), item.class_name);
+  });
 
   const seen = new Set<string>();
   return resources
@@ -593,6 +707,7 @@ function publicVariables(
   entries: WranglerCompatibilityEntry[],
 ): void {
   const vars = record(config.vars);
+  if (config.vars !== undefined) compatibilityEntry(entries, "SUPPORTED", `${prefix}vars`, "Public variables remain in the referenced Wrangler configuration", { environment });
   for (const name of Object.keys(vars || {}).sort()) {
     compatibilityEntry(
       entries,
@@ -650,7 +765,7 @@ function managedDurableObjectMigrations(
       classes.some(
         (className) =>
           typeof className !== "string" ||
-          !CLASS_NAME.test(className) ||
+          !WORKER_CLASS_IDENTIFIER.test(className) ||
           !declaredClasses.has(className) ||
           migratedClasses.has(className),
       ) ||
@@ -702,6 +817,7 @@ function secretNames(
   entries: WranglerCompatibilityEntry[],
 ): string[] {
   const candidates = new Set<string>();
+  if (config.vars !== undefined) normalizeWorkerPublicVariables(config.vars);
   const declaredSecrets = Array.isArray(config.secrets)
     ? config.secrets
     : record(config.secrets)?.required;
@@ -710,17 +826,22 @@ function secretNames(
       if (typeof value === "string") candidates.add(value);
     }
   }
+  const required = record(config.secrets)?.required;
+  if (Array.isArray(required)) for (const name of required)
+    if (typeof name === 'string') candidates.add(name);
   for (const item of array(config.secrets_store_secrets)) {
-    if (typeof item.binding === "string") candidates.add(item.binding);
+    compatibilityEntry(entries, "UNSUPPORTED", `${prefix}secrets_store_secrets`,
+      "Secret Store references need an owned store/secret mapping; they are not ordinary Secret values",
+      {environment, ...(typeof item.binding === 'string' ? {bindingName:item.binding} : {})});
   }
   const accepted: string[] = [];
   for (const name of [...candidates].sort()) {
-    if (!BINDING_NAME.test(name)) {
+    if (!name.length) {
       compatibilityEntry(
         entries,
         "UNSUPPORTED",
-        `${prefix}vars.${name}`,
-        "Variable or secret name is incompatible with xAPI secret bindings",
+        `${prefix}secrets.required`,
+        "Required Secret names must be nonempty strings",
         { environment },
       );
       continue;
@@ -745,7 +866,14 @@ function selectedConfig(
   const environmentConfig = record(environments?.[environment]);
   if (!environmentConfig) return { config: root, prefix: "" };
   const merged: UnknownRecord = { ...root, ...environmentConfig };
+  // A named environment must explicitly declare its native bindings/vars.
+  // This generated upstream contract does not filter supported configuration.
+  for (const key of WRANGLER_NON_INHERITED_FIELDS)
+    if (!Object.prototype.hasOwnProperty.call(environmentConfig, key)) delete merged[key];
   delete merged.env;
+  // Wrangler only honors keep_vars at the top level, never under env.
+  if (root.keep_vars === undefined) delete merged.keep_vars;
+  else merged.keep_vars = root.keep_vars;
   // Wrangler vars are non-inheritable for named environments.
   if (!("vars" in environmentConfig)) delete merged.vars;
   return { config: merged, prefix: `env.${environment}.` };
@@ -786,9 +914,9 @@ function inspectTopLevel(
       if (structurallyEmpty(root[key])) continue;
       compatibilityEntry(
         entries,
-        "UNSUPPORTED",
+        "REENTER",
         key,
-        "This Wrangler field has no xAPI import mapping and will not be silently discarded",
+        "Retain this field through the original Wrangler native bundle; resource references still require owned mapping",
       );
     }
   }
@@ -806,7 +934,11 @@ function inspectTopLevel(
     const environment = record(environments?.[name]);
     for (const key of Object.keys(environment || {}).sort()) {
       const path = `env.${name}.${key}`;
-      if (SUPPORTED_TOP_LEVEL.has(key)) {
+      if (key === "keep_vars") {
+        compatibilityEntry(entries, "IGNORED", path,
+          "Warning: Wrangler ignores env.keep_vars; only top-level keep_vars controls public variable retention and cannot be overridden by an environment",
+          { environment: name });
+      } else if (SUPPORTED_TOP_LEVEL.has(key)) {
         compatibilityEntry(
           entries,
           "SUPPORTED",
@@ -832,9 +964,9 @@ function inspectTopLevel(
         if (structurallyEmpty(environment?.[key])) continue;
         compatibilityEntry(
           entries,
-          "UNSUPPORTED",
+          "REENTER",
           path,
-          "This Wrangler environment field has no xAPI import mapping",
+          "Retain this field through the original Wrangler native bundle; resource references still require owned mapping",
           { environment: name },
         );
       }
@@ -868,12 +1000,12 @@ function projectName(config: UnknownRecord, slug: string): string {
     .join(" ");
 }
 
-function budget(value: number | undefined, environment: string): number {
-  const amount = value ?? (environment === "preview" ? 0.25 : 2);
-  if (!Number.isFinite(amount) || amount < 0.1 || amount > 100) {
+function budget(value: number | null | undefined, environment: string): number | null {
+  const amount = value ?? null;
+  if (amount !== null && (!Number.isFinite(amount) || amount < 0)) {
     throw new WorkerProjectConfigError(
       "wrangler_import_invalid_budget",
-      `${environment} daily budget must be between 0.10 and 100 USD`,
+      `${environment} daily budget must be a finite nonnegative USD amount`,
     );
   }
   return amount;
@@ -938,6 +1070,13 @@ function workerBuildScript(
   ) {
     return "build:worker";
   }
+  if (outfileFromScript(scripts.build)) return "build";
+  // A project's native packaging script can have any name. Only select an
+  // unambiguous local dry-run; never infer a cloud deploy as the build command.
+  const nativeBuilds = Object.entries(scripts).filter(([, command]) =>
+    /\bwrangler\s+deploy\b/.test(command) && /(?:^|\s)--dry-run(?:\s|$)/.test(command) &&
+    outfileFromScript(command));
+  if (nativeBuilds.length === 1) return nativeBuilds[0]![0];
   return scripts.build ? "build" : undefined;
 }
 
@@ -982,7 +1121,7 @@ function inferredBuild(
   const mainOutput =
     wranglerMain &&
     /\.(?:m?js)$/.test(wranglerMain) &&
-    (sourceDir === rootDir || wranglerMain.includes("/"))
+    (sourceDir === rootDir || wranglerMain.includes("/") || existsSync(resolve(sourceDir, wranglerMain)))
       ? portableProjectPath(rootDir, sourceDir, wranglerMain)
       : undefined;
   const output = options.buildOutput || scriptOutput || mainOutput;
@@ -1033,12 +1172,15 @@ export function importWranglerProject(
         cacheOptions: config.cache,
         versionMetadata: config.version_metadata,
       });
+      normalizeWranglerObservability(config.observability);
+      validateUploadSourceMaps(config.upload_source_maps);
+      wranglerVariableRetention(wrangler.keep_vars);
     } catch (error) {
       nativeOptionsValid = false;
       compatibilityEntry(
         entries,
         "UNSUPPORTED",
-        `${prefix}cache/version_metadata`,
+        `${prefix}cache/version_metadata/observability/upload_source_maps/keep_vars`,
         error instanceof Error ? error.message : "Invalid native options",
         { environment },
       );
@@ -1049,6 +1191,9 @@ export function importWranglerProject(
       environment,
       status: nativeOptionsValid ? "SUPPORTED" : "REQUIRES_MAPPING",
       configuration: {
+        ...(wrangler.keep_vars === true ? { keep_vars: true } : {}),
+        ...(config.observability !== undefined ? { observability: config.observability } : {}),
+        ...(config.upload_source_maps !== undefined ? { upload_source_maps: config.upload_source_maps } : {}),
         ...(config.cache !== undefined ? { cache: config.cache } : {}),
         ...(config.version_metadata !== undefined
           ? { version_metadata: config.version_metadata }
@@ -1076,6 +1221,8 @@ export function importWranglerProject(
               "max_concurrency",
               "retry_delay",
               "dead_letter_queue",
+              "type",
+              "visibility_timeout_ms",
             ].includes(key),
           ),
         ),
@@ -1083,9 +1230,9 @@ export function importWranglerProject(
     }
     const crons = record(config.triggers)?.crons;
     if (Array.isArray(crons) && crons.length) {
-      const supportedCrons = crons.every(cron => typeof cron === 'string' && validNativeCron(cron));
+      const supportedCrons = crons.every(cron => typeof cron === 'string' && cron.trim().split(/\s+/).length === 5);
       if (!supportedCrons)
-        compatibilityEntry(entries, 'UNSUPPORTED', `${prefix}triggers.crons`, 'Invalid or unsupported CF numeric UTC Cron; check ranges and mapping support (no silent conversion)', { environment });
+        compatibilityEntry(entries, 'UNSUPPORTED', `${prefix}triggers.crons`, 'CF UTC Cron requires five fields; complete syntax is validated by the backend', { environment });
       deploymentPlan.push({
         phase: "AFTER_CODE",
         kind: "CRON",
@@ -1103,19 +1250,22 @@ export function importWranglerProject(
     }
     array(config.d1_databases).forEach((database, index) => {
       if (
+        database.migrations_pattern !== undefined ||
         database.migrations_dir !== undefined ||
         database.migrations_table !== undefined ||
         existsSync(resolve(sourceDir, "migrations"))
       ) {
         deploymentPlan.push({
-          phase: "BEFORE_CODE",
+          phase: "EXPLICIT_COMMAND",
           kind: "D1_MIGRATIONS",
           environment,
-          status: "SUPPORTED",
+          status: database.migrations_pattern !== undefined ? "REQUIRES_MAPPING" : "SUPPORTED",
           ...(typeof database.binding === "string"
             ? { bindingName: database.binding }
             : {}),
           configuration: {
+            command: `xapi workers d1 migrations plan --binding ${String(database.binding)} --env ${environment}`,
+            ...(database.migrations_pattern !== undefined ? { pattern: database.migrations_pattern } : {}),
             directory: database.migrations_dir ?? "migrations",
             table: database.migrations_table ?? "d1_migrations",
             relativeTo:
@@ -1126,7 +1276,7 @@ export function importWranglerProject(
           entries,
           "MANAGED",
           `${prefix}d1_databases[${index}].migrations`,
-          `D1 SQL migrations execute remotely against the owned binding before code deployment; directory=${String(database.migrations_dir ?? "migrations")}, table=${String(database.migrations_table ?? "d1_migrations")}. Code rollback does not roll back SQL.`,
+          `D1 SQL is not executed by push/promote. Use workers d1 migrations plan/apply explicitly; custom migrations_pattern is not supported by that command; directory=${String(database.migrations_dir ?? "migrations")}, table=${String(database.migrations_table ?? "d1_migrations")}. Code rollback does not roll back SQL.`,
           {
             environment,
             ...(typeof database.binding === "string"
@@ -1144,22 +1294,28 @@ export function importWranglerProject(
     sourceDir,
     rootDir,
   );
-  const containers = containerApplications(
-    desired.preview.config,
-    desired.production.config,
-    entries,
-  );
+  const sharedContainers = JSON.stringify(desired.preview.config.containers) === JSON.stringify(desired.production.config.containers);
+  const containers = sharedContainers ? containerApplications(desired.preview.config, desired.production.config, entries) : undefined;
+  const previewContainers = sharedContainers ? undefined : containerApplications(desired.preview.config, desired.preview.config, entries) ?? [];
+  const productionContainers = sharedContainers ? undefined : containerApplications(desired.production.config, desired.production.config, entries) ?? [];
+  // A reviewed re-import must not change physical resource identity merely
+  // because a newly added alias sorts before the original binding.
+  const previous = options.force && existsSync(configPath) ? loadWorkerProject(rootDir, configPath).config : undefined;
   const previewResources = resourceList(
     desired.preview.config,
     desired.preview.prefix,
     "preview",
     entries,
+    previous?.environments.preview.resources,
+    previous?.environments.preview.queueBindings,
   );
   const productionResources = resourceList(
     desired.production.config,
     desired.production.prefix,
     "production",
     entries,
+    previous?.environments.production.resources,
+    previous?.environments.production.queueBindings,
   );
   publicVariables(
     desired.preview.config,
@@ -1187,6 +1343,28 @@ export function importWranglerProject(
     productionResources,
     entries,
   );
+  const previewEvents = nativeEvents(desired.preview.config, previewResources, desired.preview.prefix, "preview", entries, previous?.environments.preview.queueBindings);
+  const productionEvents = nativeEvents(desired.production.config, productionResources, desired.production.prefix, "production", entries, previous?.environments.production.queueBindings);
+  for (const action of deploymentPlan) {
+    if (action.kind !== 'QUEUE_CONSUMER') continue;
+    const events = action.environment === 'preview' ? previewEvents : productionEvents;
+    const consumer = events.queueConsumers.find(item => item.queue === action.configuration.queue);
+    if (consumer && !Object.hasOwn(action.configuration, "type") && !Object.hasOwn(action.configuration, "visibility_timeout_ms")) action.bindingName = consumer.bindingName;
+    else action.status = "REQUIRES_MAPPING";
+  }
+  previewResources.sort((a,b) => a.bindingName.localeCompare(b.bindingName));
+  productionResources.sort((a,b) => a.bindingName.localeCompare(b.bindingName));
+  const queueBindingsFor = (config: UnknownRecord, resources: DesiredResource[], prior: Record<string,string> = {}) => {
+    const mappings: Record<string,string> = Object.create(null);
+    const queues = record(config.queues);
+    for (const [queue, names] of referencedQueues(config)) {
+      const binding = primaryQueueBinding(names, resources, prior[queue]) || `QUEUE_${createHash('sha256').update(queue).digest('hex').slice(0,16)}`;
+      if (resources.some(resource => resource.type === 'queue' && resource.bindingName === binding)) mappings[queue] = binding;
+    }
+    return Object.keys(mappings).length ? mappings : undefined;
+  };
+  const previewQueueBindings = queueBindingsFor(desired.preview.config, previewResources, previous?.environments.preview.queueBindings);
+  const productionQueueBindings = queueBindingsFor(desired.production.config, productionResources, previous?.environments.production.queueBindings);
   const previewSecrets = secretNames(
     desired.preview.config,
     desired.preview.prefix,
@@ -1222,8 +1400,8 @@ export function importWranglerProject(
     deploymentPlan: deploymentPlan.sort(
       (a, b) =>
         a.environment.localeCompare(b.environment) ||
-        ["BEFORE_CODE", "CODE", "AFTER_CODE"].indexOf(a.phase) -
-          ["BEFORE_CODE", "CODE", "AFTER_CODE"].indexOf(b.phase),
+        ["EXPLICIT_COMMAND", "CODE", "AFTER_CODE"].indexOf(a.phase) -
+          ["EXPLICIT_COMMAND", "CODE", "AFTER_CODE"].indexOf(b.phase),
     ),
   };
   if (!report.compatible && !options.acceptPartial) {
@@ -1257,6 +1435,7 @@ export function importWranglerProject(
   const candidate = {
     $schema: WORKER_PROJECT_SCHEMA_URL,
     version: 1,
+    ...(previous?.workerId ? {workerId:previous.workerId} : {}),
     worker: {
       name: projectName(wrangler, slug),
       slug,
@@ -1277,6 +1456,10 @@ export function importWranglerProject(
         ...(options.placementMode ? { placementMode: options.placementMode } : {}),
         healthCheck: "/health",
         resources: previewResources,
+        ...(previewQueueBindings ? {queueBindings:previewQueueBindings} : {}),
+        ...(previewContainers !== undefined ? {containers: previewContainers} : {}),
+        ...(previewEvents.queueConsumers.length ? {queueConsumers:previewEvents.queueConsumers} : {}),
+        ...(previewEvents.crons.length ? {crons:previewEvents.crons} : {}),
         secrets: previewSecrets,
       },
       production: {
@@ -1285,6 +1468,10 @@ export function importWranglerProject(
         ...(options.placementMode ? { placementMode: options.placementMode } : {}),
         healthCheck: "/health",
         resources: productionResources,
+        ...(productionQueueBindings ? {queueBindings:productionQueueBindings} : {}),
+        ...(productionContainers !== undefined ? {containers: productionContainers} : {}),
+        ...(productionEvents.queueConsumers.length ? {queueConsumers:productionEvents.queueConsumers} : {}),
+        ...(productionEvents.crons.length ? {crons:productionEvents.crons} : {}),
         secrets: productionSecrets,
       },
     },
@@ -1310,16 +1497,63 @@ export function importWranglerProject(
     config: parsed.data,
     nextSteps: [
       `Review ${WORKER_PROJECT_CONFIG_FILE}`,
-      "Set every REENTER secret with xapi workers secrets set",
+      "For required Secrets on a new project: interactive push saves workerId and stops before upload/deploy; then use secrets apply or set and rerun push. For CI, create the Worker, save workerId, and set Secrets before non-interactive push",
       "Review public Wrangler vars; sensitive values belong in explicitly declared Secrets",
       "xapi workers plan --env preview",
     ],
   };
 }
 
+function normalizeWranglerObservability(
+  value: unknown,
+): WorkerObservability | undefined {
+  const result = normalizeWorkerObservability(value);
+  // Wrangler configuration requires an explicit switch; native API metadata
+  // is a different contract and is validated independently by the Artifact.
+  if (
+    result !== undefined &&
+    result.enabled === undefined &&
+    result.logs?.enabled === undefined &&
+    result.traces?.enabled === undefined
+  ) {
+    throw new WorkerProjectConfigError(
+      "wrangler_invalid_observability",
+      "observability requires enabled, logs.enabled, or traces.enabled (true or false)",
+    );
+  }
+  return result;
+}
+
+function validateUploadSourceMaps(value: unknown): boolean | undefined {
+  if (value !== undefined && typeof value !== "boolean") {
+    throw new WorkerProjectConfigError("wrangler_invalid_upload_source_maps", "upload_source_maps must be a boolean");
+  }
+  return value as boolean | undefined;
+}
+
+function wranglerVariableRetention(value: unknown): { keepBindings?: WorkerVariableType[] } {
+  if (value !== undefined && typeof value !== "boolean") {
+    throw new WorkerProjectConfigError("wrangler_invalid_keep_vars", "Top-level keep_vars must be a boolean");
+  }
+  return value === true ? { keepBindings: ["plain_text", "json"] } : {};
+}
+
+/** Wrangler config and CF upload are different formats; emitted .bundle metadata is authoritative. */
+function wranglerNativeMetadata(selected: UnknownRecord): Record<string, unknown> {
+  const fields = ['placement','limits','logpush','observability','cache_options','keep_assets','tags','version_metadata','tail_consumers'];
+  const entries = fields.filter(key => selected[key] !== undefined).map(key => [key,selected[key]]);
+  if (selected.cache !== undefined) entries.push(['cache_options', normalizeNativeWorkerOptions({ cacheOptions: selected.cache }).cacheOptions]);
+  if (selected.keep_vars !== undefined) {
+    if (typeof selected.keep_vars !== 'boolean') throw new WorkerProjectConfigError('wrangler_invalid_keep_vars','keep_vars must be a boolean');
+    entries.push(['keep_bindings',selected.keep_vars ? ['plain_text','json'] : []]);
+  }
+  return normalizeWorkerNativeMetadata(Object.fromEntries(entries))!;
+}
+
 export function readWranglerDeploymentSettings(
   project: LoadedWorkerProject,
   environment: "preview" | "production",
+  artifactMediaType?: string,
 ): WranglerDeploymentSettings {
   const path = resolveWorkerProjectPath(
     project,
@@ -1327,7 +1561,31 @@ export function readWranglerDeploymentSettings(
     "wrangler",
   );
   const { config } = parseWrangler(path);
-  const selected = selectedConfig(config, environment).config;
+  const selection = selectedConfig(config, environment);
+  const selected = selection.config;
+  const rawAssets = record(selected.assets);
+  // Wrangler supplies defaults at build time. Fields explicitly present in
+  // xapi.worker.json override them, including false and "none". Resolve each
+  // directory relative to the file declaring it before merging.
+  const assetCandidate = rawAssets || project.config.assets
+    ? { ...(rawAssets ? wranglerAssetCandidate(rawAssets, dirname(path), project.rootDir) : {}),
+        ...project.config.assets }
+    : undefined;
+  const parsedAssets = workerProjectConfigSchema.shape.assets.safeParse(assetCandidate);
+  if (!parsedAssets.success) throw new WorkerProjectConfigError(
+    "wrangler_invalid_assets",
+    `Invalid ${environment} assets configuration: ${parsedAssets.error.issues[0]?.message || "invalid configuration"}`,
+  );
+  const metadata = wranglerNativeMetadata(selected);
+  // A nonempty deployment metadata override overlays the preview Artifact.
+  // Tail consumers do not inherit in Wrangler named environments (default []).
+  // Preserve {}'s full-reset semantics, including removal of version_metadata.
+  if (environment === 'production' && Object.keys(metadata).length &&
+      /^application\/vnd\.xapi\.worker-bundle\.v[12]\+json$/.test(artifactMediaType || '') &&
+      metadata.tail_consumers === undefined) metadata.tail_consumers = [];
+  const nativeBundleRequired = Object.keys(selected).filter(key => key !== 'env' &&
+    !SUPPORTED_TOP_LEVEL.has(key) && !MANAGED_TOP_LEVEL.has(key) &&
+    !REENTER_TOP_LEVEL.has(key) && !PUBLIC_VARIABLE_TOP_LEVEL.has(key) && !IGNORED_TOP_LEVEL.has(key) && !structurallyEmpty(selected[key]));
   const date = selected.compatibility_date;
   if (
     date !== undefined &&
@@ -1338,6 +1596,14 @@ export function readWranglerDeploymentSettings(
       `${environment} compatibility_date must use YYYY-MM-DD`,
     );
   }
+  let queueBindingAliases = readWranglerNativeEvents(project, environment).queueBindingAliases;
+  // Promotion reuses the immutable preview Artifact. Explicitly clear its aliases
+  // when production declares none, including a selected historical bundle.
+  // Code-only Artifacts keep their historical deployment keys.
+  if (environment === 'production' && queueBindingAliases === undefined &&
+      (/^application\/vnd\.xapi\.worker-bundle\.v[12]\+json$/.test(artifactMediaType || '') ||
+       readWranglerNativeEvents(project, 'preview').queueBindingAliases !== undefined))
+    queueBindingAliases = {};
   const rawFlags = selected.compatibility_flags;
   if (
     rawFlags !== undefined &&
@@ -1350,12 +1616,26 @@ export function readWranglerDeploymentSettings(
     );
   }
   return {
+    ...(parsedAssets.data ? { assets: parsedAssets.data } : {}),
+    ...(nativeBundleRequired.length ? {nativeBundleRequired} : {}),
+    requiredSecrets: [...new Set([...project.config.environments[environment].secrets, ...secretNames(selected, selection.prefix, environment, [])])].sort(),
     ...(date ? { compatibilityDate: date } : {}),
     compatibilityFlags: [...new Set((rawFlags || []) as string[])].sort(),
+    ...wranglerVariableRetention(config.keep_vars),
+    ...(selected.observability !== undefined ? { observability: normalizeWranglerObservability(selected.observability) } : {}),
+    ...(selected.upload_source_maps !== undefined
+      ? { uploadSourceMaps: validateUploadSourceMaps(selected.upload_source_maps) } : {}),
     ...normalizeNativeWorkerOptions({
       cacheOptions: selected.cache,
       versionMetadata: selected.version_metadata,
     }),
+    ...(Object.keys(metadata).length || (environment === 'production' && /^application\/vnd\.xapi\.worker-bundle\.v[12]\+json$/.test(artifactMediaType || '')) ? {nativeMetadata:metadata} : {}),
+    ...(queueBindingAliases ? {queueBindingAliases} : {}),
+    // Named environments explicitly clear non-inherited variables. Promotion
+    // of a bundle must not accidentally reuse immutable preview variables.
+    ...(selected.vars !== undefined || selection.prefix ||
+      (environment === 'production' && /^application\/vnd\.xapi\.worker-bundle\.v[12]\+json$/.test(artifactMediaType || ''))
+      ? {variables:normalizeWorkerPublicVariables(selected.vars || {})} : {}),
   };
 }
 
@@ -1381,4 +1661,27 @@ export function readWranglerEventConfig(project: LoadedWorkerProject, environmen
   const selected = selectedConfig(config, environment).config;
   return { config: selected, directory: dirname(path), consumers: array(record(selected.queues)?.consumers),
     crons: record(selected.triggers)?.crons, databases: array(selected.d1_databases) };
+}
+
+/** Preserve current Wrangler event intent; physical resources still come from desired bindings. */
+export function readWranglerNativeEvents(project: LoadedWorkerProject, environment: "preview"|"production"): NativeEvents {
+  const {config} = parseWrangler(resolveWorkerProjectPath(project,project.config.wrangler,"wrangler"));
+  const selected = selectedConfig(config,environment);
+  const entries: WranglerCompatibilityEntry[] = [];
+  const declared = project.config.environments[environment];
+  const resources = [...declared.resources];
+  const events = nativeEvents(selected.config,resources,selected.prefix,environment,entries,declared.queueBindings);
+  const unsupported = entries.filter(entry=>entry.category === "UNSUPPORTED");
+  if (unsupported.length) throw new WorkerProjectConfigError("worker_native_event_mapping_unavailable",unsupported.map(entry=>`${entry.path}: ${entry.message}`).join("; "));
+  if (!record(selected.config.queues) || record(selected.config.queues)?.consumers === undefined) events.queueConsumers = declared.queueConsumers || [];
+  if (!record(selected.config.triggers) || record(selected.config.triggers)?.crons === undefined) events.crons = declared.crons || [];
+  for (const consumer of events.queueConsumers) for (const binding of [consumer.bindingName,consumer.deadLetterBinding].filter(Boolean)) {
+    if (!declared.resources.some(resource=>resource.type === "queue" && resource.bindingName === binding)) throw new WorkerProjectConfigError("worker_queue_consumer_resource_missing",`Queue consumer binding ${binding} is missing from owned project resources; import the Wrangler configuration or declare this Queue`);
+  }
+  for (const [alias, target] of Object.entries(events.queueBindingAliases || {})) {
+    if (declared.resources.some(resource => resource.bindingName === alias) ||
+        !declared.resources.some(resource => resource.type === 'queue' && resource.bindingName === target))
+      throw new WorkerProjectConfigError('worker_queue_alias_resource_conflict', `Queue alias ${alias} must point to primary Queue ${target}; re-import the project to review legacy duplicate resources before deployment`);
+  }
+  return events;
 }

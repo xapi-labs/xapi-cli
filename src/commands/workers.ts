@@ -1,9 +1,12 @@
+import {pullWorkerDeploymentConfiguration} from '../workers-pull.ts';
+import { workerBuildTimeout } from '../worker-build-timeout.ts';
 import { randomUUID } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { XAPI_ACTION_HOST, XAPI_API_HOST, getConfig, requireApiKey } from "../config.ts";
-import { err, output, type OutputFormat } from "../format.ts";
+import { err, getFormat, output, type OutputFormat } from "../format.ts";
 import * as client from "../workers-client.ts";
+import {WorkerArtifactObjectUploadError} from '../workers-direct-upload.ts';
 import {
   initWorkerProject,
   type WorkerStarterTemplate,
@@ -44,6 +47,8 @@ import {
   workerBillingOutputMode,
 } from "../workers-billing-output.ts";
 import { bindXdomainWorker } from "../workers-domain-bind.ts";
+import { readWorkerDomainChallenge } from "../workers-domain-challenge.ts";
+import { formatWorkerRetentionGuidance, type WorkerRetentionGuidanceOptions } from "../workers-operation-guidance.ts";
 import { inspectWorker } from "../workers-inspect.ts";
 import {
   formatWorkerInspection,
@@ -51,6 +56,7 @@ import {
 } from "../workers-inspect-output.ts";
 import { loadWorkerProject } from "../workers-project.ts";
 import { WorkerProjectBuildError } from "../workers-project-build.ts";
+import { planD1Migrations, publicD1MigrationPlan, applyD1Migrations, D1MigrationError } from "../workers-d1-migrations.ts";
 
 export const WORKERS_HELP = `xapi-to workers - Deploy and manage xAPI-hosted Cloudflare Workers
 
@@ -62,10 +68,15 @@ NORMAL PROJECT WORKFLOW (recommended)
   init [directory] --template TEMPLATE
   plan --env preview|production
   push --env preview
+  pull --env preview|production [--output deployment-snapshot.json]
   promote --to production [--artifact ARTIFACT_ID]
   rollback --env preview|production (--to previous | --deployment DEPLOYMENT_ID)
 
 INSPECTION AND OPERATIONS
+  d1 migrations plan --binding NAME --env preview|production [--config PATH]
+  d1 migrations apply --binding NAME --env preview|production [--config PATH]
+    plan lists local SQL only; apply explicitly changes the selected remote D1.
+    push/promote do not execute SQL. Code rollback does not undo database changes.
   list
   get <worker-id>
   inspect [worker-id] --env preview|production
@@ -76,22 +87,27 @@ INSPECTION AND OPERATIONS
   metering <worker-id> --env preview|production [--json]
 
 ADVANCED ARTIFACT PRIMITIVES (custom CI and recovery only)
-  create --name NAME --slug SLUG --preview-budget USD --production-budget USD
+  operations <worker-id> [--cursor CURSOR] [--limit 20]
+  create --name NAME --slug SLUG [--preview-budget USD|none] [--production-budget USD|none]
+
   upload <worker-id> --file dist/index.mjs|dist/ [--main worker.js]
   artifacts <worker-id>
+  upload-status <worker-id> --upload UPLOAD_ID
   build <worker-id> --project . --entrypoint src/index.ts --command "npm run build"
   builds <worker-id>
   deploy <worker-id> --artifact ARTIFACT_ID --env preview|production
 
 RESOURCES, BILLING, AND LIFECYCLE
-  budget <worker-id> <environment> --daily-usd USD
+  budget <worker-id> <environment> --daily-usd USD|none
   environment <worker-id> <environment> [--daily-usd USD] [--data-location apac] [--placement smart]
   billing-status
   billing ledger <worker-id> --env ENV [--all] [--snapshot-time ISO] [--json]
   retention show|quote|accept|pause|resume|keep-paused|delete <worker-id> --env ENV
   billing prices|overview|usage|ledger|forecast|risk|lifecycle <worker-id> --env preview|production
   domains list <worker-id>
+  domains challenge <worker-id> --env ENV --hostname HOSTNAME --format json
   domains attach <worker-id> --env ENV --xdomain-domain-id ID [--subdomain @]
+  domains attach <worker-id> --env ENV --challenge-file challenge.json
   domains detach <worker-id> <domain-id> --yes
   domains retry <worker-id> <domain-id>
   schedules list <worker-id>
@@ -133,22 +149,23 @@ INSPECT FLAGS
 CREATE FLAGS
   --template worker|agent       Official starter type (default: worker)
   --description TEXT
-  --preview-budget 0.10..100    Explicit preview daily budget
-  --production-budget 0.10..100 Explicit production daily budget
+  --preview-budget USD|none    Explicit preview daily budget
+  --production-budget USD|none Explicit production daily budget
   --data-location REGION        Default for new D1/R2: wnam|enam|weur|eeur|apac|oc
   --placement MODE              Worker execution placement: off|smart
 
 INIT FLAGS
   --template TEMPLATE                   worker|agent|chat|webhook|persistent-agent
   --from-wrangler PATH                  Import an existing wrangler.jsonc or wrangler.toml
+                                       Cannot combine with target directory, --template, --name, --slug, or --framework
   --accept-partial                      Write only after explicitly accepting unsupported fields
   --build-command COMMAND               Override the imported project build command
   --build-output PATH                   Override the deployable bundle/module path
   --build-main PATH                     Entrypoint inside a build-output directory
   --name NAME                           Worker display name
   --slug SLUG                           Stable lowercase Worker slug
-  --preview-budget 0.10..100            Default: 0.25
-  --production-budget 0.10..100         Default: 2
+  --preview-budget USD|none            Default: none
+  --production-budget USD|none         Default: none
   --data-location REGION                Default for newly created D1/R2 resources
   --placement off|smart                 Cloudflare Worker placement metadata
   --force                               Overwrite template-managed files only
@@ -217,7 +234,8 @@ RESOURCE FLAGS
   --env preview|production|both Project resource environment
   --config PATH                 Explicit xapi.worker.json path
   --type kv|d1|r2|do|queue|workflow
-  --class-name NAME             Exported class for a Durable Object
+  --class-name NAME             Exported Durable Object or native Workflow class
+  --workflow-name NAME          Optional native Workflow name
   --location REGION             D1/R2 placement: wnam|enam|weur|eeur|apac|oc
   --read-replication MODE       D1 replicas: auto|disabled
   --binding NAME                Uppercase env binding, for example STATE or FILES
@@ -233,6 +251,8 @@ ADVANCED REMOTE RESOURCE COMMANDS
   These recovery/debug commands mutate live state without updating xapi.worker.json.
   resources list <worker-id> --env preview|production
   resources create <worker-id> --env ENV --type TYPE --binding NAME
+  resources queue-messages <pull|ack> <worker-id> <resource-id> --env ENV --body JSON
+  resources queue-consumer <configure|disable> <worker-id> <resource-id> --env ENV [--body JSON]
   resources delete <worker-id> <resource-id> --env ENV --yes
 
 SECRET FLAGS
@@ -261,7 +281,7 @@ EXAMPLES
   xapi-to workers deploy <id> --artifact <artifact-id> --env preview
   xapi-to workers billing overview <id> --env production
   xapi-to workers billing usage <id> --env production --json
-  xapi-to workers build <id> --entrypoint src/index.ts --command "npm run build"
+  xapi-to workers build <id> --entrypoint src/index.ts --command "npm run build" [--build-timeout 30m]
   xapi-to workers resources add --env both --type d1 --binding DB
   xapi-to workers resources update --env preview --type d1 --binding DB --location weur
   xapi-to workers resources pull --env preview
@@ -290,9 +310,10 @@ STARTING POINTS
     Run vinext check/init first, then import its generated Wrangler config.
 
 WRITES
-  Existing frontends gain xapi.worker.json, wrangler.jsonc,
-  xapi-worker/index.ts, and xapi:* package scripts. Re-running init is not a
-  resource synchronization operation.
+  Existing static frontends gain xapi.worker.json, wrangler.jsonc,
+  xapi-worker/index.mjs, and local ignore entries. Existing package.json,
+  dependencies, scripts, and lockfiles are preserved.
+  Re-running init is not a resource synchronization operation.
 
 FLAGS
   --template worker|agent|chat|webhook|persistent-agent
@@ -323,6 +344,8 @@ PROJECT COMMANDS
            type and Durable Object class cannot change in place.
   pull     Adopt supported healthy live-only resources into desired state.
   remove   Stop declaring a resource; live data remains and may keep billing.
+  queue-consumer configure|disable  Configure or stop deliveries through an owned Queue.
+  queue-messages pull|ack           Pull messages or acknowledge/retry native leases.
   destroy  Remove one environment declaration and request live data deletion;
            requires --yes and a prior backup.
 
@@ -332,10 +355,12 @@ USAGE
   xapi workers resources pull --env preview|production|both
   xapi workers resources remove --env preview|production|both --binding NAME
   xapi workers resources destroy --env preview|production --binding NAME --yes
+  xapi workers resources queue-consumer <configure|disable> <worker-id> <resource-id> --env ENV [--body JSON]
 
 RESOURCE FLAGS
   --type kv|d1|r2|do|queue|workflow
   --class-name NAME
+  --workflow-name NAME          Requires --type workflow and --class-name
   --location wnam|enam|weur|eeur|apac|oc
   --read-replication auto|disabled
   --config PATH
@@ -358,12 +383,19 @@ const COMMON_FLAGS = new Set(["help", "format"]);
 function options() {
   const cfg = getConfig();
   requireApiKey(cfg);
-  return { apiHost: XAPI_API_HOST, apiKey: cfg.apiKey! };
+  return { apiHost: XAPI_API_HOST, apiKey: cfg.apiKey!, artifactUploadProgress: (message:string)=>console.error(message), operationWait: {
+    onWait: (event: import('../workers-operation-wait.ts').WorkerOperationWaitEvent) => {
+      process.stderr.write(event.phase === 'ready'
+        ? `Operation ${event.operationId} finished; submitting the current request.\n`
+        : `Waiting for operation ${event.operationId} (${event.state}); current request has not started.\n`);
+    },
+  } };
 }
 
 function printWorkerPlan(
   plan: WorkerDeploymentPlan,
   flagFormat?: string,
+  diagnostic = false,
 ) {
   if (
     useHumanWorkerPlanOutput({
@@ -375,7 +407,8 @@ function printWorkerPlan(
     console.log(formatWorkerPlan(plan));
     return;
   }
-  output(plan, flagFormat as OutputFormat | undefined);
+  if (diagnostic && (flagFormat || getFormat()) === 'json') console.error(JSON.stringify(plan));
+  else output(plan, flagFormat as OutputFormat | undefined);
 }
 
 function printWorkerPushResult(
@@ -400,10 +433,11 @@ function required(value: string | undefined, flag: string): string {
   return value;
 }
 
-function budget(value: string | undefined, flag: string): number {
+function budget(value: string | undefined, flag: string): number | null {
+  if (value === undefined || value === "none") return null;
   const amount = Number(required(value, flag));
-  if (!Number.isFinite(amount) || amount < 0.1 || amount > 100) {
-    err(`${flag} must be between 0.10 and 100`);
+  if (!Number.isFinite(amount) || amount < 0) {
+    err(`${flag} must be a finite nonnegative USD amount, or none`);
   }
   return amount;
 }
@@ -466,7 +500,7 @@ function environment(value: string | undefined): string {
 }
 
 export function parseWorkerSecretEnv(source:string):Record<string,string> {
-  const values:Record<string,string>={};
+  const values:Record<string,string>=Object.create(null);
   for(const [index,raw] of source.split(/\r?\n/).entries()) {
     const line=raw.trim();
     if(!line||line.startsWith('#'))continue;
@@ -474,7 +508,7 @@ export function parseWorkerSecretEnv(source:string):Record<string,string> {
     const separator=normalized.indexOf('=');
     if(separator<=0)err(`invalid secret env entry on line ${index+1}`);
     const name=normalized.slice(0,separator).trim();
-    if(!/^[A-Z][A-Z0-9_]{0,63}$/.test(name))err(`invalid secret name on line ${index+1}`);
+    if(!name)err(`empty secret name on line ${index+1}`);
     let value=normalized.slice(separator+1).trim();
     if((value.startsWith('"')&&value.endsWith('"'))||(value.startsWith("'")&&value.endsWith("'")))value=value.slice(1,-1);
     if(!value)err(`secret ${name} is empty`);
@@ -538,18 +572,21 @@ async function projectFiles(project: string) {
         continue;
       }
       if (!entry.isFile()) continue;
+      // Apply the existing aggregate budget before allocating a large file;
+      // the post-read check also covers files changed during collection.
       const info = await stat(absolute);
-      if (info.size > 1_000_000) err(`source file exceeds 1 MB: ${absolute}`);
+      if (total + info.size > 20 * 1024 * 1024)
+        err("Worker build source exceeds the backend 20 MiB decoded-content budget");
       const buffer = await readFile(absolute);
       total += buffer.length;
-      if (total > 2 * 1024 * 1024)
-        err("Worker project exceeds the 2 MB source limit");
-      if (files.length >= 200) err("Worker project exceeds the 200 file limit");
+      if (total > 20 * 1024 * 1024)
+        err("Worker build source exceeds the backend 20 MiB decoded-content budget");
       const path = relative(project, absolute).split(sep).join("/");
       const binary = buffer.includes(0);
+      const content = binary ? buffer.toString("base64") : buffer.toString("utf8");
       files.push({
         path,
-        content: binary ? buffer.toString("base64") : buffer.toString("utf8"),
+        content,
         encoding: binary ? "base64" : "utf8",
       });
     }
@@ -580,6 +617,46 @@ export async function workersCommand(
   }
   const [command, ...rest] = args;
   switch (command) {
+    case "d1": {
+      assertFlags(flags, ["env", "binding", "config"]);
+      const [group, action, ...extra] = rest;
+      if (group !== "migrations" || !["plan", "apply"].includes(action) || extra.length)
+        err("usage: workers d1 migrations plan|apply --binding NAME --env preview|production [--config PATH]");
+      if (flags.config === "true" || flags.config === "") err("--config requires a path");
+      const env = environment(flags.env) as "preview" | "production";
+      const binding = required(flags.binding, "--binding");
+      try {
+        const project = loadWorkerProject(process.cwd(), flags.config);
+        const plan = planD1Migrations(project, env, binding);
+        if (action === "plan") {
+          output(publicD1MigrationPlan(plan), flags.format as OutputFormat | undefined);
+          return;
+        }
+        const workerId = project.config.workerId;
+        if (!workerId) err("Project has no workerId; create/link the Worker and D1 resource before applying migrations");
+        output(await applyD1Migrations(client, options(), workerId, plan), flags.format as OutputFormat | undefined);
+      } catch (error) {
+        if (error instanceof D1MigrationError) err(error.message, error.details);
+        err(error instanceof Error ? error.message : "D1 migration command failed");
+      }
+      return;
+    }
+    case "operations": {
+      assertFlags(flags,["cursor","limit"]);
+      if(rest.length!==1)err("usage: xapi-to workers operations <worker-id> [--cursor CURSOR] [--limit N]");
+      output(await client.workerControlOperations(options(),rest[0],{cursor:flags.cursor,limit:flags.limit}));
+      return;
+    }
+    case "pull": {
+      assertFlags(flags,["env","config","output"]);
+      if(rest.length)err("usage: xapi-to workers pull --env preview|production [--output FILE]");
+      const environment=flags.env;
+      if(environment!=="preview"&&environment!=="production")err("--env must be preview or production");
+      if(flags.output==="true")err("--output requires a file path");
+      output(await pullWorkerDeploymentConfiguration({environment,cwd:process.cwd(),
+        configPath:flags.config,outputPath:flags.output,clientOptions:options()}));
+      return;
+    }
     case "templates": {
       assertFlags(flags);
       if (rest.length) err("usage: xapi-to workers templates");
@@ -637,10 +714,10 @@ export async function workersCommand(
             buildMain: flags["build-main"],
             previewDailyBudgetUsd: flags["preview-budget"]
               ? budget(flags["preview-budget"], "--preview-budget")
-              : 0.25,
+              : null,
             productionDailyBudgetUsd: flags["production-budget"]
               ? budget(flags["production-budget"], "--production-budget")
-              : 2,
+              : null,
             defaultResourceLocation: dataLocation(flags["data-location"]),
             placementMode: placementMode(flags.placement),
           });
@@ -681,10 +758,10 @@ export async function workersCommand(
             slug: flags.slug === "true" ? undefined : flags.slug,
             previewDailyBudgetUsd: flags["preview-budget"]
               ? budget(flags["preview-budget"], "--preview-budget")
-              : 0.25,
+              : null,
             productionDailyBudgetUsd: flags["production-budget"]
               ? budget(flags["production-budget"], "--production-budget")
-              : 2,
+              : null,
             defaultResourceLocation: dataLocation(flags["data-location"]),
             placementMode: placementMode(flags.placement),
             force: flags.force === "true",
@@ -725,15 +802,16 @@ export async function workersCommand(
       return;
     }
     case "retention": {
-      assertFlags(flags, ["env", "type", "price-version", "yes"]);
+      assertFlags(flags, ["env", "type", "price-version", "yes", "json"]);
       const [action, id, ...extra] = rest;
       if (!id || extra.length || !["show", "quote", "accept", "pause", "resume", "keep-paused", "delete"].includes(action)) err("usage: workers retention show|quote|accept|pause|resume|keep-paused|delete <worker-id> --env ENV");
       const env = environment(flags.env);
+      const retentionOutputMode = workerBillingOutputMode(flags);
       if (["accept", "delete"].includes(action) && flags.yes !== "true") err("--yes is required to accept automatic reserve-exhaustion deletion or delete this environment");
       const result = await client.workerRetention(options(), id, env,
         action === "quote" ? `/quote/${encodeURIComponent(flags.type || "WORKER")}` : action === "accept" ? "/accept" : action === "show" ? "" : "/actions",
         action === "accept" ? { policyVersion: "retention-v3", automaticDeletionAccepted: true, priceVersion: required(flags["price-version"], "--price-version") } : ["show", "quote"].includes(action) ? undefined : { action });
-      if (flags.format === "json") output(result);
+      if (retentionOutputMode === "json") output(result, "json");
       else {
         const state = result.lifecycle || result;
         console.log(`Worker ${id} · ${env}\nState: ${state.state || (result.enabled === false ? "retention disabled" : "quote / policy")}`);
@@ -741,21 +819,30 @@ export async function workersCommand(
           if (result[key] != null) console.log(`${label}: $${result[key]}`);
         }
         if (result.priceVersion) console.log(`Price version: ${result.priceVersion}`);
-        if (result.retentionHours) console.log(`Retention: ${result.retentionHours} hours. Automatic deletion at expiry.`);
-        if (result.estimateBasisHours) console.log(`Freeze estimate basis: ${result.estimateBasisHours} hours (not a fixed retention period).`);
+        if (result.retentionHours) console.log(`Legacy retention estimate: ${result.retentionHours} hours. This does not authorize automatic deletion.`);
+        if (result.estimateBasisHours) console.log(`Freeze estimate basis: ${result.estimateBasisHours} hours; minimum preservation is seven full days, not a fixed deletion deadline.`);
         if (result.policyVersion === "retention-v3" || state.retentionPolicyVersion === "retention-v3") {
-          console.log("Manual recovery only. Deposits do not replenish reserve or resume execution. Cleanup starts when this environment reserve reaches its cleanup allowance, even if the account has available funds.");
+          console.log("Manual recovery does not happen just by recharging. At least seven full days are protected; afterward, remaining spendable retention funds extend preservation until exhausted, then system cleanup applies. Owner deletion is available at any time.");
+          if (result.environmentDeposit?.fundingMode === 'UNIFIED_WORKER_DEPOSIT_V1') console.log(`Environment deposit remaining: $${result.environmentDeposit.remainingUsd}; frozen funds are not an additional fee.`);
           if (result.reserveBudget) console.log(`Remaining for retention: $${result.reserveBudget.retentionSpendableUsd ?? "unknown"}; cleanup allowance: $${result.reserveBudget.cleanupReserveUsd ?? "unknown"}`);
         }
+        if (result.reserveBudget?.minimumRetentionUntil) console.log(`Minimum preservation ends: ${result.reserveBudget.minimumRetentionUntil}; system cleanup also requires exhausted spendable retention funds.`);
         if (state.pauseReason) console.log(`Pause reason: ${state.pauseReason}`);
         if (result.fundingSource) console.log(`Funding: ${result.fundingSource}`);
-        if (state.graceDeadlineAt) console.log(`Deletion deadline: ${state.graceDeadlineAt}`);
+        if (state.graceDeadlineAt) console.log(`Retention timing reference (not a fixed deletion deadline): ${state.graceDeadlineAt}`);
+        console.log(formatWorkerRetentionGuidance({
+          action: action as WorkerRetentionGuidanceOptions["action"],
+          workerId: id, environment: env, response: result,
+        }));
+        if (result.accessPreparation?.status === "PENDING") {
+          console.log(`Recovery completed; service access is still being prepared (${result.accessPreparation.reason || "publication pending"}). Retry service access shortly; do not repeat recovery.`);
+        }
         console.log("Frozen funds remain yours; freezing is not a consumption charge. Use --format json for full evidence.");
       }
       return;
     }
     case "push": {
-      assertFlags(flags, ["env", "config", "non-interactive", "retention-price-version"]);
+      assertFlags(flags, ["env", "config", "non-interactive", "retention-price-version", "build-timeout"]);
       if (flags["retention-price-version"] === "true" || flags["retention-price-version"] === "") {
         err("--retention-price-version requires the explicitly accepted quote version");
       }
@@ -780,9 +867,11 @@ export async function workersCommand(
           clientOptions: options(),
           nonInteractive,
           retentionPriceVersion: flags["retention-price-version"],
+          onProgress: (message) => console.error(message),
+          buildTimeoutMs: flags["build-timeout"] ? workerBuildTimeout(flags["build-timeout"]) : undefined,
           onPlan: nonInteractive
             ? undefined
-            : (plan) => printWorkerPlan(plan, flags.format),
+            : (plan) => printWorkerPlan(plan, flags.format, true),
         });
         printWorkerPushResult(result, flags.format);
       } catch (error) {
@@ -888,7 +977,10 @@ export async function workersCommand(
             configPath: flags.config,
             clientOptions: options(),
             nonInteractive,
-            onPlan: nonInteractive ? undefined : (plan) => output(plan),
+            onPlan: nonInteractive ? undefined : (plan) => {
+              if ((flags.format || getFormat()) === 'json') console.error(JSON.stringify(plan));
+              else output(plan, flags.format as OutputFormat | undefined);
+            },
           }),
         );
       } catch (error) {
@@ -1018,14 +1110,23 @@ export async function workersCommand(
         if (error instanceof WorkerArtifactError) err(error.message);
         throw error;
       }
-      output(
-        await client.uploadWorkerArtifact(options(), id, {
+      try {
+        output(await client.uploadWorkerArtifact(options(), id, {
           ...artifact.upload,
           idempotencyKey: flags["idempotency-key"] || randomUUID(),
-        }),
-      );
+        }));
+      } catch (error) {
+        if (error instanceof WorkerArtifactObjectUploadError) err(error.message, error.recovery);
+        throw error;
+      }
       return;
     }
+    case "upload-status":
+      assertFlags(flags,["upload"]);
+      output(await client.workerArtifactUploadStatus(options(),
+        oneId(rest,"usage: xapi-to workers upload-status <worker-id> --upload UPLOAD_ID"),
+        required(flags.upload,"--upload")));
+      return;
     case "artifacts":
       assertFlags(flags);
       output(
@@ -1039,6 +1140,7 @@ export async function workersCommand(
       assertFlags(flags, [
         "project",
         "entrypoint",
+        "build-timeout",
         "command",
         "output",
         "idempotency-key",
@@ -1060,6 +1162,7 @@ export async function workersCommand(
           files,
           entrypoint,
           buildCommand: required(flags.command, "--command"),
+          ...(flags["build-timeout"] ? { buildTimeoutSeconds: Math.ceil(workerBuildTimeout(flags["build-timeout"]) / 1000) } : {}),
           outputPath: (flags.output || "dist/index.mjs").replace(/^\.\//, ""),
           idempotencyKey: flags["idempotency-key"] || randomUUID(),
         }),
@@ -1110,16 +1213,17 @@ export async function workersCommand(
       assertFlags(flags, ["daily-usd"]);
       if (rest.length !== 2)
         err(
-          "usage: xapi-to workers budget <worker-id> <preview|production> --daily-usd USD",
+          "usage: xapi-to workers budget <worker-id> <preview|production> --daily-usd USD|none",
         );
       if (!["preview", "production"].includes(rest[1]))
         err("environment must be preview or production");
+      const dailyBudgetUsd = budget(required(flags["daily-usd"], "--daily-usd"), "--daily-usd");
       output(
         await client.updateWorkerBudget(
           options(),
           rest[0],
           rest[1],
-          budget(flags["daily-usd"], "--daily-usd"),
+          dailyBudgetUsd,
         ),
       );
       return;
@@ -1327,6 +1431,16 @@ export async function workersCommand(
     }
     case "domains": {
       const [action, ...domainArgs] = rest;
+      if (action === "challenge") {
+        assertFlags(flags, ["env", "hostname"]);
+        output(await client.createWorkerDomainChallenge(
+          options(),
+          oneId(domainArgs, "usage: xapi-to workers domains challenge <worker-id> --env ENV --hostname HOSTNAME"),
+          environment(flags.env),
+          required(flags.hostname, "--hostname"),
+        ));
+        return;
+      }
       if (action === "list") {
         assertFlags(flags);
         output(
@@ -1341,11 +1455,19 @@ export async function workersCommand(
         return;
       }
       if (action === "attach") {
-        assertFlags(flags, ["env", "xdomain-domain-id", "subdomain", "timeout"]);
+        assertFlags(flags, ["env", "xdomain-domain-id", "subdomain", "timeout", "challenge-file"]);
         const workerId = oneId(
           domainArgs,
-          "usage: xapi-to workers domains attach <worker-id> --env ENV --xdomain-domain-id ID [--subdomain @]",
+          "usage: xapi-to workers domains attach <worker-id> --env ENV (--xdomain-domain-id ID [--subdomain @] | --challenge-file PATH)",
         );
+        if (flags["challenge-file"]) {
+          if (flags["xdomain-domain-id"] || flags.subdomain || flags.timeout) {
+            err("--challenge-file cannot be combined with --xdomain-domain-id, --subdomain or --timeout; manual attachment sends one request");
+          }
+          const challenge = await readWorkerDomainChallenge(flags["challenge-file"], environment(flags.env));
+          output(await client.attachWorkerDomain(options(), workerId, challenge.challengeToken));
+          return;
+        }
         const cfg = getConfig();
         requireApiKey(cfg);
         output(
@@ -1395,7 +1517,7 @@ export async function workersCommand(
         );
         return;
       }
-      err("usage: xapi-to workers domains <list|attach|detach|retry> ...");
+      err("usage: xapi-to workers domains <list|challenge|attach|detach|retry> ...");
     }
     case "schedules": {
       const [action, ...scheduleArgs] = rest;
@@ -1448,7 +1570,7 @@ export async function workersCommand(
             timeoutMs: flags["timeout-ms"]
               ? Number(flags["timeout-ms"])
               : 30000,
-            maxRetries: flags["max-retries"] ? Number(flags["max-retries"]) : 2,
+            maxRetries: flags["max-retries"] ? Number(flags["max-retries"]) : null,
           }),
         );
         return;
@@ -1525,6 +1647,38 @@ export async function workersCommand(
       return;
     case "resources": {
       const [action, ...resourceArgs] = rest;
+      if (action === "queue-messages") {
+        const [operation,workerId,resourceId,...extra]=resourceArgs;
+        assertFlags(flags,["env","body"]);
+        if(!workerId||!resourceId||extra.length||!["pull","ack"].includes(operation))
+          err("usage: xapi workers resources queue-messages <pull|ack> <worker-id> <resource-id> --env ENV --body JSON");
+        let body:Record<string,unknown>;
+        try {body=JSON.parse(required(flags.body,"--body"));} catch {err("--body must be a JSON object of native Queue message options");}
+        if(!body!||typeof body!=="object"||Array.isArray(body))err("--body must be a JSON object");
+        output(await client.workerQueueMessages(options(),workerId,environment(flags.env),resourceId,operation as 'pull'|'ack',body!));
+        return;
+      }
+      if (action === "queue-consumer") {
+        const [operation, workerId, resourceId, ...extra] = resourceArgs;
+        assertFlags(flags, operation === "configure" ? ["env", "body"] : ["env"]);
+        if (!workerId || !resourceId || extra.length || !["configure", "disable"].includes(operation)) {
+          err("usage: xapi workers resources queue-consumer <configure|disable> <worker-id> <resource-id> --env ENV [--body JSON]");
+        }
+        const env = environment(flags.env);
+        if (operation === "disable") {
+          output(await client.disableWorkerQueueConsumer(options(), workerId, env, resourceId));
+        } else {
+          let body: Record<string, unknown>;
+          try {
+            body = JSON.parse(required(flags.body, "--body"));
+          } catch {
+            err("--body must be a JSON object of native Queue consumer settings");
+          }
+          if (!body! || typeof body! !== "object" || Array.isArray(body!)) err("--body must be a JSON object");
+          output(await client.configureWorkerQueueConsumer(options(), workerId, env, resourceId, body!));
+        }
+        return;
+      }
       if (action === "destroy") {
         assertFlags(flags, ["env", "config", "binding", "yes"]);
         if (resourceArgs.length) {
@@ -1571,6 +1725,7 @@ export async function workersCommand(
           "type",
           "binding",
           "class-name",
+          "workflow-name",
           "location",
           "read-replication",
         ]);
@@ -1586,7 +1741,7 @@ export async function workersCommand(
           : [selected]) as Array<"preview" | "production">;
         const bindingName = required(flags.binding, "--binding");
         if (action === "remove") {
-          if (flags.type || flags["class-name"] || flags.location || flags["read-replication"]) {
+          if (flags.type || flags["class-name"] || flags["workflow-name"] || flags.location || flags["read-replication"]) {
             err("resources remove accepts only --env, --binding, and --config");
           }
           output(
@@ -1619,6 +1774,7 @@ export async function workersCommand(
               ...(flags["class-name"]
                 ? { className: flags["class-name"] }
                 : {}),
+              ...(flags["workflow-name"] ? { workflowName: flags["workflow-name"] } : {}),
               ...(flags.location
                 ? {
                     location: flags.location as
@@ -1657,7 +1813,7 @@ export async function workersCommand(
         return;
       }
       if (action === "create") {
-        assertFlags(flags, ["env", "type", "binding", "class-name", "location", "read-replication", "retention-price-version"]);
+        assertFlags(flags, ["env", "type", "binding", "class-name", "workflow-name", "location", "read-replication", "retention-price-version"]);
         const id = oneId(
           resourceArgs,
           "usage: xapi-to workers resources create <worker-id> --env ENV --type kv|d1|r2|do|queue|workflow --binding NAME",
@@ -1676,7 +1832,9 @@ export async function workersCommand(
         const className =
           type === "do"
             ? required(flags["class-name"], "--class-name")
-            : undefined;
+            : type === "workflow" ? flags["class-name"] : undefined;
+        if (flags["class-name"] && !["do", "workflow"].includes(type)) err("--class-name is only valid with --type do or workflow");
+        if (flags["workflow-name"] && (type !== "workflow" || !className)) err("--workflow-name requires --type workflow and --class-name");
         const location = flags.location;
         if (
           location &&
@@ -1708,6 +1866,7 @@ export async function workersCommand(
               retentionPriceVersion: flags["retention-price-version"],
               bindingName: required(flags.binding, "--binding"),
               ...(className ? { className } : {}),
+              ...(flags["workflow-name"] ? { workflowName: flags["workflow-name"] } : {}),
               ...(location ? { location } : {}),
               ...(readReplication ? { readReplication } : {}),
             },
@@ -1735,7 +1894,7 @@ export async function workersCommand(
         );
         return;
       }
-      err("usage: xapi-to workers resources <add|update|pull|remove|destroy|list|create|delete> ...");
+      err("usage: xapi-to workers resources <add|update|pull|remove|destroy|list|create|queue-consumer|queue-messages|delete> ...");
     }
     case "secrets": {
       const [action, ...secretArgs] = rest;

@@ -2,14 +2,69 @@
 
 Cloudflare User Worker secret bindings are the only long-term store for values. xAPI authenticates the caller, resolves the owned account/namespace/script from the Worker environment, forwards the value once, and stores name/status/audit metadata only. There is no reveal or export command.
 
+Secret names are forwarded as nonempty strings, including names accessed through `env[name]` (Unicode, hyphens or names longer than 64 characters). xAPI does not impose its former 128-item batch cap. Cloudflare currently accepts at most 100 mutations in one bulk request; xAPI reports its rejection and does not automatically split one requested version into multiple writes. This is separate from the upstream total number of variables per Worker. Ownership, binding conflicts and the provider value-size limit still apply.
+
 Preview and production are separate. Configure each environment explicitly; never copy a preview credential into production without the user requesting that exact rotation.
+
+## Choose vars or Secrets
+
+| Value | Configure it in | Takes effect |
+| --- | --- | --- |
+| Public origin, GitHub App ID/slug, feature flags | Wrangler `vars` | Next code deployment with the rebuilt Artifact |
+| OAuth client secret, private key, session/signing secret | `workers secrets set/apply` | Independent Secret write to the selected environment |
+| Names the application requires | `environments.preview.secrets` / `production.secrets` in `xapi.worker.json` | Deployment prerequisite check; no values in this file |
+
+A project needing OAuth credentials is a normal application setup requirement. Do not turn every environment variable into a Secret. Identify confidentiality from its purpose, and preserve the application's expected names/types. Public vars are in the deployment Artifact, not a safe place for credentials. Build-time variables compiled into browser assets are public too; runtime Secrets do not configure that build.
+
+Keep ordinary values in the selected Wrangler environment, for example:
+
+```json
+{
+  "env": {
+    "preview": { "vars": { "PUBLIC_APP_ORIGIN": "https://preview.example.com", "FEATURE_ENABLED": true } },
+    "production": { "vars": { "PUBLIC_APP_ORIGIN": "https://app.example.com", "FEATURE_ENABLED": false } }
+  }
+}
+```
+
+When a named Wrangler environment exists, its vars do not inherit root vars. Repeat shared public values explicitly. If no named environment exists, the CLI uses root config. Build native bundles for the same selected environment; plan rejects stale or mismatched vars. Do not duplicate public values in `xapi.worker.json` or put them into the Secret file just to satisfy setup instructions. Verify the healthCheck path exists in this application; a SPA HTML fallback returning 200 alone is not a business test.
+
+## First project setup
+
+For an existing linked project, use its saved Worker ID directly. For a new project with required Secrets, choose either supported path:
+
+- **Interactive:** run `workers plan --env preview`, review the missing Secret names, then `workers push --env preview`. After confirmation, push saves the Worker ID and may provision planned resources; it stops before Artifact upload/deploy if Secrets are still missing. Use the returned ID to set values, then rerun push. This first stop is incomplete setup, not a successful release. Do not delete the saved ID or create another Worker.
+- **Non-interactive/CI, or to configure Secrets before provisioning resources:** use `workers create` with the name, slug, template and both budgets from `xapi.worker.json` (and placement/location when configured). Save its returned ID as top-level `workerId` in that same file, set Secrets, then plan/push. `create` does not link the local config automatically. A non-interactive push with missing prerequisites intentionally makes no changes.
+
+Creation syntax (substitute the project's actual configuration):
+
+```sh
+xapi workers create --name "My service" --slug my-service --template worker \
+  --preview-budget 0.25 --production-budget 2
+# Save the returned id as xapi.worker.json's top-level workerId.
+xapi workers secrets apply <worker-id> --env preview --env-file .env.worker
+xapi workers plan --env preview
+xapi workers push --env preview --non-interactive
+```
+
+If the application needs its assigned origin before its first build, create/link the project first and run `xapi workers get <worker-id> --format json`. Read the selected environment's `publicOrigin`, `publicBasePath`, `publicUrl`, `routingMode`, and `webAppReady`; do not construct a hostname from the slug. For HOSTNAME routing with webAppReady=true, use publicOrigin for origin-valued settings and the application's real callback path for OAuth. PATH_FALLBACK includes a base path and is not interchangeable with a root-hosted application URL; only use it if the app supports that base path. HOSTNAME_PENDING is not proof of an accessible website. If the required routing is not ready, report that routing prerequisite instead of treating it as a missing Secret. Then set public vars and OAuth callback configuration before rebuilding.
+
+Only application Secret values belong in `.env.worker`, never the xAPI management Key. `apply` sets the supplied names; omitted names are not deleted. Missing required values must be provided, not removed from the required-name list to make a plan look ready.
+
+Wrangler `vars` are public plain-text/JSON bindings, not required Secrets.
+Named environments declare their own vars and `secrets.required`. Updating or
+clearing public vars preserves independently managed native Secrets. A public
+variable with an existing Secret name is reported as a conflict before deployment
+funding; it never silently deletes or reclassifies that Secret. Secret Store
+references require a separate owned-resource mapping and remain an explicit
+adapter gap rather than being imported as ordinary Secret names.
 
 ## Safe input
 
 Prefer an existing process environment:
 
 ```sh
-MODEL_KEY='...' xapi workers secrets set <worker-id> MODEL_KEY \
+xapi workers secrets set <worker-id> MODEL_KEY \
   --env preview --from-env MODEL_KEY
 ```
 
@@ -46,3 +101,10 @@ Delete only with explicit authorization:
 ```sh
 xapi workers secrets delete <worker-id> OLD_KEY --env preview --yes
 ```
+
+If native Secret mutation succeeds but xAPI local projection is pending, the
+response reports `providerResult: SUCCESS`, `localStatus: PENDING` and the
+operation ID. Do not treat this as Cloudflare rejecting the value. Use
+`secrets status` to explicitly refresh names/provider presence; values are never
+returned. The owner can explicitly set the value again when needed. This read
+does not resend mutations, and local recovery does not replay user writes.

@@ -11,6 +11,7 @@ const KIND_LABEL: Record<WorkerPlanAction["kind"], string> = {
   placement: "Placement",
   resource: "Resource",
   secret: "Secret",
+  event: "Event",
   routing: "Routing",
   artifact: "Artifact",
   deployment: "Deployment",
@@ -77,6 +78,7 @@ function actionDetail(action: WorkerPlanAction): string {
   if (action.kind === "budget") {
     const daily = number(desired.dailyBudgetUsd);
     const prior = number(current.dailyBudgetUsd);
+    if (desired.dailyBudgetUsd === null) return "No daily budget limit";
     if (daily === undefined) return action.message;
     return prior === undefined
       ? `$${daily.toFixed(2)}/day`
@@ -124,6 +126,19 @@ function actionRow(action: WorkerPlanAction): string {
             ? "!"
             : "=";
   return `  ${marker} ${KIND_LABEL[action.kind].padEnd(12)}${actionName(action).padEnd(24)}${actionDetail(action)}`;
+}
+
+function variableRows(variable: NonNullable<WorkerDeploymentPlan["variables"]>[number]): string[] {
+  const target = variable.type || (variable.decision === "REMOVE"
+    ? "removed"
+    : variable.decision === "REPLACE" ? "explicit binding" : undefined);
+  const types = variable.currentType && target && variable.currentType !== target
+    ? `${variable.currentType} → ${target}`
+    : target || variable.currentType;
+  return [
+    `  ${variable.decision.padEnd(8)} ${variable.name}${types ? ` · ${types}` : ""}`,
+    `    ${variable.message}`,
+  ];
 }
 
 function metadataRow(label: string, value: string): string {
@@ -234,7 +249,9 @@ export function formatWorkerPlan(plan: WorkerDeploymentPlan): string {
     : "Not linked · a new Worker will be created";
   const budget = plan.costImpact;
   const budgetChange =
-    budget.currentDailyBudgetUsd === undefined
+    budget.desiredDailyBudgetUsd === null
+      ? "No user-selected daily budget"
+      : budget.currentDailyBudgetUsd === undefined
       ? `$${budget.desiredDailyBudgetUsd.toFixed(2)}/day target`
       : `$${budget.currentDailyBudgetUsd.toFixed(2)} → $${budget.desiredDailyBudgetUsd.toFixed(2)}/day (${budget.dailyBudgetDeltaUsd! >= 0 ? "+" : "-"}$${Math.abs(budget.dailyBudgetDeltaUsd!).toFixed(2)})`;
   const priceBook = budget.priceBook
@@ -254,6 +271,10 @@ export function formatWorkerPlan(plan: WorkerDeploymentPlan): string {
       `${plan.project.build.command} → ${plan.project.build.output}${plan.project.build.main ? ` (main: ${plan.project.build.main})` : ""}`,
     ),
     "  Plan built and validated this exact bundle; push applies the reviewed result.",
+    ...(plan.nativeSteps?.d1Migrations.length ? [
+      "  D1 SQL is not executed by push/promote. Database changes are explicit:",
+      ...plan.nativeSteps.d1Migrations.map(item => `  · ${item.command}`),
+    ] : []),
     "",
     "Summary",
     metadataRow("Create", String(plan.summary.CREATE)),
@@ -277,6 +298,33 @@ export function formatWorkerPlan(plan: WorkerDeploymentPlan): string {
     ...(planned.length ? planned.map(actionRow) : ["  No changes required."]),
   ];
 
+  const configuration = record(
+    plan.actions.find(action => action.kind === "artifact")?.desired?.configuration,
+  );
+  if (Object.keys(configuration).length) {
+    lines.push("", "Worker configuration");
+    for (const key of ["cache", "version_metadata", "observability"] as const) {
+      if (configuration[key] !== undefined) {
+        lines.push(metadataRow(key, JSON.stringify(configuration[key])));
+      }
+    }
+    if (Array.isArray(configuration.sourceMaps)) {
+      lines.push(metadataRow(
+        "Source maps",
+        configuration.sourceMaps.length
+          ? `${configuration.sourceMaps.length} private upload attachment(s)`
+          : "None",
+      ));
+    }
+  }
+  if (plan.variables !== undefined) {
+    lines.push("", "Public variables",
+      "  Values are not displayed or compared. Secrets are managed independently and kept.",
+      ...(plan.variables.length
+        ? plan.variables.flatMap(variableRows)
+        : ["  No public variable decisions."]),
+    );
+  }
   if (manual.length) {
     lines.push("", "Manual review", ...manual.map(actionRow));
   }

@@ -245,6 +245,7 @@ async function main() {
         case 'port': return sandboxCmds.sandboxPort(subRest, flags);
         case 'extension': return sandboxCmds.sandboxExtension(subRest, flags);
         case 'audit': return sandboxCmds.sandboxAudit(subRest, flags);
+        case 'snapshot': return sandboxCmds.sandboxSnapshot(subRest, flags);
         case 'suspend': return sandboxCmds.sandboxState('suspend', subRest, flags);
         case 'resume': return sandboxCmds.sandboxState('resume', subRest, flags);
         case 'terminate': return sandboxCmds.sandboxState('terminate', subRest, flags);

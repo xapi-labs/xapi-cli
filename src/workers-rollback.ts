@@ -26,7 +26,7 @@ export interface WorkerRollbackPlan {
   current: { deploymentId: string; artifactId: string };
   target: { deploymentId: string; artifactId?: string };
   selection: "previous" | "explicit";
-  codeOnly: true;
+  codeOnly: boolean;
   dataAndSecretsRolledBack: false;
   warning: string;
   requiresConfirmation: boolean;
@@ -117,10 +117,11 @@ function stableRollbackKey(
   workerId: string,
   environment: string,
   deploymentId: string,
+  sourceDeploymentId: string,
 ): string {
   return `rollback-${createHash("sha256")
     .update(
-      `xapi-worker-rollback-v1\0${workerId}\0${environment}\0${deploymentId}`,
+      `xapi-worker-rollback-v2\0${workerId}\0${environment}\0${sourceDeploymentId}\0${deploymentId}`,
     )
     .digest("hex")
     .slice(0, 32)}`;
@@ -146,11 +147,11 @@ async function terminalConfirm(plan: WorkerRollbackPlan): Promise<boolean> {
   }
   const prompt = createInterface({
     input: process.stdin,
-    output: process.stdout,
+    output: process.stderr,
   });
   try {
     const answer = await prompt.question(
-      `Roll back production code to deployment ${plan.target.deploymentId}? Data and Secrets will NOT be rolled back. [y/N] `,
+      `Roll back production code and deployment configuration to ${plan.target.deploymentId}? Data and Secrets will NOT be rolled back. [y/N] `,
     );
     return /^(?:y|yes)$/i.test(answer.trim());
   } finally {
@@ -204,13 +205,12 @@ export async function createWorkerRollbackPlan(
         (item) =>
           item.environmentId === environmentId &&
           item.status === "ACTIVE" &&
-          item.id !== currentIdentity.deploymentId &&
-          item.artifactId !== currentIdentity.artifactId,
+          item.id !== currentIdentity.deploymentId,
       )
       .sort((a, b) => timestamp(b) - timestamp(a))[0];
     if (!target) {
       throw new WorkerPushError(
-        `No previous ACTIVE ${options.environment} deployment with different code is visible`,
+        `No previous ACTIVE ${options.environment} deployment is visible`,
       );
     }
   } else {
@@ -224,9 +224,9 @@ export async function createWorkerRollbackPlan(
           "Explicit rollback target is not an ACTIVE deployment in the selected environment",
         );
       }
-      if (target.artifactId === currentIdentity.artifactId) {
+      if (target.id === currentIdentity.deploymentId) {
         throw new WorkerPushError(
-          "Explicit rollback target uses the Artifact that is already active",
+          "Explicit rollback target is already the active deployment",
         );
       }
     }
@@ -248,10 +248,14 @@ export async function createWorkerRollbackPlan(
         : {}),
     },
     selection: options.to === "previous" ? "previous" : "explicit",
-    codeOnly: true,
+    codeOnly:
+      ((target?.providerResult as UnknownRecord | undefined)?.deploymentSnapshot as UnknownRecord | undefined)?.version !== 1 &&
+      !Array.isArray((target?.providerResult as UnknownRecord | undefined)?.containerOverrides) &&
+      (target?.providerResult as UnknownRecord | undefined)?.variableOverrides === undefined &&
+      (target?.providerResult as UnknownRecord | undefined)?.nativeMetadataOverrides === undefined,
     dataAndSecretsRolledBack: false,
     warning:
-      "Only Worker code is rolled back. D1, R2, KV, Durable Objects, Queues, Workflows, configuration, and Secrets keep their current state.",
+      "Re-deploy the selected Artifact code, public variables, compatibility settings, required Secret names and Container configuration. D1, R2, KV, Durable Object data, Queue/Workflow state, schedules and Secret values keep their current state; Secret values are not restored from a historical value snapshot; D1 migrations are explicit commands.",
     requiresConfirmation: options.environment === "production",
   };
   return { plan, worker };
@@ -319,6 +323,7 @@ export async function rollbackWorkerProject(
     prepared.plan.workerId,
     prepared.plan.environment,
     prepared.plan.target.deploymentId,
+    prepared.plan.current.deploymentId,
   );
   const serverIdempotencyKey = `rollback:${idempotencyKey}`;
   const wait =
@@ -347,20 +352,9 @@ export async function rollbackWorkerProject(
       "Worker",
     );
     deployment = deploymentFromWorker(worker, undefined, serverIdempotencyKey);
-    if (!deployment) {
-      deployment = record(
-        await api.rollbackWorker(
-          options.clientOptions,
-          prepared.plan.workerId,
-          prepared.plan.environment,
-          {
-            deploymentId: prepared.plan.target.deploymentId,
-            idempotencyKey,
-          },
-        ),
-        "Rollback deployment",
-      );
-    }
+    // The write may still arrive. Only observe the original operation; never
+    // dispatch a second rollback merely because its projection is not visible.
+    if (!deployment) throw error;
   }
   const active = await waitForActiveRollback(
     api,

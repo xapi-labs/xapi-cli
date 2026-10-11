@@ -20,6 +20,7 @@ import {
   type LoadedWorkerProject,
   WorkerProjectConfigError,
   loadWorkerProject,
+  workerEnvironmentContainers,
   workerProjectConfigSchema,
 } from "./workers-project.ts";
 import {
@@ -28,8 +29,14 @@ import {
   type WorkerDeploymentPlan,
 } from "./workers-plan.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
-import { remoteWorkerResourceState } from "./workers-resource-state.ts";
-import { deploymentPrefix, deploymentKey, currentMatchingDeployment } from "./workers-deployment-state.ts";
+import { WorkerArtifactConfirmationPendingError, WorkerArtifactObjectUploadError } from "./workers-direct-upload.ts";
+import {
+  remoteWorkerResourceState,
+  resourceReadyForDeployment,
+  r2ReadinessPending,
+  r2CreationRetryable,
+} from "./workers-resource-state.ts";
+import { deploymentPrefix, deploymentKey, currentMatchingDeployment, safeDeploymentRetryKey, deploymentBindingResources } from "./workers-deployment-state.ts";
 import {
   inspectWorker,
   type WorkerInspection,
@@ -44,10 +51,16 @@ const WORKER_ID =
 const DEPLOYMENT_TIMEOUT_MS = 3 * 60_000;
 const HEALTH_ATTEMPTS = 10;
 const HEALTH_INTERVAL_MS = 1_000;
+const HEALTH_TIMEOUT_MS = 75_000;
+const HEALTH_AUTHORIZATION_ATTEMPTS = 75;
+const HEALTH_ERROR_BODY_BYTES = 8_192;
+const POSTPAID_STATE_UNAVAILABLE = "workers_postpaid_state_unavailable";
 
 type UnknownRecord = Record<string, unknown>;
 
 export interface DeploymentClient {
+  recoverWorkerControlOperation?: typeof workersClient.recoverWorkerControlOperation;
+  workerControlOperations?: typeof workersClient.workerControlOperations;
   listWorkerResources(options: WorkersClientOptions, id: string, environment: string): Promise<unknown>;
   listWorkerSecrets(options: WorkersClientOptions, id: string, environment: string): Promise<unknown>;
   getWorker(options: WorkersClientOptions, id: string): Promise<unknown>;
@@ -59,6 +72,7 @@ export interface DeploymentClient {
 }
 
 export interface PushClient extends PlanClient, DeploymentClient, NativeDeploymentClient {
+  workerRetention?: typeof workersClient.workerRetention;
   listWorkerDomains(
     options: WorkersClientOptions,
     id: string,
@@ -77,7 +91,7 @@ export interface PushClient extends PlanClient, DeploymentClient, NativeDeployme
     options: WorkersClientOptions,
     id: string,
     environment: string,
-    input: { dailyBudgetUsd?: number; defaultResourceLocation?: string; placementMode?: string },
+    input: { dailyBudgetUsd?: number | null; defaultResourceLocation?: string; placementMode?: string },
   ): Promise<unknown>;
   createWorkerResource(
     options: WorkersClientOptions,
@@ -134,7 +148,9 @@ export interface PushWorkerProjectOptions {
   client?: PushClient;
   confirm?: (plan: WorkerDeploymentPlan) => Promise<boolean>;
   onPlan?: (plan: WorkerDeploymentPlan) => void;
+  onProgress?: (message: string) => void;
   runBuild?: WorkerProjectBuildRunner;
+  buildTimeoutMs?: number;
   fetchPublic?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
 }
@@ -145,14 +161,19 @@ export interface WorkerPushResult {
   initialPlan: WorkerDeploymentPlan;
   worker: { id: string; created: boolean; configLinked: boolean };
   resources: { created: string[]; unchanged: string[] };
+  events?: {queueConsumers:string[]; crons:string[]};
   artifact: { id: string; contentSha256: string; sizeBytes: number };
-  deployment: { id: string; status: "ACTIVE"; idempotencyKey: string };
+  deployment: { id: string; status: "ACTIVE"; idempotencyKey: string; containerRollout?: Record<string,unknown> };
   nativeReceipts: unknown[];
   publicUrl: string;
   routing?: { mode?: string; webAppReady: boolean; publicOrigin?: string; publicBasePath?: string };
   health: { url: string; status: number; attempts: number };
+  healthReady: boolean;
+  paused?: true;
+  publicAccessStatus?: "PAUSED";
+  message?: string;
   inspection: WorkerInspection;
-  commands: { inspect: string; logs: string; promote: string };
+  commands: { inspect: string; logs: string; promote: string; resume?: string };
 }
 
 export class WorkerPushError extends Error {
@@ -224,7 +245,7 @@ async function terminalConfirm(): Promise<boolean> {
   }
   const prompt = createInterface({
     input: process.stdin,
-    output: process.stdout,
+    output: process.stderr,
   });
   try {
     const answer = await prompt.question("Apply this preview plan? [y/N] ");
@@ -370,7 +391,7 @@ async function ensureEnvironment(
   let worker = record(await api.getWorker(options, workerId), "Worker");
   let environment = environmentOf(worker, "preview");
   const matches = () =>
-    Math.abs((amount(environment.dailyBudgetUsd) ?? NaN) - desired.dailyBudgetUsd) <= 0.00005 &&
+    (desired.dailyBudgetUsd === null ? environment.dailyBudgetUsd === null : Math.abs((amount(environment.dailyBudgetUsd) ?? NaN) - desired.dailyBudgetUsd) <= 0.00005) &&
     (!desired.defaultResourceLocation || text(environment.defaultResourceLocation) === desired.defaultResourceLocation) &&
     (!desired.placementMode || (text(environment.placementMode) || "off") === desired.placementMode);
   if (matches()) {
@@ -400,7 +421,8 @@ export function resourceMatches(
   const remoteLocation = state.requestedLocation || state.effectiveLocation;
   return (
     state.type === desired.type &&
-    (desired.type !== "durable_object" || state.className === desired.className) &&
+    (!["durable_object", "workflow"].includes(String(desired.type)) || state.className === desired.className) &&
+    (desired.workflowName === undefined || state.workflowName === desired.workflowName) &&
     (!desired.location || remoteLocation === desired.location) &&
     (!desired.readReplication ||
       state.readReplication === desired.readReplication)
@@ -414,6 +436,10 @@ export async function ensureManagedResources(
   environment: "preview" | "production",
   desired: LoadedWorkerProject["config"]["environments"]["preview"]["resources"],
   retentionPriceVersion?: string,
+  wait: {
+    sleep?: (milliseconds: number) => Promise<void>;
+    onProgress?: (message: string) => void;
+  } = {},
 ): Promise<{ created: string[]; unchanged: string[] }> {
   let remote = records(
     await api.listWorkerResources(options, workerId, environment),
@@ -423,9 +449,12 @@ export async function ensureManagedResources(
   for (const item of remote) {
     const bindingName = text(item.bindingName);
     if (!bindingName) {
-      throw new WorkerPushError("xAPI returned a managed resource without bindingName", {
-        workerId,
-      });
+      throw new WorkerPushError(
+        "xAPI returned a managed resource without bindingName",
+        {
+          workerId,
+        },
+      );
     }
     if (remoteBindings.has(bindingName)) {
       throw new WorkerPushError(
@@ -450,16 +479,73 @@ export async function ensureManagedResources(
           { workerId, bindingName: resource.bindingName },
         );
       }
-      unchanged.push(resource.bindingName);
-      continue;
+      if (resourceReadyForDeployment(remoteWorkerResourceState(existing))) {
+        unchanged.push(resource.bindingName);
+        continue;
+      }
+      if (!r2ReadinessPending(existing) && !r2CreationRetryable(existing)) {
+        throw new WorkerPushError(
+          `Resource ${resource.bindingName} is ${existing.status}; it is not ready for deployment`,
+          { workerId },
+        );
+      }
     }
-    try {
-      await api.createWorkerResource(options, workerId, environment, {
-        ...resource,
-        ...(retentionPriceVersion ? { retentionPriceVersion } : {}),
-      });
-    } catch (error) {
-      if (!shouldReconcileWrite(error)) throw error;
+    const wasExisting = Boolean(existing);
+    let resourceId = text(existing?.id);
+    let providerId = text(existing?.providerResourceId);
+    const deadline = performance.now() + 600_000;
+    const sleep =
+      wait.sleep ||
+      ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const pendingTimeout = () => new WorkerPushError(
+      `R2 ${resource.bindingName} initialization is still pending; no code was uploaded or deployed`,
+      {
+        workerId, resourceId, bindingName: resource.bindingName,
+        code: "R2_EVENT_CAPTURE_NOT_READY", status: "PENDING",
+        next: "Rerun the same xapi workers push command to continue this bucket; do not destroy or recreate it",
+      },
+    );
+    for (let attempt = 0; ; attempt++) {
+      if (attempt > 0 && performance.now() >= deadline) throw pendingTimeout();
+      let failure: unknown;
+      let retryDelay = 5_000;
+      let continuableResponse = false;
+      try {
+        const created = await api.createWorkerResource(options, workerId, environment, {
+          ...resource,
+          ...(retentionPriceVersion ? { retentionPriceVersion } : {}),
+        });
+        const result = record(created, "created resource");
+        const initialization = result.initialization === undefined
+          ? undefined
+          : record(result.initialization, "R2 initialization");
+        continuableResponse = initialization?.automaticProbeRetry !== false;
+        if (
+          typeof initialization?.retryAfterSeconds === "number" &&
+          Number.isFinite(initialization.retryAfterSeconds)
+        ) {
+          retryDelay = Math.max(5_000, initialization.retryAfterSeconds * 1000);
+        }
+      } catch (error) {
+        if (!shouldReconcileWrite(error)) throw error;
+        failure = error;
+        if (error instanceof HttpError && error.status === 503) {
+          try {
+            const body = JSON.parse(error.message.slice("HTTP 503: ".length));
+            continuableResponse =
+              body.code === "R2_EVENT_CAPTURE_NOT_READY" &&
+              body.automaticProbeRetry !== false;
+            if (
+              typeof body.retryAfterSeconds === "number" &&
+              Number.isFinite(body.retryAfterSeconds)
+            ) {
+              retryDelay = Math.max(5_000, body.retryAfterSeconds * 1000);
+            }
+          } catch {
+            /* An unrecognized response is not permission to replay. */
+          }
+        }
+      }
       remote = records(
         await api.listWorkerResources(options, workerId, environment),
         "managed resources",
@@ -467,10 +553,42 @@ export async function ensureManagedResources(
       existing = remote.find(
         (item) => item.bindingName === resource.bindingName,
       );
-      if (!existing || !resourceMatches(existing, resource)) throw error;
+      if (
+        !existing ||
+        !resourceMatches(existing, resource) ||
+        (resourceId && existing.id !== resourceId) ||
+        (providerId && existing.providerResourceId !== providerId)
+      ) {
+        throw (
+          failure ||
+          new WorkerPushError(
+            `Resource ${resource.bindingName} changed during initialization`,
+            { workerId },
+          )
+        );
+      }
+      resourceId = text(existing.id);
+      providerId = text(existing.providerResourceId);
+      if (resourceReadyForDeployment(remoteWorkerResourceState(existing)))
+        break;
+      if (!continuableResponse || !r2ReadinessPending(existing)) {
+        throw (
+          failure ||
+          new WorkerPushError(`Resource ${resource.bindingName} is not ready`, {
+            workerId,
+            status: existing.status,
+          })
+        );
+      }
+      if (attempt >= 120 || performance.now() + retryDelay >= deadline) {
+        throw pendingTimeout();
+      }
+      wait.onProgress?.(
+        `R2 ${resource.bindingName}: waiting for metering events; continuing the existing bucket (up to 600s)`,
+      );
+      await sleep(retryDelay);
     }
-    created.push(resource.bindingName);
-    remote.push({ ...resource, status: "ACTIVE" });
+    (wasExisting ? unchanged : created).push(resource.bindingName);
   }
   return { created: created.sort(), unchanged: unchanged.sort() };
 }
@@ -494,27 +612,47 @@ async function ensureArtifact(
   options: WorkersClientOptions,
   workerId: string,
   bundle: LoadedWorkerArtifact,
+  sleep: (milliseconds: number) => Promise<void>,
 ): Promise<UnknownRecord> {
   const idempotencyKey = stableKey(
     "xapi-worker-artifact-v1",
     workerId,
     bundle.contentSha256,
   );
-  const find = async () =>
-    records(await api.listWorkerArtifacts(options, workerId), "Artifacts").find(
+  const validate = (artifact: UnknownRecord) => {
+    if (!text(artifact.id) || artifact.contentSha256 !== bundle.contentSha256 ||
+        artifact.sizeBytes !== bundle.sizeBytes ||
+        (artifact.workerId !== undefined && artifact.workerId !== workerId)) {
+      throw new WorkerPushError("xAPI Artifact identity does not match the local bundle", {
+        artifactId: text(artifact.id),
+      });
+    }
+    return artifact;
+  };
+  const find = async () => {
+    const artifact = records(await api.listWorkerArtifacts(options, workerId), "Artifacts").find(
       (item) => item.contentSha256 === bundle.contentSha256,
     );
+    return artifact ? validate(artifact) : undefined;
+  };
   const prior = await find();
   if (prior) return prior;
   try {
-    return record(
+    return validate(record(
       await api.uploadWorkerArtifact(options, workerId, {
         ...bundle.upload,
         idempotencyKey,
       }),
       "Artifact",
-    );
+    ));
   } catch (error) {
+    if (error instanceof WorkerArtifactObjectUploadError)
+      throw new WorkerPushError(error.message, {workerId, ...error.recovery});
+    if (error instanceof WorkerArtifactConfirmationPendingError) {
+      const reconciled = await find();
+      if (reconciled) return reconciled;
+      throw new WorkerPushError(error.message, { workerId, ...error.recovery });
+    }
     if (error instanceof HttpError && error.status === 413 && "bundle" in bundle.upload) {
       throw new WorkerPushError(
         "The xAPI control plane rejected the complete-project upload before Artifact creation",
@@ -527,15 +665,35 @@ async function ensureArtifact(
       );
     }
     if (!shouldReconcileWrite(error)) throw error;
-    const reconciled = await find();
-    if (reconciled) return reconciled;
-    return record(
-      await api.uploadWorkerArtifact(options, workerId, {
-        ...bundle.upload,
-        idempotencyKey,
-      }),
-      "Artifact",
-    );
+    // Confirmation may still be committing after a proxy/transport timeout.
+    // Brief reads let that write settle before reusing the same immutable key.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt) await sleep(attempt * 250);
+      const reconciled = await find();
+      if (reconciled) return reconciled;
+    }
+    try {
+      return validate(record(
+        await api.uploadWorkerArtifact(options, workerId, {
+          ...bundle.upload,
+          idempotencyKey,
+        }),
+        "Artifact",
+      ));
+    } catch (retryError) {
+      if (retryError instanceof WorkerArtifactObjectUploadError)
+        throw new WorkerPushError(retryError.message, {workerId, ...retryError.recovery});
+      if (retryError instanceof WorkerArtifactConfirmationPendingError) {
+        const reconciled = await find();
+        if (reconciled) return reconciled;
+        throw new WorkerPushError(retryError.message, { workerId, ...retryError.recovery });
+      }
+      if (!shouldReconcileWrite(retryError) &&
+          !(retryError instanceof Error && retryError.message === "Worker upload has missing files")) throw retryError;
+      const reconciled = await find();
+      if (reconciled) return reconciled;
+      throw retryError;
+    }
   }
 }
 
@@ -613,6 +771,8 @@ export async function ensureActiveDeployment(
   retentionPriceVersion?: string,
   desiredBindings?: string[],
   expectedActiveDeploymentId?: string | null,
+  retrySafeFailures = false,
+  containerOverrides?: import("./workers-artifact.ts").WorkerContainerInput[],
 ): Promise<{ deployment: UnknownRecord; idempotencyKey: string }> {
   const currentWorker = record(
     await api.getWorker(options, workerId),
@@ -629,9 +789,9 @@ export async function ensureActiveDeployment(
     if (matches.length !== 1 || !text(matches[0].id))
       throw new WorkerPushError(`Resource binding ${name} is missing or ambiguous; rerun plan`);
     return matches[0];
-  }) : resourceRows;
+  }) : deploymentBindingResources(resourceRows);
   const resourceIds = selected.filter(row => row.type !== "CONTAINER_APPLICATION").map(row => text(row.id)!);
-  const prefix = deploymentPrefix(workerId, environment, artifactId, compatibility,
+  const prefix = deploymentPrefix(workerId, environment, artifactId, {...compatibility, ...(containerOverrides !== undefined ? {containers:containerOverrides} : {})},
     environmentState, selected, records(secretState, "Secrets"));
   const alreadyActive = currentMatchingDeployment(records(currentWorker.deployments || [], "Deployments"),
     environmentState, artifactId, prefix);
@@ -641,13 +801,50 @@ export async function ensureActiveDeployment(
   if (expectedActiveDeploymentId !== undefined &&
       expectedActiveDeploymentId !== (text(environmentState.activeDeploymentId) || null))
     throw new WorkerPushError("Active deployment changed after plan; rerun plan before replacing it", {workerId});
-  const idempotencyKey = deploymentKey(prefix, environmentState);
-  let deployment = await deploymentFromWorker(
-    api,
-    options,
-    workerId,
-    idempotencyKey,
-  );
+  const baseKey = deploymentKey(prefix, environmentState);
+  let idempotencyKey = baseKey;
+  // The public Worker snapshot returns deployments newest first. Restrict
+  // retries to this exact input fingerprint and previous activation baseline;
+  // older failures need not remain in the bounded history response.
+  const deployments = records(currentWorker.deployments || [], "Deployments");
+  let deployment = retrySafeFailures
+    ? deployments.find(item => item.environmentId === environmentState.id && item.artifactId === artifactId &&
+        (item.idempotencyKey === baseKey || (typeof item.idempotencyKey === "string" &&
+          item.idempotencyKey.startsWith(`${baseKey}-r`) && /^[0-9a-f]{24}$/.test(item.idempotencyKey.slice(baseKey.length + 2)))))
+    : await deploymentFromWorker(api, options, workerId, idempotencyKey);
+  if (deployment && retrySafeFailures) {
+    idempotencyKey = text(deployment.idempotencyKey)!;
+    const retryKey = safeDeploymentRetryKey(baseKey, deployment);
+    if (retryKey) {
+      idempotencyKey = retryKey;
+      deployment = deployments.find(item => item.idempotencyKey === retryKey &&
+        item.environmentId === environmentState.id && item.artifactId === artifactId);
+    }
+  }
+  if (deployment?.status === "FAILED") {
+    const outcome = deployment.outcome as UnknownRecord | undefined;
+    const provider = deployment.providerResult as UnknownRecord | undefined;
+    const operationId = text(outcome?.operationId) || text(provider?.controlOperationId);
+    if (operationId && api.recoverWorkerControlOperation) {
+      // Observation reconciles the original operation; it never replays its write.
+      await api.recoverWorkerControlOperation(options, workerId, operationId);
+      deployment = await deploymentFromWorker(api, options, workerId, idempotencyKey);
+      if (!deployment) throw new WorkerPushError("The original deployment journal could not be reconciled; no new deployment was sent", {
+        workerId, operationId, idempotencyKey, automaticReplay: false,
+      });
+      const observed = deployment.outcome as UnknownRecord | undefined;
+      if (retrySafeFailures && deployment.status === "FAILED" &&
+          observed?.providerEffect === "ALL_WRITES_CONFIRMED" &&
+          (observed.observation as UnknownRecord | undefined)?.status === "MATCH") {
+        idempotencyKey = `${baseKey}-r${createHash("sha256").update(JSON.stringify([
+          deployment.id, operationId, "native-confirmed-explicit-publish",
+        ])).digest("hex").slice(0, 24)}`;
+        deployment = deployments.find(item => item.idempotencyKey === idempotencyKey &&
+          item.environmentId === environmentState.id && item.artifactId === artifactId);
+      }
+    }
+  }
+  // At most one POST per invocation, even if it returns another safe failure.
   if (!deployment) {
     try {
       deployment = record(
@@ -659,6 +856,12 @@ export async function ensureActiveDeployment(
           idempotencyKey,
           compatibilityDate: compatibility.compatibilityDate,
           compatibilityFlags: compatibility.compatibilityFlags,
+          ...(compatibility.requiredSecrets !== undefined ? {requiredSecrets:compatibility.requiredSecrets} : {}),
+          ...(compatibility.nativeMetadata !== undefined ? {nativeMetadata:compatibility.nativeMetadata} : {}),
+          ...(compatibility.nativeMetadataIsComplete === true ? {nativeMetadataIsComplete:true} : {}),
+          ...(compatibility.variables !== undefined ? {variables:compatibility.variables} : {}),
+          ...(compatibility.queueBindingAliases !== undefined ? {queueBindingAliases:compatibility.queueBindingAliases} : {}),
+          ...(containerOverrides !== undefined ? {containers:containerOverrides} : {}),
           ...(retentionPriceVersion ? { retentionPriceVersion } : {}),
         }),
         "Deployment",
@@ -691,12 +894,44 @@ export async function ensureActiveDeployment(
   };
 }
 
+// Only this structured platform error earns a longer readiness wait. Never
+// buffer an arbitrary application response or include its body in diagnostics.
+async function postpaidStateUnavailable(response: Response, signal: AbortSignal): Promise<boolean> {
+  if (response.status !== 503 || !response.body) return false;
+  const reader = response.body.getReader();
+  const cancel = () => { void reader.cancel().catch(() => undefined); };
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    const body = new Uint8Array(HEALTH_ERROR_BODY_BYTES);
+    let size = 0;
+    while (!signal.aborted) {
+      const { done, value } = await reader.read();
+      if (done) {
+        if (signal.aborted) return false;
+        const parsed = JSON.parse(new TextDecoder().decode(body.subarray(0, size)));
+        return parsed?.error?.code === POSTPAID_STATE_UNAVAILABLE;
+      }
+      if (size + value.byteLength > body.byteLength) return false;
+      body.set(value, size);
+      size += value.byteLength;
+    }
+  } catch {
+    // Invalid, truncated or unavailable bodies are ordinary health failures.
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    cancel();
+    reader.releaseLock();
+  }
+  return false;
+}
+
 export async function checkWorkerHealth(
   worker: UnknownRecord,
   environmentName: "preview" | "production",
   path: string,
   fetchPublic: typeof fetch,
   sleep: (milliseconds: number) => Promise<void>,
+  now: () => number = () => performance.now(),
 ): Promise<{ url: string; status: number; attempts: number }> {
   const environment = environmentOf(worker, environmentName);
   const publicUrl = text(environment.publicUrl);
@@ -716,40 +951,98 @@ export async function checkWorkerHealth(
     throw new WorkerPushError("Worker health URL must use HTTPS");
   }
   let lastStatus = 0;
-  for (let attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt += 1) {
+  let lastErrorCode: string | undefined;
+  let attempts = 0;
+  const started = now();
+  const remaining = () => HEALTH_TIMEOUT_MS - (now() - started);
+  // Both an elapsed-time ceiling and an attempt ceiling: slow requests cannot
+  // stretch the window, and injected/no-op sleeps cannot make polling infinite.
+  while (attempts < HEALTH_AUTHORIZATION_ATTEMPTS && remaining() > 0) {
+    attempts += 1;
+    lastStatus = 0;
+    lastErrorCode = undefined;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
+    const timer = setTimeout(() => controller.abort(), Math.min(10_000, remaining()));
+    let response: Response | undefined;
     try {
-      const response = await fetchPublic(target, {
+      response = await fetchPublic(target, {
         method: "GET",
         headers: { Accept: "application/json" },
         redirect: "manual",
         signal: controller.signal,
       });
       lastStatus = response.status;
-      if (response.ok) {
+      if (response.ok && !controller.signal.aborted && remaining() > 0) {
         return {
           url: target.toString(),
           status: response.status,
-          attempts: attempt,
+          attempts,
         };
       }
+      if (await postpaidStateUnavailable(response, controller.signal)) {
+        lastErrorCode = POSTPAID_STATE_UNAVAILABLE;
+      }
     } catch {
-      lastStatus = 0;
+      // Preserve an HTTP status if headers arrived before the body failed.
     } finally {
       clearTimeout(timer);
+      controller.abort();
+      // Do not wait for cancellation of a streaming/never-ending body.
+      if (response?.body && !response.body.locked) {
+        void response.body.cancel().catch(() => undefined);
+      }
     }
-    if (attempt < HEALTH_ATTEMPTS) await sleep(HEALTH_INTERVAL_MS);
+    if (attempts >= HEALTH_ATTEMPTS && lastErrorCode !== POSTPAID_STATE_UNAVAILABLE) break;
+    if (attempts >= HEALTH_AUTHORIZATION_ATTEMPTS || remaining() <= 0) break;
+    await sleep(Math.min(HEALTH_INTERVAL_MS, remaining()));
   }
   throw new WorkerPushError(
-    "Deployment is ACTIVE but its health check failed",
+    lastErrorCode === POSTPAID_STATE_UNAVAILABLE
+      ? "Deployment is ACTIVE but public access authorization is not yet ready; runtime readiness is unconfirmed"
+      : "Deployment is ACTIVE but its health check failed",
     {
       publicUrl,
       healthUrl: target.toString(),
       lastStatus,
-      recovery: `xapi workers logs ${text(worker.id) || "<worker-id>"} --env ${environmentName}`,
+      ...(lastErrorCode ? { lastErrorCode } : {}),
+      attempts,
+      elapsedMs: Math.max(0, Math.round(now() - started)),
+      deploymentStatus: "ACTIVE",
+      healthReady: false,
+      recovery: lastErrorCode === POSTPAID_STATE_UNAVAILABLE
+        ? `Recheck healthUrl with a read-only GET and inspect with xapi workers inspect ${text(worker.id) || "<worker-id>"} --env ${environmentName}; do not republish to retry health`
+        : `xapi workers logs ${text(worker.id) || "<worker-id>"} --env ${environmentName}`,
     },
   );
+}
+
+// Public responses are tenant-controlled. Only authenticated, matching control
+// plane observations can explain a 403 as an intentionally paused environment.
+async function ownerPausedDeployment(
+  api: PushClient,
+  options: WorkersClientOptions,
+  workerId: string,
+  environmentId: string,
+  deploymentId: string,
+): Promise<boolean> {
+  if (!api.workerRetention) return false;
+  try {
+    const retention = record(await api.workerRetention(options, workerId, "preview"), "retention");
+    const lifecycle = record(retention.lifecycle, "lifecycle");
+    if (retention.enabled !== true || lifecycle.workerId !== workerId ||
+        lifecycle.environmentId !== environmentId || lifecycle.state !== "SUSPENDED_GRACE" ||
+        lifecycle.pauseReason !== "USER" || lifecycle.manualDeletionRequestedAt !== null ||
+        lifecycle.resumeRequestedAt !== null) return false;
+    const worker = record(await api.getWorker(options, workerId), "Worker");
+    const environment = environmentOf(worker, "preview");
+    return worker.id === workerId && environment.id === environmentId &&
+      environment.enabled === false && environment.activeDeploymentId === deploymentId &&
+      records(worker.deployments, "Deployments").some(item => item.id === deploymentId &&
+        item.environmentId === environmentId && item.status === "ACTIVE");
+  } catch {
+    // Unavailable or incomplete status evidence retains the original failure.
+    return false;
+  }
 }
 
 function unsafePlanBlockers(
@@ -790,6 +1083,7 @@ export async function pushWorkerProject(
       clientOptions: options.clientOptions,
       client: api,
       runBuild: options.runBuild,
+      buildTimeoutMs: options.buildTimeoutMs,
     });
   } catch (error) {
     if (error instanceof WorkerProjectBuildError) {
@@ -823,6 +1117,7 @@ export async function pushWorkerProject(
                       action.kind === "resource"),
                 )
                 .map((action) => `${action.kind}:${action.key}`),
+        details: initialPlan.actions.filter(action => action.operation === "BLOCKED" || action.operation === "MANUAL").map(action => ({ kind: action.kind, key: action.key, message: action.message })),
         next: "Resolve BLOCKED and MANUAL resource items, then rerun xapi workers plan --env preview",
       },
     );
@@ -876,13 +1171,14 @@ export async function pushWorkerProject(
       "preview",
       linkedProject.config.environments.preview.resources,
       options.retentionPriceVersion,
+      { sleep: options.sleep, onProgress: options.onProgress },
     );
     const nativePlan = prepared.nativePlan;
     const missing = await missingSecrets(
       api,
       options.clientOptions,
       workerState.id,
-      linkedProject.config.environments.preview.secrets,
+      compatibility.requiredSecrets || [],
     );
     if (missing.length) {
       throw new WorkerPushError(
@@ -890,6 +1186,8 @@ export async function pushWorkerProject(
         {
           workerId: workerState.id,
           missingSecrets: missing,
+          batchCommand: `xapi workers secrets apply ${workerState.id} --env preview --env-file .env.worker`,
+          next: "Set the missing Secret values, then rerun the original push command; workerId is already saved in the project config",
           commands: missing.map(
             (name) =>
               `xapi workers secrets set ${workerState.id} ${name} --env preview --from-env ${name}`,
@@ -899,9 +1197,10 @@ export async function pushWorkerProject(
     }
     const artifact = await ensureArtifact(
       api,
-      options.clientOptions,
+      {...options.clientOptions,artifactUploadProgress:options.onProgress},
       workerState.id,
       bundle,
+      options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))),
     );
     const artifactId = text(artifact.id);
     if (!artifactId)
@@ -914,7 +1213,6 @@ export async function pushWorkerProject(
         },
       );
     }
-    nativeReceipts.push(...await applyNativeDeploymentPhase(api, options.clientOptions, workerState.id, "preview", nativePlan, "BEFORE_CODE"));
     const deployed = await ensureActiveDeployment(
       api,
       options.clientOptions,
@@ -928,6 +1226,8 @@ export async function pushWorkerProject(
       options.retentionPriceVersion,
       linkedProject.config.environments.preview.resources.map(resource => resource.bindingName),
       initialPlan.remote.activeDeploymentId,
+      true,
+      workerEnvironmentContainers(linkedProject.config,"preview"),
     );
     releasedDeploymentId = text(deployed.deployment.id);
     nativeReceipts.push(...await applyNativeDeploymentPhase(api, options.clientOptions, workerState.id, "preview", nativePlan, "AFTER_CODE"));
@@ -939,17 +1239,31 @@ export async function pushWorkerProject(
       await api.getWorker(options.clientOptions, workerState.id),
       "Worker",
     );
-    const health = await checkWorkerHealth(
-      finalWorker,
-      "preview",
-      linkedProject.config.environments.preview.healthCheck,
-      options.fetchPublic || fetch,
-      options.sleep ||
-        ((milliseconds) =>
-          new Promise((resolve) => setTimeout(resolve, milliseconds))),
-    );
-    const publicUrl = text(environmentOf(finalWorker, "preview").publicUrl)!;
     const finalEnvironment = environmentOf(finalWorker, "preview");
+    let health: WorkerPushResult["health"];
+    let paused = false;
+    try {
+      health = await checkWorkerHealth(
+        finalWorker,
+        "preview",
+        linkedProject.config.environments.preview.healthCheck,
+        options.fetchPublic || fetch,
+        options.sleep ||
+          ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))),
+      );
+    } catch (error) {
+      if (!(error instanceof WorkerPushError) || error.recovery.lastStatus !== 403 ||
+          finalWorker.id !== workerState.id || deployed.deployment.environmentId !== finalEnvironment.id ||
+          !await ownerPausedDeployment(api, options.clientOptions, workerState.id,
+            text(finalEnvironment.id)!, deploymentId)) throw error;
+      paused = true;
+      health = {
+        url: error.recovery.healthUrl as string,
+        status: 403,
+        attempts: error.recovery.attempts as number,
+      };
+    }
+    const publicUrl = text(environmentOf(finalWorker, "preview").publicUrl)!;
     const inspection = await inspectWorker({
       workerId: workerState.id,
       environment: "preview",
@@ -961,6 +1275,7 @@ export async function pushWorkerProject(
       status: "ACTIVE",
       initialPlan,
       nativeReceipts,
+      events: {queueConsumers:nativePlan.consumers.map(item=>item.bindingName),crons:nativePlan.crons},
       worker: {
         id: workerState.id,
         created: workerState.created,
@@ -973,23 +1288,31 @@ export async function pushWorkerProject(
         sizeBytes: bundle.sizeBytes,
       },
       deployment: {
+        ...(deployed.deployment.containerRollout ? {containerRollout:deployed.deployment.containerRollout as Record<string,unknown>} : {}),
         id: deploymentId,
         status: "ACTIVE",
         idempotencyKey: deployed.idempotencyKey,
       },
       publicUrl,
-      ...(linkedProject.config.assets ? { routing: {
+      ...("bundle" in bundle.upload && bundle.upload.bundle.assets ? { routing: {
         mode: text(finalEnvironment.routingMode),
         webAppReady: finalEnvironment.webAppReady === true,
         publicOrigin: text(finalEnvironment.publicOrigin),
         publicBasePath: text(finalEnvironment.publicBasePath),
       } } : {}),
       health,
+      healthReady: !paused,
+      ...(paused ? {
+        paused: true as const,
+        publicAccessStatus: "PAUSED" as const,
+        message: "Deployment succeeded. The environment remains owner-paused; public access is closed. Resume the environment before checking health and business access; do not republish to retry health.",
+      } : {}),
       inspection,
       commands: {
         inspect: `xapi workers inspect ${workerState.id} --env preview`,
         logs: `xapi workers logs ${workerState.id} --env preview`,
         promote: "xapi workers promote --to production",
+        ...(paused ? { resume: `xapi workers retention resume ${workerState.id} --env preview` } : {}),
       },
     };
   } catch (error) {

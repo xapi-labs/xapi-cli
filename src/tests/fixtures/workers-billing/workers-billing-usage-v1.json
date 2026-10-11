@@ -1,0 +1,561 @@
+{
+  "contractVersion": 1,
+  "status": "MAIN_REVIEWER_CONFIRMED_TECHNICAL_SCOPE",
+  "decisionAuthority": "MAIN_REVIEWER_TECHNICAL_DECISION",
+  "humanWireApproval": false,
+  "scope": "纠正默认用量统计；PG聚合降低开销；协调已有CLI/前端。不动收费policy、价格、钱包、授信或ledger/transactions。先交付PR389；usage backend另main-based feature/own PR；consumer由独立agents实现。",
+  "request": {
+    "method": "GET",
+    "path": "/v1/workers/{workerId}/environments/{environment}/billing/usage",
+    "queryFields": [
+      "from",
+      "to",
+      "snapshotTime",
+      "metric",
+      "resourceId",
+      "cursor"
+    ],
+    "cursor": "仅继续同一结果集，不是用户模式开关。无opt-in、新用户limit或--all要求。"
+  },
+  "responseSchema": {
+    "type": "object",
+    "properties": {
+      "schemaVersion": {
+        "const": 1
+      },
+      "snapshotId": {
+        "type": "string"
+      },
+      "snapshotTime": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "completeThrough": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "format": "date-time"
+      },
+      "dataQuality": {
+        "enum": [
+          "COMPLETE",
+          "PARTIAL",
+          "INDETERMINATE"
+        ]
+      },
+      "workerId": {
+        "type": "string"
+      },
+      "environment": {
+        "enum": [
+          "preview",
+          "production"
+        ]
+      },
+      "data": {
+        "$ref": "#/$defs/data"
+      }
+    },
+    "required": [
+      "schemaVersion",
+      "snapshotId",
+      "snapshotTime",
+      "completeThrough",
+      "dataQuality",
+      "workerId",
+      "environment",
+      "data"
+    ],
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$defs": {
+      "coverage": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "enum": [
+              "COMPLETE",
+              "PARTIAL",
+              "INDETERMINATE"
+            ]
+          },
+          "reasonCodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "status",
+          "reasonCodes"
+        ],
+        "additionalProperties": false
+      },
+      "sourceSelection": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "enum": [
+              "EVENT_SUM",
+              "CUMULATIVE_LATEST",
+              "UNRESOLVED"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dataset": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "provider",
+          "dataset"
+        ],
+        "additionalProperties": false
+      },
+      "summary": {
+        "type": "object",
+        "properties": {
+          "resourceId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resourceKey": {
+            "type": "string"
+          },
+          "metric": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+          },
+          "eventCount": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^(0|[1-9][0-9]*)$"
+          },
+          "sourceSelection": {
+            "$ref": "#/$defs/sourceSelection"
+          },
+          "coverage": {
+            "$ref": "#/$defs/coverage"
+          }
+        },
+        "required": [
+          "resourceId",
+          "resourceKey",
+          "metric",
+          "quantity",
+          "eventCount",
+          "sourceSelection",
+          "coverage"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "sourceSelection": {
+                  "properties": {
+                    "kind": {
+                      "const": "EVENT_SUM"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "then": {
+              "properties": {
+                "eventCount": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)$"
+                }
+              },
+              "type": "object"
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "sourceSelection": {
+                  "properties": {
+                    "kind": {
+                      "const": "CUMULATIVE_LATEST"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "then": {
+              "properties": {
+                "eventCount": {
+                  "type": "null"
+                }
+              },
+              "type": "object"
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "sourceSelection": {
+                  "properties": {
+                    "kind": {
+                      "const": "UNRESOLVED"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            },
+            "then": {
+              "properties": {
+                "quantity": {
+                  "type": "null"
+                },
+                "coverage": {
+                  "properties": {
+                    "status": {
+                      "const": "INDETERMINATE"
+                    }
+                  },
+                  "type": "object"
+                }
+              },
+              "type": "object"
+            }
+          }
+        ]
+      },
+      "total": {
+        "type": "object",
+        "properties": {
+          "metric": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+          },
+          "coverage": {
+            "$ref": "#/$defs/coverage"
+          }
+        },
+        "required": [
+          "metric",
+          "quantity",
+          "coverage"
+        ],
+        "additionalProperties": false
+      },
+      "bucket": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "enum": [
+              "COMPLETE",
+              "PARTIAL",
+              "GAP"
+            ]
+          },
+          "summaries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/summary"
+            }
+          },
+          "facts": {
+            "type": "array",
+            "items": {},
+            "maxItems": 0
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "status",
+          "summaries",
+          "facts"
+        ],
+        "additionalProperties": false
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "bucketSeconds": {
+            "const": 300
+          },
+          "bucketCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2016
+          },
+          "gapCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2016
+          },
+          "partialCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2016
+          },
+          "metric": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resourceId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "totals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/total"
+            }
+          },
+          "buckets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/bucket"
+            },
+            "maxItems": 2016
+          },
+          "pagination": {
+            "type": "object",
+            "properties": {
+              "hasMore": {
+                "type": "boolean"
+              },
+              "nextCursor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "hasMore",
+              "nextCursor"
+            ],
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "hasMore": {
+                      "const": true
+                    }
+                  },
+                  "type": "object"
+                },
+                "then": {
+                  "properties": {
+                    "nextCursor": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "type": "object"
+                },
+                "else": {
+                  "properties": {
+                    "nextCursor": {
+                      "type": "null"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            ]
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "bucketSeconds",
+          "bucketCount",
+          "gapCount",
+          "partialCount",
+          "metric",
+          "resourceId",
+          "totals",
+          "buckets",
+          "pagination"
+        ]
+      }
+    }
+  },
+  "semantics": {
+    "quantity": "已选来源的观测用量，精确十进制字符串；coverage独立描述是否完整。缺失、冲突或未知不能变为0。任一选源冲突使相关quantity=null。totals按整个scope每metric在PG计算，不从本页求和，不跨metric/单位相加。金额继续既有ledger。",
+    "identity": "summaries没有存储fact id、单事件providerRevision/finalizedAt；分组键为bucket.start/resourceKey/metric。snapshotId是响应快照标识，不是fact ID。",
+    "sourceSelection": "EVENT_SUM按独立Tail request identity累加，eventCount为精确整数串；CUMULATIVE_LATEST只取最新累计修订，eventCount=null；UNRESOLVED的quantity=null、coverage说明冲突。禁止同窗Tail和Provider相加；保留现有source优先级、D1/R2退役来源与已有配置豁免，不从raw操作重建收费量。",
+    "facts": "usage里的facts保留过渡shape，固定为空，不表示总量，消费者不得fallback sum(facts)。真实raw facts继续现有metered-usage/metering诊断（500/truncated）。该诊断不是全range/snapshot导出，truncated=false不证明coverage。",
+    "coverage": "逐事件FINALIZED不等于全窗口完整。117个Tail事件无窗口级证明时返回quantity=117、coverage/dataQuality=INDETERMINATE、bucket.status=PARTIAL、completeThrough=null。累计完整需要snapshot当时生效的全桶证据；缺失GAP，只有显式完整零量事实才显示0。",
+    "quality": "status/quality/gapCount/partialCount由PG对全部请求scope计算，独立于分页。COMPLETE需所有要求resource/metric/source窗口完整；未知覆盖优先INDETERMINATE。completeThrough仅推进从from起连续完整前缀。可变Provider cursor不能追溯代替历史证明。",
+    "paging": "PG按scope/snapshot/range裁剪、选源、聚合后keyset分页(bucketStart/resourceKey/metric)。每响应最多2016桶、合计2000 summaries、支持metric enum数量以内的totals。2000只是传输页大小，所有剩余aggregate可继续访问，无最大总页/总行丢弃。hasMore=true须有nextCursor，false须为null。每页totals/coverage相同，不能重复累加。",
+    "clientContinuation": "CLI/前端默认自动续页，固定首响应snapshotTime/snapshotId/from/to及filters；校验页上下文一致、游标前进、分组不重复。取消/失败不得声称完整读完。只消费PG summaries，不拉raw events JS；分页完备与coverage完整独立。"
+  },
+  "consumerImpact": {
+    "cli": [
+      "src/workers-billing-output.ts：usage读summaries/totals并显示coverage",
+      "src/commands/workers.ts + client/pager：默认自动续页，保持现有命令",
+      "src/tests/workers-billing-output.test.ts、src/tests/workers-client.test.ts及pager回归",
+      "skills/xapi-workers/references/billing.md：更新用量语义"
+    ],
+    "frontend": [
+      "src/components/WorkersWorkspace.jsx：metricSeries/resourceTotals读summaries，防null/空串转0",
+      "src/api/workers.js：getBillingUsage内部续页，保留signal/取消",
+      "对应WorkersWorkspace/api/workers/BillingPanel/pages/workers测试fixtures；金额继续overview/ledger"
+    ],
+    "compatibility": "现有envelope/schemaVersion1及JSON/API透传可保持；已核实旧CLI human和前端图表只消费facts，必须改消费逻辑。协调consumer交付后才宣称功能完成，不维护错误默认v1路径。"
+  },
+  "removedWireMarkers": [
+    "quantitySource",
+    "factsPurpose",
+    "factsIncluded",
+    "diagnostics",
+    "quantityMeaning",
+    "selectedFactCount",
+    "pageSize",
+    "returnedSummaryCount",
+    "pagination.complete"
+  ],
+  "examples": {
+    "tail117": {
+      "schemaVersion": 1,
+      "snapshotId": "example-response-snapshot",
+      "snapshotTime": "2026-10-10T08:54:31.216Z",
+      "completeThrough": null,
+      "dataQuality": "INDETERMINATE",
+      "workerId": "example-worker",
+      "environment": "preview",
+      "data": {
+        "from": "2026-10-10T08:40:00.000Z",
+        "to": "2026-10-10T08:50:00.000Z",
+        "bucketSeconds": 300,
+        "bucketCount": 2,
+        "gapCount": 0,
+        "partialCount": 2,
+        "metric": "WORKER_REQUEST",
+        "resourceId": null,
+        "totals": [
+          {
+            "metric": "WORKER_REQUEST",
+            "quantity": "117",
+            "coverage": {
+              "status": "INDETERMINATE",
+              "reasonCodes": [
+                "EVENT_FINALITY_NOT_WINDOW_COVERAGE"
+              ]
+            }
+          }
+        ],
+        "buckets": [
+          {
+            "start": "2026-10-10T08:40:00.000Z",
+            "end": "2026-10-10T08:45:00.000Z",
+            "status": "PARTIAL",
+            "summaries": [
+              {
+                "resourceId": null,
+                "resourceKey": "runtime:example",
+                "metric": "WORKER_REQUEST",
+                "quantity": "3",
+                "eventCount": "3",
+                "sourceSelection": {
+                  "kind": "EVENT_SUM",
+                  "provider": "cloudflare-tail",
+                  "dataset": "workers-tail-invocation/v1"
+                },
+                "coverage": {
+                  "status": "INDETERMINATE",
+                  "reasonCodes": [
+                    "EVENT_FINALITY_NOT_WINDOW_COVERAGE"
+                  ]
+                }
+              }
+            ],
+            "facts": []
+          },
+          {
+            "start": "2026-10-10T08:45:00.000Z",
+            "end": "2026-10-10T08:50:00.000Z",
+            "status": "PARTIAL",
+            "summaries": [
+              {
+                "resourceId": null,
+                "resourceKey": "runtime:example",
+                "metric": "WORKER_REQUEST",
+                "quantity": "114",
+                "eventCount": "114",
+                "sourceSelection": {
+                  "kind": "EVENT_SUM",
+                  "provider": "cloudflare-tail",
+                  "dataset": "workers-tail-invocation/v1"
+                },
+                "coverage": {
+                  "status": "INDETERMINATE",
+                  "reasonCodes": [
+                    "EVENT_FINALITY_NOT_WINDOW_COVERAGE"
+                  ]
+                }
+              }
+            ],
+            "facts": []
+          }
+        ],
+        "pagination": {
+          "hasMore": false,
+          "nextCursor": null
+        }
+      }
+    }
+  },
+  "provenance": "只读消费者SHA与证据在consumer-audit/sources.json；契约没有写入PR389或CLI/frontend仓库。"
+}

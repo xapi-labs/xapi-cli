@@ -1,3 +1,5 @@
+import { planWorkerNativeEvents, type NativeEventClient } from "./workers-native-events.ts";
+import { planWorkerVariables, readWorkerVariableState, workerVariableDeclaration, workerArtifactBindingNames, type WorkerVariableDecision, type WorkerVariableDeclaration, type WorkerVariableMetadata } from "./workers-variable-plan.ts";
 import { nativeDeploymentPlan, publicNativeDeploymentPlan, type NativeDeploymentPlan } from './workers-native-deployment.ts';
 import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import type {
@@ -6,16 +8,22 @@ import type {
 } from "./workers-client.ts";
 import * as workersClient from "./workers-client.ts";
 import { WorkerArtifactError } from "./workers-artifact.ts";
-import { deploymentPrefix, currentMatchingDeployment } from "./workers-deployment-state.ts";
-import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
+import { deploymentPrefix, currentMatchingDeployment, deploymentBindingResources } from "./workers-deployment-state.ts";
+import { readWranglerDeploymentSettings, readWranglerPublicVars } from "./workers-wrangler-import.ts";
 import {
   type LoadedWorkerProject,
   type WorkerProjectConfig,
   WorkerProjectConfigError,
   loadWorkerProject,
   resolveWorkerProjectPath,
+  workerEnvironmentContainers,
 } from "./workers-project.ts";
-import { remoteWorkerResourceState } from "./workers-resource-state.ts";
+import {
+  remoteWorkerResourceState,
+  resourceReadyForDeployment,
+  r2ReadinessPending,
+  r2CreationRetryable,
+} from "./workers-resource-state.ts";
 import {
   prepareWorkerProjectBundle,
   loadWorkerProjectBundle,
@@ -37,6 +45,7 @@ export type WorkerPlanKind =
   | "placement"
   | "resource"
   | "secret"
+  | "event"
   | "routing"
   | "artifact"
   | "deployment";
@@ -52,7 +61,8 @@ export interface WorkerPlanAction {
 
 export interface WorkerDeploymentPlan {
   schemaVersion: 1;
-  nativeSteps?: { migrations: Array<{ bindingName: string; table: string; name: string; sha256: string }>; consumers: unknown[]; crons: string[] };
+  variables?: WorkerVariableDecision[];
+  nativeSteps?: ReturnType<typeof publicNativeDeploymentPlan>;
   project: {
     rootDir: string;
     configPath: string;
@@ -64,7 +74,7 @@ export interface WorkerDeploymentPlan {
   remote: { linked: boolean; workerId?: string; activeDeploymentId?: string | null };
   costImpact: {
     status: "AVAILABLE" | "PARTIAL" | "UNKNOWN";
-    desiredDailyBudgetUsd: number;
+    desiredDailyBudgetUsd: number | null;
     currentDailyBudgetUsd?: number;
     dailyBudgetDeltaUsd?: number;
     priceBook?: {
@@ -85,7 +95,8 @@ export interface WorkerDeploymentPlan {
   actions: WorkerPlanAction[];
 }
 
-export interface PlanClient {
+export interface PlanClient extends NativeEventClient {
+  getWorkerVariableState(options: WorkersClientOptions, id: string, environment: "preview" | "production"): Promise<unknown>;
   listWorkers(options: WorkersClientOptions): Promise<unknown>;
   getWorker(options: WorkersClientOptions, id: string): Promise<unknown>;
   listWorkerResources(
@@ -116,6 +127,7 @@ export interface CreateWorkerPlanOptions {
 
 export interface PrepareWorkerPlanOptions extends CreateWorkerPlanOptions {
   runBuild?: WorkerProjectBuildRunner;
+  buildTimeoutMs?: number;
 }
 
 export interface PreparedWorkerPlan {
@@ -129,6 +141,15 @@ type UnknownRecord = Record<string, unknown>;
 type DesiredResource =
   WorkerProjectConfig["environments"]["preview"]["resources"][number];
 
+const PUBLIC_RESOURCE_TYPES: Record<DesiredResource["type"], string> = {
+  kv_namespace: "kv",
+  d1_database: "d1",
+  r2_bucket: "r2",
+  durable_object: "do",
+  queue: "queue",
+  workflow: "workflow",
+};
+
 const KIND_ORDER: Record<WorkerPlanKind, number> = {
   worker: 0,
   budget: 1,
@@ -136,6 +157,7 @@ const KIND_ORDER: Record<WorkerPlanKind, number> = {
   resource: 3,
   secret: 4,
   routing: 5,
+  event: 6,
   artifact: 6,
   deployment: 7,
 };
@@ -231,10 +253,14 @@ function compareResources(
   desired: DesiredResource[],
   remote: UnknownRecord[],
   environment: "preview" | "production",
+  workerId?: string,
 ): boolean {
   let blocked = false;
   const remoteByName = new Map<string, UnknownRecord>();
   for (const item of remote) {
+    // Container applications are derived from deployment declarations, not
+    // standalone bindings to adopt/destroy in the desired resources list.
+    if (item.type === 'CONTAINER_APPLICATION') continue;
     const name = string(item.bindingName);
     if (!name) {
       throw new WorkerProjectConfigError(
@@ -258,6 +284,7 @@ function compareResources(
       type: resource.type,
       bindingName: resource.bindingName,
       ...(resource.className ? { className: resource.className } : {}),
+      ...(resource.workflowName ? { workflowName: resource.workflowName } : {}),
       ...(resource.location ? { location: resource.location } : {}),
       ...(resource.readReplication
         ? { readReplication: resource.readReplication }
@@ -291,8 +318,9 @@ function compareResources(
     };
     if (
       existingType !== resource.type ||
-      (resource.type === "durable_object" &&
-        existingClassName !== resource.className)
+      (["durable_object", "workflow"].includes(resource.type) &&
+        existingClassName !== resource.className) ||
+      (resource.workflowName !== undefined && state.workflowName !== resource.workflowName)
     ) {
       blocked = true;
       add(
@@ -300,7 +328,7 @@ function compareResources(
         "BLOCKED",
         "resource",
         resource.bindingName,
-        "A binding with the same name has a different type or Durable Object class; automatic replacement is unsafe",
+        "A binding with the same name has a different type, class, or Workflow name; automatic replacement is unsafe",
         desiredState,
         {
           type: existingType || string(existing.type) || "unknown",
@@ -332,17 +360,28 @@ function compareResources(
       continue;
     }
     const status = state.status;
-    const readyForDeployment =
-      status === "ACTIVE" ||
-      (resource.type === "durable_object" && status === "PROVISIONING");
+    const readyForDeployment = resourceReadyForDeployment(state);
+    if (r2ReadinessPending(existing) || r2CreationRetryable(existing)) {
+      add(actions, "UPDATE", "resource", resource.bindingName,
+        "Retry the same R2 creation before publishing; xAPI checks the original operation and CF state, preserves identity, and continues known metering waits for up to 600 seconds",
+        desiredState, { status, resourceId: existing.id, ...currentPlacement });
+      continue;
+    }
     if (!readyForDeployment) {
       blocked = true;
+      const config = record(existing.config);
+      const cancelledBeforeDispatch = status === "ERROR" &&
+        existing.errorCode === "worker_control_cancelled_before_dispatch" &&
+        existing.providerResourceId === null &&
+        config?.__xapiDeletionIntentV1 === undefined && !config?.controlDeletionRequested;
       add(
         actions,
         "BLOCKED",
         "resource",
         resource.bindingName,
-        `Managed resource is ${status}; wait for or repair it before deployment`,
+        cancelledBeforeDispatch
+          ? `Previous creation was cancelled before provider dispatch. Retry the same binding: xapi workers resources create ${workerId || "<worker-id>"} --env ${environment} --type ${PUBLIC_RESOURCE_TYPES[resource.type]} --binding ${resource.bindingName}${resource.className ? ` --class-name '${resource.className}'` : ""}${resource.location ? ` --location ${resource.location}` : ""}${resource.readReplication ? ` --read-replication ${resource.readReplication}` : ""}; then rerun plan. Preserve the existing resource ID.`
+          : `Managed resource is ${status}; inspect xapi workers resources list ${workerId || "<worker-id>"} --env ${environment} and workers audit ${workerId || "<worker-id>"} before retrying. No resource will be recreated automatically.`,
         desiredState,
         { status, ...currentPlacement },
       );
@@ -354,7 +393,7 @@ function compareResources(
       "resource",
       resource.bindingName,
       status === "PROVISIONING"
-        ? "Durable Object declaration matches and will become ACTIVE with the next deployment"
+        ? "Resource declaration matches and will become ACTIVE with the next deployment"
         : "Managed resource already matches desired state",
       desiredState,
       { status, ...currentPlacement },
@@ -440,6 +479,8 @@ function compareSecrets(
 async function localArtifact(project: LoadedWorkerProject, environment: "preview" | "production"): Promise<{
   sha256?: string;
   sizeBytes?: number;
+  configuration?: Record<string, unknown>;
+  variables?: WorkerVariableDeclaration;
   blocked?: string;
 }> {
   const path = resolveWorkerProjectPath(
@@ -447,12 +488,35 @@ async function localArtifact(project: LoadedWorkerProject, environment: "preview
     project.config.build.output,
     "build.output",
   );
-  if (!existsSync(path)) return {};
+  if (!existsSync(path)) {
+    const settings = readWranglerDeploymentSettings(project, environment);
+    return { variables: workerVariableDeclaration({
+      vars: readWranglerPublicVars(project, environment) as Record<string, unknown> | undefined,
+      keepBindings: settings.keepBindings,
+    }, workerArtifactBindingNames({ assets: settings.assets, versionMetadata: settings.versionMetadata })) };
+  }
   try {
     const artifact = await loadWorkerProjectBundle(project, environment);
     return {
       sha256: artifact.contentSha256,
       sizeBytes: artifact.sizeBytes,
+      variables: "bundle" in artifact.upload
+        ? workerVariableDeclaration(artifact.upload.bundle,
+            workerArtifactBindingNames(artifact.upload.bundle))
+        : workerVariableDeclaration({}),
+      ...("bundle" in artifact.upload ? {
+        configuration: {
+          ...(artifact.upload.bundle.cacheOptions
+            ? { cache: artifact.upload.bundle.cacheOptions } : {}),
+          ...(artifact.upload.bundle.versionMetadata
+            ? { version_metadata: artifact.upload.bundle.versionMetadata } : {}),
+          ...(artifact.upload.bundle.observability
+            ? { observability: artifact.upload.bundle.observability } : {}),
+          sourceMaps: artifact.upload.bundle.modules
+            .filter(module => module.contentType === "application/source-map")
+            .map(module => module.path),
+        },
+      } : {}),
     };
   } catch (error) {
     if (error instanceof WorkerArtifactError || error instanceof WorkerProjectBuildError) {
@@ -498,8 +562,8 @@ async function artifactAndDeployment(
   resources: UnknownRecord[],
   secrets: UnknownRecord[],
   environmentName: "preview" | "production",
+  local: Awaited<ReturnType<typeof localArtifact>>,
 ): Promise<void> {
-  const local = await localArtifact(project, environmentName);
   if (local.blocked) {
     add(
       actions,
@@ -531,7 +595,11 @@ async function artifactAndDeployment(
       "artifact",
       local.sha256!,
       "An immutable remote Artifact already matches the local bundle",
-      { sha256: local.sha256, sizeBytes: local.sizeBytes },
+      {
+        sha256: local.sha256,
+        sizeBytes: local.sizeBytes,
+        ...(local.configuration ? { configuration: local.configuration } : {}),
+      },
       { artifactId },
     );
   } else {
@@ -546,7 +614,11 @@ async function artifactAndDeployment(
       {
         output: project.config.build.output,
         ...(local.sha256
-          ? { sha256: local.sha256, sizeBytes: local.sizeBytes }
+          ? {
+              sha256: local.sha256,
+              sizeBytes: local.sizeBytes,
+              ...(local.configuration ? { configuration: local.configuration } : {}),
+            }
           : {}),
       },
     );
@@ -569,7 +641,7 @@ async function artifactAndDeployment(
     !actions.some(a => a.kind === "resource" && a.operation === "CREATE")
       ? currentMatchingDeployment(deployments, environmentState, artifactId,
           deploymentPrefix(String(remote.id), environmentName, artifactId,
-            readWranglerDeploymentSettings(project, environmentName), environmentState, resources.filter(resource => project.config.environments[environmentName].resources.some(desired => desired.bindingName === resource.bindingName)), secrets))
+            {...readWranglerDeploymentSettings(project, environmentName), ...(workerEnvironmentContainers(project.config,environmentName) !== undefined ? {containers:workerEnvironmentContainers(project.config,environmentName)} : {})}, environmentState, deploymentBindingResources(resources, project.config.environments[environmentName].resources.map(resource=>resource.bindingName)), secrets))
       : undefined;
   if (active) {
     add(
@@ -608,8 +680,8 @@ function planSummary(
 
 function planCostImpact(
   actions: WorkerPlanAction[],
-  desiredDailyBudgetUsd: number,
-  currentDailyBudgetUsd: number | undefined,
+  desiredDailyBudgetUsd: number | null,
+  currentDailyBudgetUsd: number | null | undefined,
   priceResponse: unknown,
 ): WorkerDeploymentPlan["costImpact"] {
   const envelope = record(priceResponse);
@@ -633,9 +705,15 @@ function planCostImpact(
         effect: "USAGE_DEPENDENT" as const,
       }));
   const notes = [
-    "The daily budget is a spending cap, not a predicted charge.",
+    "The daily budget is a risk-control target, not a hard spending cap or predicted charge; observation and edge propagation can delay enforcement.",
     "Worker and managed-resource charges depend on measured usage; plan does not invent traffic or storage assumptions.",
+    "The server calculates refundable retention reserves and checks available funds atomically. A client price quote is informational, not a prerequisite product selection. READY is not balance or provider admission.",
   ];
+  if (currentDailyBudgetUsd === null) {
+    notes.push("The current environment has no user-selected daily budget (unlimited); no numeric budget delta is available.");
+  }
+  // Cost fields describe finite targets; an unlimited budget has no numeric delta.
+  const finiteCurrentBudget = currentDailyBudgetUsd ?? undefined;
   if (!rates) {
     notes.push(
       "The active price book could not be read for this environment; inspect billing before production promotion.",
@@ -643,20 +721,18 @@ function planCostImpact(
   }
   return {
     status: rates
-      ? currentDailyBudgetUsd === undefined
+      ? finiteCurrentBudget === undefined
         ? "PARTIAL"
         : "AVAILABLE"
-      : currentDailyBudgetUsd === undefined
+      : finiteCurrentBudget === undefined
         ? "UNKNOWN"
         : "PARTIAL",
     desiredDailyBudgetUsd,
-    ...(currentDailyBudgetUsd !== undefined
+    ...(finiteCurrentBudget !== undefined
       ? {
-          currentDailyBudgetUsd,
-          dailyBudgetDeltaUsd:
-            Math.round(
-              (desiredDailyBudgetUsd - currentDailyBudgetUsd) * 1_000_000,
-            ) / 1_000_000,
+          currentDailyBudgetUsd: finiteCurrentBudget,
+          ...(desiredDailyBudgetUsd !== null ? {dailyBudgetDeltaUsd:
+            Math.round((desiredDailyBudgetUsd - finiteCurrentBudget) * 1_000_000) / 1_000_000} : {}),
         }
       : {}),
     ...(rates
@@ -678,13 +754,17 @@ export async function createWorkerPlan(
 ): Promise<WorkerDeploymentPlan> {
   const project = loadWorkerProject(options.cwd, options.configPath);
   validatePlanInputs(project);
-  const desired = project.config.environments[options.environment];
+  const compatibility = readWranglerDeploymentSettings(project, options.environment);
+  const effectiveAssets = compatibility.assets;
+  const desired = {...project.config.environments[options.environment],
+    secrets: compatibility.requiredSecrets || []};
   const api = options.client || workersClient;
   const actions: WorkerPlanAction[] = [];
   let remote: UnknownRecord | undefined;
   let remoteEnvironmentState: UnknownRecord | undefined;
   let remoteResources: UnknownRecord[] = [];
   let remoteSecrets: UnknownRecord[] = [];
+  let remoteVariables: WorkerVariableMetadata[] = [];
   let prerequisiteBlocked = false;
 
   if (project.config.workerId) {
@@ -694,7 +774,7 @@ export async function createWorkerPlan(
       await api.getWorker(options.clientOptions, project.config.workerId),
     );
     remoteEnvironmentState = remoteEnvironment(remote, options.environment);
-    [remoteResources, remoteSecrets] = await Promise.all([
+    [remoteResources, remoteSecrets, remoteVariables] = await Promise.all([
       api
         .listWorkerResources(
           options.clientOptions,
@@ -709,6 +789,8 @@ export async function createWorkerPlan(
           options.environment,
         )
         .then((value) => list(value, "Secret metadata")),
+      api.getWorkerVariableState(options.clientOptions, project.config.workerId, options.environment)
+        .then(value => readWorkerVariableState(value, options.environment, string(remoteEnvironmentState?.activeDeploymentId) || null)),
     ]);
     if (remote.id !== project.config.workerId) {
       throw new WorkerProjectConfigError(
@@ -775,7 +857,8 @@ export async function createWorkerPlan(
     }
   }
 
-  const currentBudget = number(remoteEnvironmentState?.dailyBudgetUsd);
+  const currentBudget = remoteEnvironmentState?.dailyBudgetUsd === null
+    ? null : number(remoteEnvironmentState?.dailyBudgetUsd);
   if (!remoteEnvironmentState) {
     add(
       actions,
@@ -790,7 +873,7 @@ export async function createWorkerPlan(
       "worker_plan_invalid_response",
       "xAPI returned an environment without dailyBudgetUsd",
     );
-  } else if (Math.abs(currentBudget - desired.dailyBudgetUsd) > 0.00005) {
+  } else if (!(desired.dailyBudgetUsd === null ? currentBudget === null : currentBudget !== null && Math.abs(currentBudget - desired.dailyBudgetUsd) <= 0.00005)) {
     add(
       actions,
       "UPDATE",
@@ -841,12 +924,12 @@ export async function createWorkerPlan(
   }
 
   prerequisiteBlocked =
-    compareResources(actions, desired.resources, remoteResources, options.environment) ||
+    compareResources(actions, desired.resources, remoteResources, options.environment, project.config.workerId) ||
     prerequisiteBlocked;
   prerequisiteBlocked =
     compareSecrets(actions, desired.secrets, remoteSecrets) ||
     prerequisiteBlocked;
-  if (project.config.assets) {
+  if (effectiveAssets) {
     const ready = remoteEnvironmentState?.webAppReady;
     if (ready === true) {
       add(actions, "NO_CHANGE", "routing", options.environment, "Web application has a dedicated hostname", undefined, {
@@ -862,6 +945,12 @@ export async function createWorkerPlan(
       });
     }
   }
+  const local = await localArtifact(project, options.environment);
+  const variables = local.variables ? planWorkerVariables(local.variables, remoteVariables, [
+    ...desired.resources.map(resource => resource.bindingName),
+    ...desired.secrets,
+    ...remoteSecrets.map(secret => string(secret.bindingName)!),
+  ], remoteEnvironmentState?.bindings) : undefined;
   await artifactAndDeployment(
     actions,
     project,
@@ -872,6 +961,7 @@ export async function createWorkerPlan(
     remoteResources,
     remoteSecrets,
     options.environment,
+    local,
   );
 
   let priceResponse: unknown;
@@ -890,6 +980,8 @@ export async function createWorkerPlan(
   }
 
   const native = nativeDeploymentPlan(project, options.environment);
+  for (const event of await planWorkerNativeEvents(project, options.environment, remoteResources, api, options.clientOptions))
+    add(actions,event.operation,"event",event.key,event.message,event.desired,event.current);
   actions.sort(
     (a, b) =>
       KIND_ORDER[a.kind] - KIND_ORDER[b.kind] ||
@@ -899,6 +991,7 @@ export async function createWorkerPlan(
   const summary = planSummary(actions);
   return {
     schemaVersion: 1,
+    ...(variables ? { variables } : {}),
     nativeSteps: publicNativeDeploymentPlan(native),
     project: {
       rootDir: project.rootDir,
@@ -950,12 +1043,13 @@ export async function prepareWorkerPlan(
     project,
     options.environment,
     options.runBuild,
+    options.buildTimeoutMs,
   );
   const nativePlan = nativeDeploymentPlan(project, options.environment);
   const plan = await createWorkerPlan(options);
   if (readFileSync(project.configPath, "utf8") !== configContent)
     throw new WorkerProjectBuildError("Project configuration changed while planning; rerun the plan", { remoteChangesApplied: false });
   if (JSON.stringify(plan.nativeSteps) !== JSON.stringify(publicNativeDeploymentPlan(nativePlan)))
-    throw new Error('Wrangler configuration or migrations changed while planning; rerun the plan');
+    throw new Error('Wrangler event configuration or D1 binding guidance changed while planning; rerun the plan');
   return { plan, bundle, nativePlan, configContent };
 }

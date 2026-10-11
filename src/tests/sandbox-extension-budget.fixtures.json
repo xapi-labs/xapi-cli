@@ -1,0 +1,141 @@
+[
+  {
+    "name": "automate-default",
+    "extensionId": "cloudflare.browser.automate",
+    "input": {},
+    "upstreamMs": 60000,
+    "executionMs": 90000,
+    "transportMs": 160000
+  },
+  {
+    "name": "automate-short-step-baseline",
+    "extensionId": "cloudflare.browser.automate",
+    "input": {
+      "timeoutMs": 1
+    },
+    "upstreamMs": 60000,
+    "executionMs": 60000,
+    "transportMs": 130000
+  },
+  {
+    "name": "automate-long-multiple-actions",
+    "extensionId": "cloudflare.browser.automate",
+    "input": {
+      "timeoutMs": 90000,
+      "actions": [
+        {
+          "type": "click"
+        },
+        {
+          "type": "fill"
+        }
+      ],
+      "extract": [
+        {}
+      ]
+    },
+    "upstreamMs": 60000,
+    "executionMs": 540000,
+    "transportMs": 610000
+  },
+  {
+    "name": "automate-explicit-wait-and-extract",
+    "extensionId": "cloudflare.browser.automate",
+    "input": {
+      "actions": [
+        {
+          "type": "wait",
+          "milliseconds": 65000
+        },
+        {
+          "type": "click"
+        }
+      ],
+      "extract": [
+        {},
+        {}
+      ]
+    },
+    "upstreamMs": 60000,
+    "executionMs": 275000,
+    "transportMs": 345000
+  },
+  {
+    "name": "quick-default",
+    "extensionId": "cloudflare.browser.content",
+    "input": {},
+    "upstreamMs": 60000,
+    "executionMs": 60000,
+    "transportMs": 130000
+  },
+  {
+    "name": "quick-sequential-options",
+    "extensionId": "cloudflare.browser.content",
+    "input": {
+      "gotoOptions": {
+        "timeout": 90000
+      },
+      "waitForSelector": {
+        "timeout": 80000
+      },
+      "actionTimeout": 70000,
+      "waitForTimeout": 65000
+    },
+    "upstreamMs": 60000,
+    "executionMs": 365000,
+    "transportMs": 435000
+  },
+  {
+    "name": "quick-native-pdf-and-screenshot-timeouts",
+    "extensionId": "cloudflare.browser.pdf",
+    "input": {
+      "pdfOptions": {
+        "timeout": 300000
+      },
+      "screenshotOptions": {
+        "timeout": 65000
+      }
+    },
+    "upstreamMs": 60000,
+    "executionMs": 425000,
+    "transportMs": 495000
+  },
+  {
+    "name": "quick-configured-upstream",
+    "extensionId": "cloudflare.browser.screenshot",
+    "input": {
+      "waitForTimeout": 65000
+    },
+    "upstreamMs": 80000,
+    "executionMs": 145000,
+    "transportMs": 235000
+  },
+  {
+    "name": "session-native-long-deadline",
+    "extensionId": "cloudflare.session.exec",
+    "input": {
+      "timeoutMs": 1200000
+    },
+    "upstreamMs": 60000,
+    "executionMs": 1200000,
+    "transportMs": 1270000
+  },
+  {
+    "name": "untimed-extension-legacy",
+    "extensionId": "cloudflare.process.start",
+    "input": {
+      "timeoutMs": 90000
+    },
+    "upstreamMs": 60000,
+    "executionMs": null,
+    "transportMs": null
+  },
+  {
+    "name": "git-native-default-ten-minutes",
+    "extensionId": "cloudflare.git.checkout",
+    "input": {},
+    "upstreamMs": 60000,
+    "executionMs": 600000,
+    "transportMs": 670000
+  }
+]

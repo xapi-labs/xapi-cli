@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { getConfig, requireApiKey } from '../config.ts';
 import { HttpError, isRetryableRequestError } from '../client.ts';
 import { output, err, type OutputFormat } from '../format.ts';
+import { waitForPoll } from '../poll-wait.ts';
 import { providerRequest, object, redactProvider, collectProviderSecrets, type ProviderObject } from '../provider-client.ts';
 
 export const PROVIDER_ONBOARDING_HELP = `xapi-to provider - Import and publish your API services
@@ -222,7 +223,7 @@ export async function providerOnboarding(args: string[], flags: Record<string, s
         emit({ serviceId, revisionId, success: false, reason: 'max_attempts', attempts, last });
         process.exitCode = 1; return;
       }
-      await new Promise(resolve => setTimeout(resolve, Math.min(delay, Math.max(0, deadline - Date.now()))));
+      await waitForPoll(delay, deadline);
     }
   } catch (e) {
     let message: string;
