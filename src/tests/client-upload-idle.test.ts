@@ -1,6 +1,23 @@
 import { expect, test } from 'bun:test';
 import { request, RequestTimeoutError } from '../client.ts';
 
+test('finite synchronous empty chunks yield without imposing a chunk limit or changing payload', async () => {
+  let pulls = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (++pulls <= 1024) controller.enqueue(new Uint8Array());
+      else { controller.enqueue(new TextEncoder().encode('payload')); controller.close(); }
+    },
+  }, { highWaterMark: 0 });
+  const fetcher = (async (_url, init) => {
+    expect(await new Response(init!.body).text()).toBe('payload');
+    return Response.json({ ok: true });
+  }) as typeof fetch;
+  expect(await request<{ ok: boolean }>('http://localhost/upload', { method: 'POST', body }, 1000, 0, 'idle', fetcher))
+    .toEqual({ ok: true });
+  expect(pulls).toBe(1025);
+});
+
 test('an injected fetch that never consumes its upload times out without draining or awaiting producer cleanup', async () => {
   let pulls = 0;
   let cancelled = false;

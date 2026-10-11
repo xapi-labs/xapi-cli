@@ -9,6 +9,7 @@ import { once } from 'node:events';
 import { resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { requestDeadline } from './request-deadline.ts';
 
 // Node's bundled fetch may speak a newer dispatcher protocol (notably Node 26).
@@ -221,6 +222,7 @@ function progressBody(source: ReadableStream<Uint8Array>, progress: () => void, 
     },
     async pull(controller) {
       try {
+        let emptyChunks = 0;
         while (!stopped && (!pending || offset === pending.byteLength)) {
           const chunk = await reader.read();
           if (stopped) return;
@@ -233,6 +235,10 @@ function progressBody(source: ReadableStream<Uint8Array>, progress: () => void, 
           }
           pending = chunk.value;
           offset = 0;
+          // Synchronously produced empty chunks otherwise keep this loop in
+          // microtasks forever, starving the abort/deadline timers. Yield
+          // periodically without treating empty chunks as progress or limiting them.
+          if (pending.byteLength === 0 && ++emptyChunks % 64 === 0) await yieldToEventLoop();
         }
         if (stopped || !pending) return;
         const chunk = pending.subarray(offset, offset + 65_536);

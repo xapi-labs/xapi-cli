@@ -80,6 +80,21 @@ try {
   });
   await assert.rejects(uploadRequest(base + '/stalled-upload', { method: 'POST', body: stalledBody }), RequestTimeoutError);
   assert.equal(sourceCancelled, true);
+
+  // No asynchronous producer work: awaiting each read only queues microtasks.
+  // The client must let its real idle timer run even when every chunk is empty.
+  let emptyPulls = 0;
+  let emptyCancelled = false;
+  const emptyBody = new ReadableStream<Uint8Array>({
+    pull(controller) { emptyPulls++; controller.enqueue(new Uint8Array()); },
+    cancel() { emptyCancelled = true; },
+  }, { highWaterMark: 0 });
+  const emptyStart = Date.now();
+  await assert.rejects(uploadRequest(base + '/empty-upload', { method: 'POST', body: emptyBody }), RequestTimeoutError);
+  assert.ok(emptyPulls > 64);
+  assert.equal(emptyCancelled, true);
+  assert.ok(Date.now() - emptyStart >= budget);
+  assert.ok(Date.now() - emptyStart < budget * 5);
   assert.deepEqual(await uploadRequest(base + '/slow-response', { method: 'POST', body: 'once' }), { ok: true });
   await assert.rejects(uploadRequest(base + '/stalled-response', { method: 'POST', body: 'once' }), RequestTimeoutError);
 
@@ -113,9 +128,10 @@ try {
   const counts = new Map<string, number>(entries);
   assert.equal(counts.has('/leaked'), false);
   for (const [path, count] of counts) assert.equal(count, path === '/v1/actions/execute' ? 4 : 1, `unexpected replay: ${path}`);
-  if (preloaded) assert.equal(calls.length, 17);
+  if (preloaded) assert.equal(calls.length, 18);
   console.log(JSON.stringify({ node: process.version, result: 'passed', intercepted: (calls?.length || 0),
-    coverage: 'transparent native delegate request/JSON/multipart upload/SSE/download, explicit native/wrapper injection, total timeout, cancellation, progressing multipart upload beyond idle budget, stalled upload/response cancellation, response idle, definite HTTP rejection, cleanup, no replay, redirect/allowlist' }));
+    emptyUpload: { pulls: emptyPulls, cancelled: emptyCancelled },
+    coverage: 'transparent native delegate request/JSON/multipart upload/SSE/download, explicit native/wrapper injection, total timeout, cancellation, progressing multipart upload beyond idle budget, synchronous empty producer idle timeout, stalled upload/response cancellation, response idle, definite HTTP rejection, cleanup, no replay, redirect/allowlist' }));
 } finally {
   server.kill();
   await rm(root, { recursive: true, force: true });

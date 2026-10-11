@@ -28,7 +28,7 @@ for (const proxy of [false, true]) {
       const result = spawnSync('node', ['--import', join(root, 'client-fetch-preload.mjs'), join(root, 'client-fetch-delegate-native.mjs')],
         { encoding: 'utf8', timeout: 15_000, env: { ...process.env, XAPI_TEST_PRELOAD_PROXY: proxy ? '1' : '0', XAPI_TEST_PRELOAD_DELEGATE: '1' } });
       expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
-      expect(JSON.parse(result.stdout)).toMatchObject({ result: 'passed', intercepted: 17 });
+      expect(JSON.parse(result.stdout)).toMatchObject({ result: 'passed', intercepted: 18, emptyUpload: { cancelled: true } });
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 20_000);
 }
