@@ -214,7 +214,16 @@ output and errors.
 R2 processes one live page at a time (default 100, maximum 200 objects; opaque
 cursor up to 24000 bytes), with four concurrent downloads over four reused
 connections and a 100000-page safety bound. It buffers neither whole objects nor
-the whole bucket. Send the descriptor's `If-Match` unchanged after checking it
+the whole bucket. Each object requests its five-minute signature only when a
+download slot is ready, immediately before GET; the whole bucket does not share
+one five-minute transfer window. Expiry limits starting a new request, not the
+duration of an already accepted continuous download. A native R2 short-TTL probe
+verified a five-second signature with a successful sixteen-second download;
+new requests after expiry were rejected. An interrupted download needs a fresh
+authorized signature for a subsequent attempt; current R2 export restarts into
+a new directory and does not implement byte-range resume. Do not silently extend
+an old capability, replay POST, or call this automatic resume.
+Send the descriptor's `If-Match` unchanged after checking it
 against the listed ETag; if absent, send the listed ETag. Verify response ETag,
 listed size and actual bytes. Changed objects fail. **Listing is not an atomic
 bucket snapshot: concurrent writes can change objects or listing.** Arrange

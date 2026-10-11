@@ -22,6 +22,13 @@ export class DataExportError extends Error {
   constructor(message: string, public readonly details: Record<string, unknown> = {}) { super(message); }
 }
 const failure = (reason: string, details: Record<string, unknown> = {}) => new DataExportError(reason, details);
+function localWriteFailure(error: unknown) {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  const safeCode = ['ENOSPC', 'EDQUOT', 'EACCES', 'EROFS', 'EIO'].includes(code || '') ? code : undefined;
+  return failure(code === 'ENOSPC' || code === 'EDQUOT'
+    ? 'Not enough local disk space for export; choose a fresh output on a filesystem with enough space'
+    : 'Local export write failed', safeCode ? { systemCode: safeCode } : {});
+}
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw failure('Invalid export response');
   return value as Record<string, unknown>;
@@ -149,14 +156,16 @@ export async function streamExportDownload(value: unknown, file: FileHandle, exp
       hash.update(buffer);
       let offset = 0;
       while (offset < buffer.length) {
-        const result = await file.write(buffer, offset, buffer.length - offset);
+        let result;
+        try { result = await file.write(buffer, offset, buffer.length - offset); }
+        catch (error) { throw localWriteFailure(error); }
         if (!result.bytesWritten) throw failure('Local export write failed');
         offset += result.bytesWritten;
       }
     }
     if ((expected && bytes !== expected.size) || (length !== undefined && bytes !== Number(length)))
       throw failure('Downloaded size mismatch');
-    await file.sync();
+    try { await file.sync(); } catch (error) { throw localWriteFailure(error); }
     return { bytes, sha256: hash.digest('hex'), headers: metadata };
   } catch (error) {
     if (error instanceof DataExportError) throw error;

@@ -1,16 +1,26 @@
 // Node conformance for the shipped Undici transport; all traffic stays on loopback.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { open } from 'node:fs/promises';
+import { open, type FileHandle } from 'node:fs/promises';
 import { mkdtempSync, realpathSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { request } from 'undici/index.js';
 import { exportWorkerData, streamExportDownload, DataExportError, type DownloadTransport } from '../workers-data-export.ts';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(),'workers-export-native-')));
 const payload = gzipSync(Buffer.from('SQL-fixture '.repeat(10000)));
+const largeBytes = Number(process.env.XAPI_EXPORT_BENCH_BYTES || 32 * 1024 * 1024);
+assert(Number.isSafeInteger(largeBytes) && largeBytes >= 32 * 1024 * 1024 && largeBytes <= 1024 * 1024 * 1024 && largeBytes % (64 * 1024) === 0);
+const largeChunk = Buffer.alloc(64 * 1024, 71);
+const largeHash = createHash('sha256');
+for (let offset = 0; offset < largeBytes; offset += largeChunk.length) largeHash.update(largeChunk);
+const largeSha256 = largeHash.digest('hex');
+let largeRssGrowth = 0;
+let peakQueuedBytes = 0, peakExternalBytes = 0;
+let largeBody: Awaited<ReturnType<typeof request>>['body'] | undefined;
 const sockets = new Set<number>();
 let requests = 0, mode = 'reuse';
 const timers: ReturnType<typeof setTimeout>[] = [];
@@ -20,6 +30,18 @@ const server = createServer((req,res) => {
   assert.equal(req.headers['if-match'],'"opaque-native-multipart-2"');
   if (mode === 'redirect') { res.writeHead(307,{location:'https://evil.invalid/?SIGNED_SECRET'});res.end('SECRET_PROVIDER');return; }
   if (mode === 'idle') {res.writeHead(200,{etag:'"opaque-native-multipart-2"'});res.write('x');return;}
+  if (mode === 'large') {
+    res.writeHead(200, { etag: '"opaque-native-multipart-2"', 'content-length': String(largeBytes) });
+    let sent = 0;
+    const sendLarge = () => {
+      while (sent < largeBytes) {
+        sent += largeChunk.length;
+        if (!res.write(largeChunk)) { res.once('drain', sendLarge); return; }
+      }
+      res.end();
+    };
+    sendLarge(); return;
+  }
   res.writeHead(200,{etag:'"opaque-native-multipart-2"','content-length':String(payload.length),'content-encoding':'gzip',
     'content-type':'application/sql','x-amz-meta-native':'retained','set-cookie':'NEVER_RETAIN'});
   let offset=0;
@@ -36,7 +58,10 @@ const transport=((url,options)=>{
   assert.match(String(url),/^https:\/\/native\.r2\.cloudflarestorage\.com\//);
   assert.equal(options!.maxRedirections,0);assert.equal(options!.method,'GET');
   agents.add(options!.dispatcher);
-  return request(`http://127.0.0.1:${port}/object`,options);
+  return request(`http://127.0.0.1:${port}/object`,options).then(response => {
+    if (mode === 'large') largeBody = response.body;
+    return response;
+  });
 }) as DownloadTransport;
 const descriptor={method:'GET',url:'https://native.r2.cloudflarestorage.com/object?SIGNED_SECRET',expiresAt:new Date(Date.now()+60_000).toISOString(),headers:{'If-Match':'"opaque-native-multipart-2"'}};
 const object={key:'../unicode/中文',size:payload.length,etag:'opaque-native-multipart-2'};
@@ -53,14 +78,40 @@ try{
   const output=join(root,'stream');const file=await open(output,'wx',0o600);
   let writes=0;
   try{
-    const pending=streamExportDownload(descriptor,{write:async(buffer:Buffer,offset:number,size:number)=>{
+    // Native Node transport must not treat capability expiry as a transfer deadline.
+    const shortDescriptor = { ...descriptor, expiresAt: new Date(Date.now() + 300).toISOString() };
+    const pending=streamExportDownload(shortDescriptor,{write:async(buffer:Buffer,offset:number,size:number)=>{
       writes++;return file.write(buffer,offset,Math.min(7,size));},sync:()=>file.sync()} as any,object,
       {transport,budgets:{connect:2000,idle:200}});
     await new Promise(resolve=>setTimeout(resolve,150));
     assert(statSync(output).size>0);assert(statSync(output).size<payload.length);
     const receipt=await pending;assert.equal(receipt.bytes,payload.length);assert(readFileSync(output).equals(payload));assert(writes>10);
+    assert(Date.now() > Date.parse(shortDescriptor.expiresAt));
     assert.equal(receipt.headers['content-encoding'],'gzip');assert.equal(receipt.headers['x-amz-meta-native'],'retained');assert.equal(receipt.headers['set-cookie'],undefined);
   }finally{await file.close();}
+  mode = 'large';
+  // Throughput/memory fixture only: avoid reserving benchmark bytes on the user's disk.
+  // The smaller fixtures above verify persisted bytes and private filesystem output.
+  const largeFile = await open('/dev/null', 'w');
+  const baselineRss = process.memoryUsage().rss;
+  let peakRss = baselineRss;
+  try {
+    const receipt = await streamExportDownload(descriptor, {
+      write: async (buffer: Buffer, offset: number, length: number) => {
+        const memory = process.memoryUsage();
+        peakRss = Math.max(peakRss, memory.rss);
+        peakExternalBytes = Math.max(peakExternalBytes, memory.external);
+        peakQueuedBytes = Math.max(peakQueuedBytes, largeBody?.readableLength || 0);
+        return largeFile.write(buffer, offset, length);
+      }, sync: () => largeFile.sync(),
+    } as FileHandle, { ...object, size: largeBytes }, { transport });
+    assert.equal(receipt.bytes, largeBytes);
+    assert.equal(receipt.sha256, largeSha256);
+    largeRssGrowth = Math.max(0, peakRss - baselineRss);
+    // RSS includes freed allocator pages and both server/client. Check the actual
+    // readable queue, not a platform-dependent RSS threshold; report RSS honestly.
+    assert(peakQueuedBytes <= 1024 * 1024, `Readable queue grew by ${peakQueuedBytes} bytes`);
+  } finally { await largeFile.close(); }
   for(const scenario of ['redirect','idle']){
     mode=scenario;const file=await open(join(root,scenario),'wx',0o600);const before:number=requests;
     try{
@@ -71,7 +122,7 @@ try{
       });assert.equal(requests,before+1);
     }finally{await file.close();}
   }
-  process.stdout.write(JSON.stringify({status:'passed',checks:['Node streaming','partial writes','credential isolation','raw metadata','redirect rejection','idle timeout','four connection reuse']}));
+  process.stdout.write(JSON.stringify({status:'passed',largeBytes,largeRssGrowth,peakQueuedBytes,peakExternalBytes,checks:['Node streaming','partial writes','credential isolation','raw metadata','redirect rejection','idle timeout','four connection reuse','bounded streaming queue']}));
 }finally{
   for(const timer of timers)clearTimeout(timer);
   server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));rmSync(root,{recursive:true,force:true});

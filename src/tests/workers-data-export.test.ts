@@ -151,6 +151,25 @@ test('streams progressing files beyond idle budget, preserves raw gzip bytes/met
   } finally { await file.close(); }
 });
 
+test('local write/sync failures report safe disk errors without private paths or keys', async () => {
+  for (const phase of ['write', 'sync']) {
+    const target = await open(join(root(), 'disk-error'), 'wx', 0o600);
+    const privateError = Object.assign(new Error('PRIVATE_PATH SIGNED_SECRET SECRET_XAPI_KEY'), { code: 'ENOSPC' });
+    const file = {
+      write: phase === 'write' ? async () => { throw privateError; } : (...args: any[]) => (target.write as any)(...args),
+      sync: phase === 'sync' ? async () => { throw privateError; } : () => target.sync(),
+    } as any;
+    try {
+      await localDownload(() => new Response('fixture'), async transport => {
+        const error = await getError(streamExportDownload(descriptor(), file, undefined, { transport }));
+        expect(error.message).toContain('local disk space');
+        expect(error.details.systemCode).toBe('ENOSPC');
+        expect(JSON.stringify(error.details) + error.message).not.toMatch(/PRIVATE_PATH|SIGNED_SECRET|SECRET_XAPI_KEY/);
+      });
+    } finally { await target.close(); }
+  }
+});
+
 test('body no-progress timeout terminates stalled download without raw transport error', async () => {
   const file = await open(join(root(), 'stalled'), 'wx', 0o600);
   try {
