@@ -35,6 +35,16 @@ function linkedProject(): string {
 }
 
 describe("project resource declarations", () => {
+  test("edits mixed-case bindings by exact identity without renaming uppercase resources", () => {
+    const root = project();
+    for (const name of ["Chat", "CHAT", "chat"]) {
+      addProjectResource({ cwd: root, environments: ["preview"], resource: { type: "durable_object", bindingName: name, className: "Room" } });
+    }
+    removeProjectResource({ cwd: root, environments: ["preview"], bindingName: "Chat" });
+    expect(loadWorkerProject(root).config.environments.preview.resources.map(r => r.bindingName)).toEqual(["CHAT", "chat"]);
+    expect(() => addProjectResource({ cwd: root, environments: ["preview"], resource: { type: "kv_namespace", bindingName: "chat" } })).toThrow("already declares");
+  });
+
   test("adds one declaration to both environments and is idempotent", () => {
     const root = project();
     const first = addProjectResource({
@@ -398,25 +408,22 @@ describe("project resource declarations", () => {
     expect(loadWorkerProject(root).config.environments.preview.resources.map(r => r.bindingName)).toEqual(["LOCAL"]);
   });
 
-  test("does not import incomplete or unhealthy remote state", async () => {
+  test("pull skips pending and deleting records, imports ready peers, and leaves declared pending intent intact", async () => {
     const root = linkedProject();
-    await expect(
-      pullProjectResources({
-        cwd: root,
-        environments: ["preview"],
-        clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
-        client: {
-          listWorkerResources: async () => [
-            {
-              bindingName: "JOBS",
-              type: "QUEUE",
-              status: "DELETE_FAILED",
-            },
-          ],
-        },
-      }),
-    ).rejects.toThrow("DELETE_FAILED");
-    expect(loadWorkerProject(root).config.environments.preview.resources).toEqual([]);
+    addProjectResource({cwd:root,environments:["preview"],resource:{type:"r2_bucket",bindingName:"FILES"}});
+    const result = await pullProjectResources({cwd:root,environments:["preview"],clientOptions:{apiHost:"localhost:3003",apiKey:"test-key"},client:{listWorkerResources:async()=>[
+      {bindingName:"JOBS",type:"QUEUE",status:"ACTIVE"},
+      {bindingName:"FILES",type:"R2_BUCKET",status:"PROVISIONING"},
+      {bindingName:"OLD_FILES",type:"R2_BUCKET",status:"DELETING"},
+      {bindingName:"UNHEALTHY",type:"QUEUE",status:"DELETE_FAILED"},
+    ]}});
+    expect(result.environments[0].added).toEqual(["JOBS"]);
+    expect(result.environments[0].pending).toEqual([
+      {bindingName:"FILES",status:"PROVISIONING",declared:true},
+      {bindingName:"OLD_FILES",status:"DELETING",declared:false},
+      {bindingName:"UNHEALTHY",status:"DELETE_FAILED",declared:false},
+    ]);
+    expect(loadWorkerProject(root).config.environments.preview.resources).toEqual([{type:"r2_bucket",bindingName:"FILES"},{type:"queue",bindingName:"JOBS"}]);
   });
 
   test("destroys one project resource by binding and removes desired state first", async () => {

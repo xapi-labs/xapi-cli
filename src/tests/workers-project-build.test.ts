@@ -1,10 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadWorkerProject } from "../workers-project.ts";
-import { loadWorkerProjectBundle } from "../workers-project-build.ts";
+import { loadWorkerProjectBundle, prepareWorkerProjectBundle } from "../workers-project-build.ts";
 import { loadWorkerArtifactInput } from "../workers-artifact.ts";
+import { initWorkerProject } from "../workers-init.ts";
 
 const roots: string[] = [];
 afterEach(() =>
@@ -140,7 +141,7 @@ test("rejects stale native vars and collisions with declared Secrets before publ
     }),
   );
   await expect(loadWorkerProjectBundle(native, "preview")).rejects.toThrow(
-    "vars differ",
+    "variables differ",
   );
   const module = project(false, false);
   module.config.environments.preview.secrets = ["PRIVATE_TOKEN"];
@@ -183,4 +184,151 @@ test("attaches native configuration to an ordinary module build and detects bind
   await expect(loadWorkerProjectBundle(config, "preview")).rejects.toThrow(
     "Duplicate",
   );
+});
+
+test("inherits the selected Wrangler asset routing while resolving nested config paths", async () => {
+  const loaded = project(false, false);
+  loaded.config.wrangler = "generated/wrangler.jsonc";
+  loaded.config.assets = { directory: "client" };
+  mkdirSync(join(loaded.rootDir, "generated"));
+  mkdirSync(join(loaded.rootDir, "client"));
+  writeFileSync(join(loaded.rootDir, "client/index.html"), "<h1>Application</h1>");
+  writeFileSync(join(loaded.rootDir, loaded.config.wrangler), JSON.stringify({
+    compatibility_date: "2026-09-10",
+    assets: { directory: "../client", binding: "ASSETS", not_found_handling: "404-page" },
+    env: { preview: { assets: {
+      directory: "../client", binding: "ASSETS", html_handling: "none",
+      not_found_handling: "single-page-application", run_worker_first: ["/api", "/api/*"],
+    } } },
+  }));
+  const first = await loadWorkerProjectBundle(loaded, "preview");
+  expect(first.upload).toMatchObject({ bundle: { assets: {
+    binding: "ASSETS", config: { htmlHandling: "none", notFoundHandling: "single-page-application", runWorkerFirst: ["/api", "/api/*"] },
+  } } });
+  expect((await loadWorkerProjectBundle(loaded, "production")).upload).toMatchObject({
+    bundle: { assets: { config: { notFoundHandling: "404-page" } } },
+  });
+  // No cached import: changing the native config changes the immutable artifact.
+  writeFileSync(join(loaded.rootDir, loaded.config.wrangler), JSON.stringify({
+    compatibility_date: "2026-09-10",
+    assets: { directory: "../client", binding: "ASSETS", not_found_handling: "none", run_worker_first: false },
+  }));
+  const changed = await loadWorkerProjectBundle(loaded, "preview");
+  expect(changed.upload).toMatchObject({ bundle: { assets: { config: { notFoundHandling: "none", runWorkerFirst: false } } } });
+  expect(changed.contentSha256).not.toBe(first.contentSha256);
+});
+
+test("uses Wrangler assets when omitted from xAPI and preserves explicit xAPI overrides", async () => {
+  const loaded = project(false, false);
+  for (const directory of ["native-client", "custom-client"]) {
+    mkdirSync(join(loaded.rootDir, directory));
+    writeFileSync(join(loaded.rootDir, directory, "index.html"), directory);
+  }
+  writeFileSync(join(loaded.rootDir, loaded.config.wrangler), JSON.stringify({
+    compatibility_date: "2026-09-10",
+    assets: { directory: "native-client", binding: "NATIVE_ASSETS", html_handling: "force-trailing-slash",
+      not_found_handling: "single-page-application", run_worker_first: true },
+  }));
+  const inherited = await loadWorkerProjectBundle(loaded, "preview");
+  expect(inherited.upload).toMatchObject({ bundle: { assets: { binding: "NATIVE_ASSETS", files: [{ path: "/index.html" }] } } });
+  loaded.config.assets = { directory: "custom-client", binding: "CUSTOM_ASSETS", htmlHandling: "none", notFoundHandling: "none", runWorkerFirst: false };
+  const custom = await loadWorkerProjectBundle(loaded, "preview");
+  expect(custom.upload).toMatchObject({ bundle: { assets: {
+    binding: "CUSTOM_ASSETS", config: { htmlHandling: "none", notFoundHandling: "none", runWorkerFirst: false },
+    files: [{ content: Buffer.from("custom-client").toString("base64") }],
+  } } });
+  expect(loaded.config.assets.runWorkerFirst).toBe(false);
+  expect(custom.contentSha256).not.toBe(inherited.contentSha256);
+  loaded.config.assets = undefined;
+  writeFileSync(join(loaded.rootDir, loaded.config.wrangler), JSON.stringify({
+    compatibility_date: "2026-09-10", assets: { directory: "native-client", binding: "NATIVE_ASSETS" },
+    vars: { NATIVE_ASSETS: "collision" },
+  }));
+  await expect(loadWorkerProjectBundle(loaded, "preview")).rejects.toThrow("Duplicate Worker binding: NATIVE_ASSETS");
+});
+
+test("does not publish a static adapter when its first build produces a real native Worker", async () => {
+  const root = mkdtempSync(join(tmpdir(), "native-first-build-"));
+  roots.push(root);
+  writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { build: "vite build" }, dependencies: { react: "latest", vite: "latest" } }));
+  initWorkerProject({ cwd: root, target: ".", slug: "native-first-build" });
+  const loaded = loadWorkerProject(root);
+  await expect(prepareWorkerProjectBundle(loaded, "preview", async () => {
+    mkdirSync(join(root, "dist/server"), { recursive: true });
+    mkdirSync(join(root, ".wrangler/deploy"), { recursive: true });
+    writeFileSync(join(root, ".wrangler/deploy/config.json"), JSON.stringify({ configPath: "../../dist/server/wrangler.json" }));
+    writeFileSync(join(root, "dist/server/wrangler.json"), JSON.stringify({ main: "index.js", assets: { directory: "../client" } }));
+    writeFileSync(join(root, "dist/server/index.js"), 'export default { fetch() { return new Response("SSR page"); } };');
+  })).rejects.toMatchObject({
+    message: expect.stringContaining("xapi workers init --from-wrangler dist/server/wrangler.json --force"),
+    recovery: { remoteChangesApplied: false, generatedWrangler: "dist/server/wrangler.json" },
+  });
+});
+
+test("a generated assets-only configuration does not reject an ordinary SPA", async () => {
+  const root = mkdtempSync(join(tmpdir(), "static-first-build-"));
+  roots.push(root);
+  writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { build: "vite build" }, dependencies: { react: "latest", vite: "latest" } }));
+  initWorkerProject({ cwd: root, target: ".", slug: "static-first-build" });
+  const loaded = loadWorkerProject(root);
+  const artifact = await prepareWorkerProjectBundle(loaded, "preview", async () => {
+    mkdirSync(join(root, "dist"));
+    mkdirSync(join(root, ".wrangler/deploy"), { recursive: true });
+    writeFileSync(join(root, "dist/index.html"), '<div id="root">SPA</div>');
+    writeFileSync(join(root, "dist/wrangler.json"), JSON.stringify({ assets: { directory: "." } }));
+    writeFileSync(join(root, ".wrangler/deploy/config.json"), JSON.stringify({ configPath: "../../dist/wrangler.json" }));
+  });
+  expect(artifact.upload).toMatchObject({ bundle: { assets: { config: { notFoundHandling: "single-page-application" } } } });
+});
+
+
+test("Wrangler-only required Secrets collide with public variables before upload", async () => {
+  const config = project(false, false);
+  writeFileSync(join(config.rootDir, "wrangler.jsonc"), JSON.stringify({
+    compatibility_date: "2026-09-10", secrets: { required: ["WRANGLER_ONLY"] },
+    vars: { WRANGLER_ONLY: "public-value" },
+  }));
+  await expect(loadWorkerProjectBundle(config, "preview")).rejects.toThrow("Duplicate Worker binding");
+});
+
+for (const native of [false, true]) {
+  test(`root required Secrets collide with resources in ${native ? "native" : "module"} artifacts`, async () => {
+    const config = project(native);
+    writeFileSync(join(config.rootDir, "wrangler.jsonc"), JSON.stringify({
+      compatibility_date: "2026-09-10", secrets: { required: ["API_CONTAINER"] },
+    }));
+    await expect(loadWorkerProjectBundle(config, "preview")).rejects.toThrow("Duplicate Worker binding: API_CONTAINER");
+  });
+}
+
+test("repeated Secret declarations remain valid and unselected environment names do not collide", async () => {
+  const config = project(false, false);
+  config.config.environments.preview.secrets = ["SHARED_TOKEN"];
+  writeFileSync(join(config.rootDir, "wrangler.jsonc"), JSON.stringify({
+    compatibility_date: "2026-09-10", secrets: { required: ["SHARED_TOKEN", "SHARED_TOKEN"] },
+    env: { production: { secrets: { required: ["API_CONTAINER"] } } },
+  }));
+  await expect(loadWorkerProjectBundle(config, "preview")).resolves.toBeDefined();
+  await expect(loadWorkerProjectBundle(config, "production")).rejects.toThrow("Duplicate Worker binding: API_CONTAINER");
+});
+
+test("production native bundle explicitly clears preview-only ordinary metadata", async () => {
+  const config = project(true);
+  const output = join(config.rootDir, config.config.build.output);
+  writeFileSync(output, readFileSync(output, "utf8").replace(
+    '"compatibility_date":"2026-09-10"',
+    '"compatibility_date":"2026-09-10","limits":{"cpu_ms":1234},"placement":{"mode":"smart"}',
+  ));
+  writeFileSync(join(config.rootDir, "wrangler.jsonc"), JSON.stringify({
+    compatibility_date: "2026-09-10",
+    env: {
+      preview: { limits: { cpu_ms: 1234 }, placement: { mode: "smart" } },
+      production: { compatibility_date: "2026-09-10" },
+    },
+  }));
+  const preview = await loadWorkerProjectBundle(config, "preview");
+  const production = await loadWorkerProjectBundle(config, "production");
+  expect(preview.upload).toMatchObject({bundle:{nativeMetadata:{limits:{cpu_ms:1234},placement:{mode:"smart"}}}});
+  expect("bundle" in production.upload && production.upload.bundle.nativeMetadata).toEqual({});
+  expect(preview.contentSha256).not.toBe(production.contentSha256);
 });

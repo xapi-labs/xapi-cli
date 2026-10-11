@@ -8,6 +8,7 @@ import type { WorkerPushResult } from "../workers-push.ts";
 const result: WorkerPushResult = {
   schemaVersion: 1,
   status: "ACTIVE",
+  healthReady: true,
   nativeReceipts: [],
   initialPlan: {
     schemaVersion: 1,
@@ -78,6 +79,13 @@ const result: WorkerPushResult = {
 };
 
 describe("Worker push terminal output", () => {
+  test("shows a pending Container rollout without turning a healthy Worker into a failed push", () => {
+    const rendered = formatWorkerPushResult({ ...result, deployment: { ...result.deployment,
+      containerRollout: { status: "PENDING", confirmation: "AWAITING_NATIVE_CONFIGURATION" } } });
+    expect(rendered).toContain("ACTIVE — public health check passed");
+    expect(rendered).toContain("Rollout pending native confirmation");
+    expect(rendered).not.toContain("Configuration accepted");
+  });
   test("renders a concise deployment receipt without dumping initialPlan JSON", () => {
     const rendered = formatWorkerPushResult(result);
     expect(rendered).toContain("ACTIVE — public health check passed");

@@ -1,0 +1,43 @@
+{
+  "contentSha256": "78ab1deec31bece78c504294f5e1f968a891f84f998d4674298de0ad417d4e61",
+  "sizeBytes": 2311,
+  "bundle": {
+    "version": 1,
+    "mainModule": "index.js",
+    "modules": [
+      {
+        "path": "index.js",
+        "content": "var __defProp = Object.defineProperty;\nvar __name = (target, value) => __defProp(target, \"name\", { value, configurable: true });\n\n// src/index.ts\nfunction label(env) {\n  return `fixture:${env.PUBLIC_LABEL}`;\n}\n__name(label, \"label\");\nvar index_default = { async fetch(request, env) {\n  if (new URL(request.url).pathname === \"/throw\") throw new Error(\"native-map-fixture\");\n  console.log(label(env));\n  return Response.json({ label: label(env), config: env.JSON_VALUE });\n} };\nexport {\n  index_default as default\n};\n//# sourceMappingURL=index.js.map\n",
+        "encoding": "utf8",
+        "contentType": "application/javascript+module"
+      },
+      {
+        "path": "index.js.map",
+        "content": "eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbInNyYy9pbmRleC50cyJdLCJzb3VyY2VSb290IjoiIiwic291cmNlc0NvbnRlbnQiOlsiaW50ZXJmYWNlIEVudiB7IFBVQkxJQ19MQUJFTDogc3RyaW5nOyBKU09OX1ZBTFVFPzogeyBhbnN3ZXI6IG51bWJlciB9IH1cbmZ1bmN0aW9uIGxhYmVsKGVudjogRW52KTogc3RyaW5nIHsgcmV0dXJuIGBmaXh0dXJlOiR7ZW52LlBVQkxJQ19MQUJFTH1gOyB9XG5leHBvcnQgZGVmYXVsdCB7IGFzeW5jIGZldGNoKHJlcXVlc3Q6IFJlcXVlc3QsIGVudjogRW52KTogUHJvbWlzZTxSZXNwb25zZT4ge1xuICBpZiAobmV3IFVSTChyZXF1ZXN0LnVybCkucGF0aG5hbWUgPT09IFwiL3Rocm93XCIpIHRocm93IG5ldyBFcnJvcihcIm5hdGl2ZS1tYXAtZml4dHVyZVwiKTtcbiAgY29uc29sZS5sb2cobGFiZWwoZW52KSk7IHJldHVybiBSZXNwb25zZS5qc29uKHtsYWJlbDpsYWJlbChlbnYpLGNvbmZpZzplbnYuSlNPTl9WQUxVRX0pO1xufX07XG4iXSwibWFwcGluZ3MiOiI7Ozs7QUFDQSxTQUFTLE1BQU0sS0FBa0I7QUFBRSxTQUFPLFdBQVcsSUFBSSxZQUFZO0FBQUk7QUFBaEU7QUFDVCxJQUFPLGdCQUFRLEVBQUUsTUFBTSxNQUFNLFNBQWtCLEtBQTZCO0FBQzFFLE1BQUksSUFBSSxJQUFJLFFBQVEsR0FBRyxFQUFFLGFBQWEsU0FBVSxPQUFNLElBQUksTUFBTSxvQkFBb0I7QUFDcEYsVUFBUSxJQUFJLE1BQU0sR0FBRyxDQUFDO0FBQUcsU0FBTyxTQUFTLEtBQUssRUFBQyxPQUFNLE1BQU0sR0FBRyxHQUFFLFFBQU8sSUFBSSxXQUFVLENBQUM7QUFDeEYsRUFBQzsiLCJuYW1lcyI6W10sImZpbGUiOiJpbmRleC5qcyJ9",
+        "encoding": "base64",
+        "contentType": "application/source-map"
+      }
+    ],
+    "vars": {
+      "JSON_VALUE": {
+        "answer": 42
+      },
+      "PUBLIC_LABEL": "root"
+    },
+    "observability": {
+      "enabled": true,
+      "head_sampling_rate": 0.25,
+      "logs": {
+        "enabled": true,
+        "head_sampling_rate": 0,
+        "invocation_logs": false,
+        "persist": false
+      },
+      "traces": {
+        "enabled": true,
+        "head_sampling_rate": 0.1,
+        "persist": false
+      }
+    }
+  }
+}

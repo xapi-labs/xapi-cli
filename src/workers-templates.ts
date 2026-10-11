@@ -54,7 +54,7 @@ const templateManifestSchema = z
     productTemplate: z.enum(["worker", "agent"]),
     defaultResources: z.array(workerManagedResourceSchema).max(100).default([]),
     defaultSecrets: z
-      .array(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/))
+      .array(z.string().min(1))
       .max(100)
       .default([]),
     packageScripts: z.record(z.string(), z.string().min(1).max(1000)).default({}),

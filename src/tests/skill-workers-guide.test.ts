@@ -25,13 +25,6 @@ const domainGuide = readFileSync(
   new URL('../../skills/xapi-workers/references/domains.md', import.meta.url),
   'utf8',
 );
-const domainConflictRecovery = readFileSync(
-  new URL(
-    '../../skills/xapi-workers/references/domain-conflict-recovery.md',
-    import.meta.url,
-  ),
-  'utf8',
-);
 
 describe('bundled xAPI Workers skill guide', () => {
   it('routes hosted Worker tasks to the progressively loaded guide', () => {
@@ -53,19 +46,6 @@ describe('bundled xAPI Workers skill guide', () => {
     expect(domainGuide).not.toContain('wrangler deploy');
   });
 
-  it('documents the administrator-only domain conflict recovery contract', () => {
-    expect(dedicatedSkill).toContain(
-      '[domain-conflict-recovery.md](references/domain-conflict-recovery.md)',
-    );
-    expect(domainConflictRecovery).toContain(
-      'POST /api/admin/workers/domain-conflict-recovery',
-    );
-    expect(domainConflictRecovery).toContain('100117');
-    expect(domainConflictRecovery).toContain('platform administrator');
-    expect(domainConflictRecovery).toContain('fails closed');
-    expect(domainConflictRecovery).toContain('does not detach or');
-  });
-
   it('prefers project deployment and covers import, CI, recovery, and rollback boundaries', () => {
     expect(guide).toContain('xapi workers templates');
     expect(guide).toContain('xapi workers init my-agent --template persistent-agent');
@@ -81,11 +61,15 @@ describe('bundled xAPI Workers skill guide', () => {
     expect(guide).toContain('XAPI_API_HOST=api.test.xapi.to');
   });
 
-  it('uses Artifact upload as the default and Sandbox only as an option', () => {
+  it('uses Artifact upload and user-owned execution without enabling managed builds', () => {
     expect(guide).toContain('workers upload <worker-id>');
     expect(guide).toContain('workers deploy <worker-id>');
     expect(guide).toContain('--artifact <artifact-id>');
-    expect(guide).toContain('### Optional Sandbox build');
+    expect(guide).toContain('### Build in your execution environment');
+    expect(guide).toContain('user-owned xAPI');
+    expect(guide).toContain('worker_cloud_build_disabled');
+    expect(guide).toContain('USER_BUILD_BUDGET_NOT_IMPLEMENTED');
+    expect(guide).toContain('has its own billing/lifecycle');
     expect(guide).toContain('"main": "worker.js"');
     expect(guide).toContain('--file dist/');
     expect(guide).toContain('--main worker.js');
@@ -97,7 +81,8 @@ describe('bundled xAPI Workers skill guide', () => {
 
   it('preserves key isolation, idempotency, budgets, and terminal status rules', () => {
     expect(guide).toContain('never embedded in a bundle');
-    expect(guide).toContain('between $0.10 and $100 per day');
+    expect(guide).toContain('Daily budgets are optional');
+    expect(guide).toContain('actual usage is still billed');
     expect(guide).toContain('Reuse an upload key only for identical normalized Artifact bytes');
     expect(guide).toContain('`status: ACTIVE`');
   });

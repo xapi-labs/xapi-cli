@@ -1,3 +1,6 @@
+import { planWorkerNativeEvents } from "./workers-native-events.ts";
+import { planWorkerVariables, readWorkerVariableState, readWorkerArtifactVariableConfiguration, workerVariableDeclaration, type WorkerVariableDecision } from "./workers-variable-plan.ts";
+import { remoteWorkerResourceState, resourceReadyForDeployment } from "./workers-resource-state.ts";
 import { nativeDeploymentPlan, publicNativeDeploymentPlan, applyNativeDeploymentPhase, NativeDeploymentError, type NativeDeploymentClient, type NativeDeploymentPlan } from './workers-native-deployment.ts';
 import { createInterface } from "node:readline/promises";
 import type { WorkersClientOptions } from "./workers-client.ts";
@@ -11,12 +14,17 @@ import {
   type ManagedResourceClient,
   resourceMatches,
 } from "./workers-push.ts";
-import { loadWorkerProject } from "./workers-project.ts";
+import { workerEnvironmentContainers, loadWorkerProject } from "./workers-project.ts";
 import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
+import { conflictingWorkerSecretBinding } from "./workers-binding-validation.ts";
+import type { WorkerVariableType } from "./workers-artifact.ts";
 
 type UnknownRecord = Record<string, unknown>;
 
 export interface PromotionClient extends DeploymentClient, ManagedResourceClient, NativeDeploymentClient {
+  getWorkerArtifact?(options: WorkersClientOptions, id: string, artifactId: string): Promise<unknown>;
+  getWorkerVariableState(options: WorkersClientOptions, id: string, environment: "preview" | "production"): Promise<unknown>;
+  getWorkerArtifactVariableConfiguration(options: WorkersClientOptions, id: string, artifactId: string): Promise<unknown>;
   listWorkerResources(
     options: WorkersClientOptions,
     id: string,
@@ -31,13 +39,14 @@ export interface PromotionClient extends DeploymentClient, ManagedResourceClient
 
 export type PromotionCheckStatus =
   | "CREATE"
+  | "UPDATE"
   | "NO_CHANGE"
   | "MANUAL"
   | "BLOCKED";
 
 export interface WorkerPromotionCheck {
   status: PromotionCheckStatus;
-  kind: "budget" | "placement" | "resource" | "secret" | "routing";
+  kind: "budget" | "placement" | "resource" | "secret" | "routing" | "event";
   key: string;
   message: string;
   command?: string;
@@ -45,6 +54,8 @@ export interface WorkerPromotionCheck {
 
 export interface WorkerPromotionPlan {
   schemaVersion: 1;
+  variables?: WorkerVariableDecision[];
+  nativeMetadata?: Record<string, unknown>;
   workerId: string;
   to: "production";
   previewDeployment: { id: string; artifactId: string; deployedAt?: string };
@@ -82,6 +93,7 @@ export interface WorkerPromotionResult {
   resources: { created: string[]; unchanged: string[] };
   deployment: { id: string; status: "ACTIVE"; idempotencyKey: string };
   nativeReceipts: unknown[];
+  events: {queueConsumers:string[]; crons:string[]};
   publicUrl: string;
   health: { url: string; status: number; attempts: number };
   commands: { logs: string; rollback: string };
@@ -148,9 +160,9 @@ function productionChecks(
 ): { checks: WorkerPromotionCheck[]; dataRisk: string[] } {
   const checks: WorkerPromotionCheck[] = [];
   const dataRisk: string[] = [
-    "Promotion deploys the selected Worker Artifact and the displayed local Wrangler migration/event plan; it does not snapshot, copy, or roll back production data",
+    "Promotion deploys the selected Worker Artifact and the displayed local Wrangler event plan; it does not snapshot, copy, or roll back production data",
   ];
-  const currentBudget = amount(remoteEnvironment.dailyBudgetUsd);
+  const currentBudget = remoteEnvironment.dailyBudgetUsd === null ? null : amount(remoteEnvironment.dailyBudgetUsd);
   if (hasStaticAssets) {
     checks.push(
       remoteEnvironment.webAppReady === true
@@ -171,14 +183,14 @@ function productionChecks(
   }
   if (
     currentBudget === undefined ||
-    Math.abs(currentBudget - desired.dailyBudgetUsd) > 0.00005
+    (desired.dailyBudgetUsd === null ? currentBudget !== null : currentBudget === null || Math.abs(currentBudget - desired.dailyBudgetUsd) > 0.00005)
   ) {
     checks.push({
       status: "BLOCKED",
       kind: "budget",
       key: "production",
-      message: `Production budget is ${currentBudget ?? "unknown"}; desired is ${desired.dailyBudgetUsd}`,
-      command: `xapi workers budget ${workerId} production --daily-usd ${desired.dailyBudgetUsd}`,
+      message: `Production budget is ${currentBudget ?? "unknown"}; desired is ${desired.dailyBudgetUsd === null ? "none" : desired.dailyBudgetUsd}`,
+      command: `xapi workers budget ${workerId} production --daily-usd ${desired.dailyBudgetUsd === null ? "none" : desired.dailyBudgetUsd}`,
     });
   } else {
     checks.push({
@@ -243,9 +255,7 @@ function productionChecks(
     }
     remoteResources.delete(resource.bindingName);
     const status = text(current.status) || "UNKNOWN";
-    const statusReady =
-      status === "ACTIVE" ||
-      (resource.type === "durable_object" && status === "PROVISIONING");
+    const statusReady = resourceReadyForDeployment(remoteWorkerResourceState(current));
     if (!resourceMatches(current, resource) || !statusReady) {
       checks.push({
         status: "BLOCKED",
@@ -316,8 +326,8 @@ function productionChecks(
   }
   checks.sort(
     (a, b) =>
-      ({ routing: 0, budget: 1, placement: 2, resource: 3, secret: 4 })[a.kind] -
-        { routing: 0, budget: 1, placement: 2, resource: 3, secret: 4 }[b.kind] ||
+      ({ routing: 0, budget: 1, placement: 2, resource: 3, secret: 4, event: 5 })[a.kind] -
+        { routing: 0, budget: 1, placement: 2, resource: 3, secret: 4, event: 5 }[b.kind] ||
       a.key.localeCompare(b.key),
   );
   return { checks, dataRisk: dataRisk.sort() };
@@ -331,7 +341,7 @@ async function terminalConfirm(): Promise<boolean> {
   }
   const prompt = createInterface({
     input: process.stdin,
-    output: process.stdout,
+    output: process.stderr,
   });
   try {
     const answer = await prompt.question(
@@ -350,6 +360,8 @@ export async function createWorkerPromotionPlan(
   worker: UnknownRecord;
   artifact: UnknownRecord;
   nativePlan: NativeDeploymentPlan;
+  compatibility: ReturnType<typeof readWranglerDeploymentSettings>;
+  sourceCompatibility: ReturnType<typeof readWranglerDeploymentSettings>;
 }> {
   if (options.to !== "production") {
     throw new WorkerPushError("workers promote requires --to production");
@@ -405,26 +417,181 @@ export async function createWorkerPromotionPlan(
       "ACTIVE preview deployment is missing immutable Artifact metadata",
     );
   }
-  const [resources, secrets] = await Promise.all([
+  let compatibility = readWranglerDeploymentSettings(project, "production", text(artifact.mediaType));
+  const sourceCompatibility = compatibility;
+  // Promotion reuses the preview Artifact; it cannot supply native output from
+  // a production build for configuration outside the existing desired state.
+  if (compatibility.nativeBundleRequired?.length) {
+    throw new WorkerPushError(
+      'Cannot represent production Wrangler configuration when promoting the preview Artifact: ' +
+        compatibility.nativeBundleRequired.join(', '),
+      {
+        errorCode: 'worker_production_configuration_unrepresentable',
+        fields: compatibility.nativeBundleRequired,
+        remoteChangesApplied: false,
+        supportedNativeFields: ['placement', 'limits', 'logpush', 'observability',
+          'cache_options', 'cache', 'keep_assets', 'keep_vars', 'tags', 'version_metadata', 'tail_consumers'],
+        next: 'Use xapi workers pull --env production to compare the active snapshot; review the listed fields and supported native mappings before promotion',
+      },
+    );
+  }
+  const checkSecretBindings = (artifactBindings: string[] = []) => {
+    const collision = conflictingWorkerSecretBinding(compatibility.requiredSecrets || [], [
+      ...project.config.environments.production.resources.map(resource => resource.bindingName),
+      ...(compatibility.assets?.binding ? [compatibility.assets.binding] : []),
+      ...artifactBindings,
+    ]);
+    if (collision) throw new WorkerPushError(`Duplicate Worker binding: ${collision}`, { remoteChangesApplied: false });
+  };
+  checkSecretBindings();
+  const [resources, secrets, currentVariables, declaration] = await Promise.all([
     api
       .listWorkerResources(options.clientOptions, workerId, "production")
       .then((value) => records(value, "production resources")),
     api
       .listWorkerSecrets(options.clientOptions, workerId, "production")
       .then((value) => records(value, "production Secret metadata")),
+    api.getWorkerVariableState(options.clientOptions, workerId, "production")
+      .then(value => readWorkerVariableState(value, "production", text(production.activeDeploymentId) || null)),
+    api.getWorkerArtifactVariableConfiguration(options.clientOptions, workerId, artifactId)
+      .then(value => readWorkerArtifactVariableConfiguration(value, artifactId, contentSha256)),
   ]);
+  // This affirmative capability belongs to the queried server, after its
+  // Artifact ID/SHA are verified. Old DTOs may silently drop unknown fields.
+  const complete = declaration.nativeMetadataCompleteSupported === true;
+  if (complete) compatibility = {...compatibility,
+    nativeMetadata: {...(compatibility.nativeMetadata || {})}, nativeMetadataIsComplete: true};
+  const metadata = compatibility.nativeMetadata;
+  const resetsMetadata = metadata !== undefined && !Object.keys(metadata).length;
+  let bindingNames = declaration.bindingNames;
+  if (declaration.bindings !== undefined && metadata !== undefined) {
+    // Assets remain part of the immutable Artifact; effective metadata replaces
+    // only the version binding. Preserve type records even for a shared name.
+    const changesVersion = complete || resetsMetadata || metadata.version_metadata !== undefined;
+    const version = declaration.bindings.find(binding => binding.type === 'version_metadata');
+    if (version && !changesVersion) throw new WorkerPushError(
+      'Production native metadata cannot remove the selected Artifact version binding while applying other native settings', {
+        errorCode: 'worker_production_configuration_unrepresentable', fields: ['version_metadata'],
+        artifactId, remoteChangesApplied: false,
+        next: 'Inspect xapi workers pull --env production; deploy the backend complete-native-metadata contract to preserve this production intent',
+      });
+    bindingNames = declaration.bindings.filter(binding => !changesVersion || binding.type === 'assets').map(binding => binding.name);
+  } else if (bindingNames.length && metadata !== undefined) {
+    const provider = previewDeployment.providerResult as UnknownRecord | undefined;
+    const snapshot = provider?.deploymentSnapshot as UnknownRecord | undefined;
+    const native = snapshot?.nativeMetadata as UnknownRecord | undefined;
+    const version = native?.version_metadata as { binding?: unknown } | undefined;
+    // A confirmed version binding cannot collide with immutable assets. If it
+    // matches an Artifact name in this exact snapshot, its binding kind is known.
+    let artifactVersion: string | undefined;
+    const matchesSnapshot = snapshot?.version === 1 && snapshot.artifactId === artifactId &&
+      snapshot.sourceSha256 === contentSha256;
+    if (matchesSnapshot && typeof version?.binding === 'string' &&
+        bindingNames.includes(version.binding)) artifactVersion = version.binding;
+    const previewOverride = provider?.nativeMetadataOverrides;
+    // Absence proves no Artifact version only if preview did not reset metadata.
+    // The existing backend records explicit {} overrides in providerResult.
+    const preservesVersion = provider?.nativeMetadataIsComplete !== true && (previewOverride === undefined || (previewOverride !== null &&
+      typeof previewOverride === 'object' && !Array.isArray(previewOverride) && Object.keys(previewOverride).length > 0));
+    const knownNoVersion = matchesSnapshot && native !== null && typeof native === 'object' &&
+      !Array.isArray(native) && version === undefined && preservesVersion;
+    if (!artifactVersion && !knownNoVersion) {
+      const readArtifact = api.getWorkerArtifact;
+      if (!readArtifact) throw new WorkerPushError('Cannot read immutable Artifact binding metadata', {
+        remoteChangesApplied: false,
+      });
+      const details = record(await readArtifact.call(api, options.clientOptions, workerId, artifactId), 'Artifact');
+      if (details.id !== artifactId || details.contentSha256 !== contentSha256 ||
+          !Number.isInteger(details.assetCount) || Number(details.assetCount) < 0 ||
+          (details.assetCount === 0 && bindingNames.length !== 1)) {
+        throw new WorkerPushError('xAPI returned missing or mismatched Artifact asset metadata', {
+          remoteChangesApplied: false,
+        });
+      }
+      // The immutable query proves that a no-assets bundle has only its version
+      // binding. Never infer historical binding kinds from local Wrangler files.
+      if (details.assetCount === 0) artifactVersion = bindingNames[0];
+    }
+    const changesVersion = complete || resetsMetadata || metadata.version_metadata !== undefined;
+    // The current immutable query returns only assets and version binding
+    // names. Two distinct names prove a version exists even without its kind.
+    if (!changesVersion && (artifactVersion || bindingNames.length === 2)) throw new WorkerPushError(
+      'Production native metadata cannot remove the selected Artifact version binding while applying other native settings', {
+        errorCode: 'worker_production_configuration_unrepresentable',
+        fields: ['version_metadata'], artifactId, remoteChangesApplied: false,
+        next: 'Inspect the selected Artifact and xapi workers pull --env production; the deployment API needs complete native metadata replacement to preserve this production intent',
+      });
+    if (!changesVersion && !knownNoVersion && !artifactVersion) throw new WorkerPushError(
+      'Cannot classify Artifact bindings to verify complete production native metadata', {
+        errorCode: 'worker_artifact_binding_metadata_unavailable',
+        fields: ['version_metadata'], artifactId, remoteChangesApplied: false,
+        next: 'Read the selected Artifact and its variable-configuration through the Workers API; binding types are needed to rule out retained preview version metadata',
+      });
+    if (changesVersion) {
+      if (artifactVersion) bindingNames = bindingNames.filter(name => name !== artifactVersion);
+      else if (!knownNoVersion) {
+        // Without proof, an overlapping name might be immutable assets. Include
+        // the desired version name as well as Secrets/vars in this ambiguity.
+        const requestedNames = new Set([
+          ...(compatibility.requiredSecrets || []), ...Object.keys(compatibility.variables?.vars || {}),
+          ...currentVariables.map(variable => variable.name),
+          ...((metadata.version_metadata as { binding?: string } | undefined)?.binding
+            ? [(metadata.version_metadata as { binding: string }).binding] : []),
+        ]);
+        const ambiguous = bindingNames.filter(name => requestedNames.has(name));
+        if (ambiguous.length) throw new WorkerPushError(
+          'Cannot distinguish immutable assets from cleared or replaced version bindings: ' + ambiguous.join(', '), {
+            errorCode: 'worker_artifact_binding_metadata_unavailable',
+            artifactId, remoteChangesApplied: false,
+            next: 'Read the selected Artifact and its variable-configuration through the Workers API; promotion needs binding types to verify this collision',
+          });
+      }
+    }
+  }
+  if (metadata?.version_metadata !== undefined) {
+    const versionBinding = (metadata.version_metadata as { binding: string }).binding;
+    if (bindingNames.includes(versionBinding)) throw new WorkerPushError(`Duplicate Worker binding: ${versionBinding}`, {
+      remoteChangesApplied: false,
+    });
+    bindingNames = [...bindingNames, versionBinding];
+  }
+  checkSecretBindings(bindingNames);
   const checked = productionChecks(
     workerId,
-    project.config.environments.production,
+    {...project.config.environments.production, secrets: compatibility.requiredSecrets || []},
     production,
     resources,
     secrets,
-    Boolean(project.config.assets),
+    Boolean(compatibility.assets),
   );
+  // Match backend order: a variables override clears Artifact public retention,
+  // then nativeMetadata can reset or explicitly restore the retained types.
+  let keepBindings = compatibility.variables === undefined ? declaration.keepBindings : [];
+  if (resetsMetadata || complete) keepBindings = [];
+  if (Array.isArray(metadata?.keep_bindings)) keepBindings = metadata.keep_bindings
+    .filter((type): type is WorkerVariableType => type === 'plain_text' || type === 'json');
+  const effectiveDeclaration = {
+    ...declaration,
+    bindingNames,
+    keepBindings,
+    variables: compatibility.variables === undefined ? declaration.variables
+      : workerVariableDeclaration(compatibility.variables).variables,
+  };
   const nativePlan = nativeDeploymentPlan(project, "production");
-  checked.dataRisk.push("Remote D1 migrations run before code; Queue/Cron configuration runs after code. Completed database changes are not rolled back on code/configuration failure.");
+  for (const event of await planWorkerNativeEvents(project,"production",resources,api,options.clientOptions))
+    checked.checks.push({status:event.operation,kind:"event",key:event.key,message:event.message});
+  checked.dataRisk.push("D1 SQL is not executed by promotion. Apply database migrations explicitly when needed; Queue/Cron configuration runs after code. Code rollback does not roll back SQL.");
   const plan: WorkerPromotionPlan = {
     schemaVersion: 1,
+    ...(metadata !== undefined ? {nativeMetadata: structuredClone(metadata)} : {}),
+    variables: planWorkerVariables(effectiveDeclaration, currentVariables, [
+      ...project.config.environments.production.resources.map(resource => resource.bindingName),
+      ...(compatibility.requiredSecrets || []),
+      ...secrets.map(secret => text(secret.bindingName)!),
+    ], production.bindings).map(variable => compatibility.variables === undefined ? variable : {
+      ...variable,
+      message: variable.message.replace("the Artifact", "the production configuration"),
+    }),
     workerId,
     to: "production",
     previewDeployment: {
@@ -449,7 +616,7 @@ export async function createWorkerPromotionPlan(
         (item.status === "MANUAL" && item.kind === "resource"),
     ),
   };
-  return { plan, worker, artifact, nativePlan };
+  return { plan, worker, artifact, nativePlan, compatibility, sourceCompatibility };
 }
 
 export async function promoteWorkerProject(
@@ -457,8 +624,8 @@ export async function promoteWorkerProject(
 ): Promise<WorkerPromotionResult> {
   const api = options.client || (workersClient as PromotionClient);
   const project = loadWorkerProject(options.cwd, options.configPath);
-  const compatibility = readWranglerDeploymentSettings(project, "production");
   const prepared = await createWorkerPromotionPlan({ ...options, client: api });
+  const compatibility = prepared.compatibility;
   options.onPlan?.(prepared.plan);
   if (!prepared.plan.canPromote) {
     const blockingChecks = prepared.plan.production.checks.filter(
@@ -485,7 +652,7 @@ export async function promoteWorkerProject(
     }
   }
   if (JSON.stringify(loadWorkerProject(project.rootDir, project.configPath).config) !== JSON.stringify(project.config) ||
-      JSON.stringify(readWranglerDeploymentSettings(project, "production")) !== JSON.stringify(compatibility))
+      JSON.stringify(readWranglerDeploymentSettings(project, "production", text(prepared.artifact.mediaType))) !== JSON.stringify(prepared.sourceCompatibility))
     throw new WorkerPushError("Production configuration changed after plan; rerun promote to review it before applying changes");
   const wait =
     options.sleep ||
@@ -505,7 +672,6 @@ export async function promoteWorkerProject(
       project.config.environments.production.resources,
       options.retentionPriceVersion,
     );
-    nativeReceipts.push(...await applyNativeDeploymentPhase(api, options.clientOptions, prepared.plan.workerId, "production", prepared.nativePlan, "BEFORE_CODE"));
     const deployed = await ensureActiveDeployment(
       api,
       options.clientOptions,
@@ -517,6 +683,8 @@ export async function promoteWorkerProject(
       options.retentionPriceVersion,
       project.config.environments.production.resources.map(resource => resource.bindingName),
       prepared.plan.production.activeDeploymentId,
+      false,
+      workerEnvironmentContainers(project.config,"production"),
     );
     releasedDeploymentId = text(deployed.deployment.id);
     nativeReceipts.push(...await applyNativeDeploymentPhase(api, options.clientOptions, prepared.plan.workerId, "production", prepared.nativePlan, "AFTER_CODE"));
@@ -541,6 +709,7 @@ export async function promoteWorkerProject(
       status: "ACTIVE",
       plan: prepared.plan,
       nativeReceipts,
+      events: {queueConsumers:prepared.nativePlan.consumers.map(item=>item.bindingName),crons:prepared.nativePlan.crons},
       workerId: prepared.plan.workerId,
       artifact: prepared.plan.artifact,
       resources,

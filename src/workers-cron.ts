@@ -1,5 +1,5 @@
-// CF weekdays are 1 (Sunday) through 7 (Saturday). Reject unsupported
-// syntax before resource writes; do not silently apply Unix cron semantics.
+// Legacy numeric-only Cron helper. Deployment admission preserves the original
+// five-field UTC expression for the backend CF parser; this is not its gate.
 export function validNativeCron(cron: string): boolean {
   const ranges = [
     [0, 59],

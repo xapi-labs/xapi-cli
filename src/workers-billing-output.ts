@@ -1,4 +1,5 @@
 import type { WorkerBillingQueryKind } from "./workers-client.ts";
+import { workerLifecycleGuidance, workerReadOnlyFollowups } from "./workers-operation-guidance.ts";
 
 type RecordValue = Record<string, unknown>;
 export type WorkerBillingOutputMode = "human" | "json";
@@ -54,9 +55,10 @@ function table(headers: string[], rows: string[][]): string[] {
   ];
 }
 
-function qualityLines(response: RecordValue): string[] {
+function qualityLines(response: RecordValue, utc = false): string[] {
   const quality = value(response.dataQuality);
-  const completeThrough = value(response.completeThrough);
+  const completeThrough = utc && typeof response.completeThrough === 'string' && Number.isFinite(Date.parse(response.completeThrough))
+    ? new Date(response.completeThrough).toISOString() : value(response.completeThrough);
   const warning =
     quality === "COMPLETE"
       ? []
@@ -65,8 +67,11 @@ function qualityLines(response: RecordValue): string[] {
         ];
   return [
     row("Data quality", quality),
-    row("Complete through", completeThrough),
+    row(utc ? 'Complete through (UTC)' : "Complete through", completeThrough),
     ...warning,
+    ...(completeThrough === "—"
+      ? ["  ! Collector freshness is unknown; missing metering is not zero usage or zero cost."]
+      : []),
   ];
 }
 
@@ -146,29 +151,42 @@ function overview(data: RecordValue): string[] {
 }
 
 function usage(data: RecordValue): string[] {
-  const buckets = array(data.buckets).map((item) => {
-    const bucket = record(item);
-    const facts = array(bucket.facts).map((factValue) => {
-      const fact = record(factValue);
-      return `${value(fact.metric)}=${value(fact.quantity)}`;
+  const aggregated = Array.isArray(data.totals);
+  const utc = (date:unknown) => typeof date === 'string' && Number.isFinite(Date.parse(date))
+    ? new Date(date).toISOString() : value(date);
+  const coverage = (item: RecordValue) => [row('Coverage', record(item.coverage).status),row('Reasons',record(item.coverage).reasonCodes)];
+  // Quantities are exact decimal strings; neither table truncation nor Number
+  // conversion may hide their precision. Scope totals are never recomputed.
+  const totals = array(data.totals).flatMap(item => {
+    const total = record(item);
+    return [row('Metric',total.metric),row('Quantity',total.quantity),...coverage(total),''];
+  });
+  const buckets = array(data.buckets).flatMap(item => {
+    const bucket = record(item), status = value(bucket.status);
+    const summaries = array(aggregated ? bucket.summaries : bucket.facts).flatMap(item => {
+      const summary = record(item), source = record(summary.sourceSelection);
+      return [row('Resource',summary.resourceKey ?? summary.resourceId),row('Metric',summary.metric),
+        row('Quantity',summary.quantity),...(aggregated ? [row('Events',summary.eventCount),row('Source',source.kind),
+          row('Provider / dataset',`${value(source.provider)} / ${value(source.dataset)}`),...coverage(summary)] : []),''];
     });
-    const status = value(bucket.status);
-    return [
-      value(bucket.start),
-      status === "GAP" || status === "MISSING" ? `! ${status}` : status,
-      facts.length ? facts.join(", ") : "—",
-    ];
+    return [`  ${utc(bucket.start)} → ${utc(bucket.end)} · ${status === 'GAP' || status === 'MISSING' ? '! '+status : status}`,
+      ...(summaries.length ? summaries : ['  — (no observed summaries)']),''];
   });
   return [
-    row("Range", `${value(data.from)} → ${value(data.to)}`),
+    row("Range (UTC)", `${utc(data.from)} → ${utc(data.to)}`),
     row("Buckets", data.bucketCount),
     row("Gaps", data.gapCount),
     row("Partial", data.partialCount),
     row("Metric", data.metric),
     row("Resource", data.resourceId),
+    ...(aggregated ? [row('Has more',record(data.pagination).hasMore),
+      '  Pagination completion and coverage completeness are separate.'] :
+      ['  ! Legacy usage observations: aggregate totals and coverage are unavailable.']),
     "",
-    "Five-minute buckets",
-    ...table(["Start", "Status", "Facts"], buckets),
+    'Whole-scope quantities (not an invoice)',
+    ...(aggregated ? totals.length ? totals : ['  (empty)'] : ['  —']),
+    'Five-minute buckets (UTC)',
+    ...buckets,
   ];
 }
 
@@ -287,16 +305,27 @@ export function formatWorkerBillingResponse(
 ): string {
   const response = record(responseValue);
   const data = record(response.data);
+  const legacyUsage = kind === 'usage' && !Array.isArray(data.totals);
+  const quality = legacyUsage ? {...response,dataQuality:response.dataQuality === 'PARTIAL' ? 'PARTIAL' : 'INDETERMINATE',completeThrough:null} : response;
   return [
     `xAPI Worker Billing · ${kind[0].toUpperCase()}${kind.slice(1)}`,
     RULE,
     row("Worker", response.workerId),
     row("Environment", response.environment),
     row("Snapshot", response.snapshotId),
-    row("Snapshot time", response.snapshotTime),
-    ...qualityLines(response),
+    row(kind === 'usage' ? 'Snapshot time (UTC)' : 'Snapshot time', kind === 'usage' && typeof response.snapshotTime === 'string' &&
+      Number.isFinite(Date.parse(response.snapshotTime)) ? new Date(response.snapshotTime).toISOString() : response.snapshotTime),
+    ...qualityLines(quality, kind === 'usage'),
     "",
     ...FORMATTERS[kind](data),
+    ...(kind === "lifecycle"
+      ? [
+          "",
+          "Guidance",
+          ...workerLifecycleGuidance(data).map(line => `  ${line}`),
+          ...workerReadOnlyFollowups(response).map(command => `  ${command}`),
+        ]
+      : []),
     RULE,
   ].join("\n");
 }

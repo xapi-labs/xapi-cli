@@ -70,6 +70,7 @@ function fakePlatform(options: { failOnce?: boolean } = {}) {
   let activeDeploymentId = "production-current";
   let failOnce = !!options.failOnce;
   let rollbackReads = 0;
+  let pendingRollbackId: string | undefined;
   const calls = { rollback: 0, health: 0 };
   const rollbackInputs: Array<Record<string, unknown>> = [];
   const deployments: Array<Record<string, unknown>> = [
@@ -89,6 +90,7 @@ function fakePlatform(options: { failOnce?: boolean } = {}) {
     },
     {
       id: "production-same-artifact",
+      providerResult: { containerOverrides: [{ name: "app", instanceType: "lite" }] },
       artifactId: "artifact-current",
       environmentId: "env-production",
       status: "ACTIVE",
@@ -104,13 +106,14 @@ function fakePlatform(options: { failOnce?: boolean } = {}) {
   ];
   const snapshot = () => {
     const rollback = deployments.find(
-      (item) => item.id === "production-rollback",
+      (item) => item.id === pendingRollbackId && item.status === "DEPLOYING",
     );
     if (rollback) {
       rollbackReads += 1;
       if (rollbackReads >= 2) {
         rollback.status = "ACTIVE";
         activeDeploymentId = String(rollback.id);
+        pendingRollbackId = undefined;
       }
     }
     return {
@@ -146,7 +149,7 @@ function fakePlatform(options: { failOnce?: boolean } = {}) {
         (item) => item.id === input.deploymentId,
       )!;
       const created = {
-        id: "production-rollback",
+        id: calls.rollback === 1 ? "production-rollback" : `production-rollback-${calls.rollback}`,
         artifactId: target.artifactId,
         environmentId: "env-production",
         idempotencyKey: `rollback:${input.idempotencyKey}`,
@@ -154,6 +157,7 @@ function fakePlatform(options: { failOnce?: boolean } = {}) {
         deployedAt: "2026-08-26T13:00:00.000Z",
       };
       deployments.unshift(created);
+      pendingRollbackId = created.id; rollbackReads = 0;
       if (failOnce) {
         failOnce = false;
         throw new RequestTimeoutError(60_000);
@@ -161,7 +165,7 @@ function fakePlatform(options: { failOnce?: boolean } = {}) {
       return created;
     },
   };
-  return { client, calls, rollbackInputs, deployments };
+  return { client, calls, rollbackInputs, deployments, activate(id: string) { activeDeploymentId = id; } };
 }
 
 describe("workers rollback", () => {
@@ -199,6 +203,9 @@ describe("workers rollback", () => {
     expect(result.plan.codeOnly).toBe(true);
     expect(result.plan.dataAndSecretsRolledBack).toBe(false);
     expect(result.plan.warning).toContain("D1, R2, KV");
+    expect(result.plan.warning).toContain("required Secret names");
+    expect(result.plan.warning).toContain("not restored from a historical value snapshot");
+    expect(result.plan.warning).toContain("Secret values keep their current state");
     expect(result.deployment.artifactId).toBe("artifact-previous");
     expect(platform.calls.rollback).toBe(1);
     expect(platform.rollbackInputs[0].idempotencyKey).toMatch(
@@ -252,3 +259,55 @@ describe("workers rollback", () => {
     ).rejects.toThrow("Choose exactly one rollback target");
   });
 });
+
+
+test('explicit rollback accepts a prior deployment with the same Artifact',async()=>{
+  const root=fixture(),platform=fakePlatform();
+  const plan=await createWorkerRollbackPlan({cwd:root,environment:'production',deploymentId:'production-same-artifact',clientOptions:{apiHost:'localhost:3003',apiKey:'test-key'},client:platform.client});
+  expect(plan.plan.target).toEqual({deploymentId:'production-same-artifact',artifactId:'artifact-current'});
+  expect(plan.plan.codeOnly).toBe(false);
+});
+
+test.each([
+  [{ deploymentSnapshot: { version: 1, variables: { TITLE: 'v1' } } }, false],
+  [{ variableOverrides: {} }, false],
+  [{ nativeMetadataOverrides: {} }, false],
+  [{ containerOverrides: [] }, false],
+  [{ deploymentSnapshot: { version: 2 } }, true],
+  [{ requiredSecrets: ['API_TOKEN'] }, true],
+])('rollback plan codeOnly matches server audit for %j', async (providerResult, codeOnly) => {
+  const root = fixture(), platform = fakePlatform();
+  platform.deployments.find(item => item.id === 'production-previous')!.providerResult = providerResult;
+  const { plan } = await createWorkerRollbackPlan({
+    cwd: root, environment: 'production', to: 'previous',
+    clientOptions: { apiHost: 'localhost:3003', apiKey: 'test-key' }, client: platform.client,
+  });
+  expect(plan.codeOnly).toBe(codeOnly);
+  expect(plan.dataAndSecretsRolledBack).toBe(false);
+  expect(plan.target).toEqual({ deploymentId: 'production-previous', artifactId: 'artifact-previous' });
+  expect(platform.calls.rollback).toBe(0);
+});
+
+ test('lost rollback response with no visible receipt never dispatches a second write',async()=>{
+  const root=fixture(),platform=fakePlatform();
+  platform.client.rollbackWorker=async()=>{platform.calls.rollback++;throw new RequestTimeoutError(60_000);};
+  await expect(rollbackWorkerProject({cwd:root,clientOptions:{apiHost:'test.xapi.to',apiKey:'key'},
+    environment:'production',to:'previous',nonInteractive:true,client:platform.client,sleep:async()=>{}}))
+    .rejects.toThrow();
+  expect(platform.calls.rollback).toBe(1);
+ });
+
+ test('a later rollback to the same target creates a new operation after an intervening deployment',async()=>{
+  const root=fixture(), platform=fakePlatform();
+  const options={cwd:root,environment:'production' as const,deploymentId:'production-previous',
+    clientOptions:{apiHost:'test.xapi.to',apiKey:'key'},client:platform.client,nonInteractive:true,
+    fetchPublic:(async()=>Response.json({ok:true})) as unknown as typeof fetch,sleep:async()=>undefined};
+  const first=await rollbackWorkerProject(options);
+  platform.deployments.unshift({id:'production-new-v2',environmentId:'env-production',artifactId:'artifact-new-v2',status:'ACTIVE'});
+  platform.activate('production-new-v2');
+  const second=await rollbackWorkerProject(options);
+  expect(platform.calls.rollback).toBe(2);
+  expect(platform.rollbackInputs[0].idempotencyKey).not.toBe(platform.rollbackInputs[1].idempotencyKey);
+  expect(second.deployment.id).not.toBe(first.deployment.id);
+  expect(second.deployment.artifactId).toBe('artifact-previous');
+ });

@@ -10,9 +10,12 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 import {
+  workerManagedResourceSchema,
+  workerProjectConfigSchema,
   WORKER_PROJECT_SCHEMA_URL,
   findWorkerProjectConfig,
   loadWorkerProject,
+  workerEnvironmentContainers,
   resolveWorkerProjectPath,
   WorkerProjectConfigError,
 } from "../workers-project.ts";
@@ -49,6 +52,11 @@ function fixture(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Worker project configuration", () => {
+  test("preserves a long build command without a platform character cap", () => {
+    const command = "npm run build # " + "native option ".repeat(500);
+    const project = loadWorkerProject(fixture({ build: { command, output: "dist/worker.mjs" } }));
+    expect(project.config.build.command).toBe(command);
+  });
   test("publishes placement fields in the packaged JSON Schema", () => {
     const schema = JSON.parse(
       readFileSync(
@@ -56,6 +64,11 @@ describe("Worker project configuration", () => {
         "utf8",
       ),
     );
+    expect(schema.properties.build.properties.command).toEqual({ type: "string", minLength: 1 });
+    expect(schema.$defs.resource.properties.bindingName).toEqual({ type: 'string', minLength: 1 });
+    const nativeClass = new RegExp(schema.$defs.resource.properties.className.pattern, 'u');
+    expect(nativeClass.test('中文类'+'y'.repeat(197))).toBe(true);
+    expect(nativeClass.test('Class;globalThis.compromised=true')).toBe(false);
     expect(schema.$defs.resource.properties.location.enum).toEqual([
       "wnam",
       "enam",
@@ -95,7 +108,7 @@ describe("Worker project configuration", () => {
   test("reports invalid fields with their JSON path", () => {
     const root = fixture({
       environments: {
-        preview: { dailyBudgetUsd: 0.01, healthCheck: "https://evil.example" },
+        preview: { dailyBudgetUsd: -0.01, healthCheck: "https://evil.example" },
         production: { dailyBudgetUsd: 2 },
       },
     });
@@ -239,6 +252,60 @@ describe("Worker project configuration", () => {
     );
   });
 
+  test("accepts ordinary xapi-prefixed display names and project paths", () => {
+    const root = fixture({
+      worker: {
+        name: "xapi-resource-debug",
+        slug: "xapi-resource-debug",
+        template: "worker",
+      },
+      wrangler: "xapi-worker/wrangler.jsonc",
+      build: {
+        command: "node xapi-worker/build.mjs",
+        output: "xapi-worker/worker.mjs",
+      },
+      assets: { directory: "xapi-worker/public" },
+    });
+    expect(loadWorkerProject(root).config.build.output).toBe("xapi-worker/worker.mjs");
+    expect(loadWorkerProject(root).config.worker.name).toBe("xapi-resource-debug");
+  });
+
+  test("still rejects recognized credentials in public identifiers and paths", () => {
+    for (const credential of [
+      `sk-${"a".repeat(48)}`,
+      `cfat_${"a".repeat(32)}`,
+      `xapi_${"a".repeat(32)}`,
+    ]) {
+      for (const override of [
+        { worker: { name: credential, slug: "safe-worker", template: "worker" } },
+        { build: { command: "npm run build", output: `dist/${credential}.mjs` } },
+      ]) {
+        expect(() => loadWorkerProject(fixture(override))).toThrow(
+          "must not contain credentials or Secret values",
+        );
+      }
+    }
+    expect(() => loadWorkerProject(fixture({
+      worker: {
+        name: "Public name",
+        slug: `sk-${"a".repeat(40)}`,
+        template: "worker",
+      },
+    }))).toThrow("must not contain credentials or Secret values");
+  });
+
+  test("allows xapi-prefixed build paths while rejecting embedded credentials", () => {
+    for (const command of [
+      "node /Users/dev/xapi-backend/worktrees/sandbox-production-local/build.mjs",
+      'node "C:\\projects\\xapi-backend\\worktrees\\worker-production\\build.mjs"',
+    ]) {
+      expect(loadWorkerProject(fixture({ build: { command, output: "dist/worker.mjs" } })).config.build.command).toBe(command);
+    }
+    for (const credential of [`sk-${"a".repeat(40)}`, `xapi_${"a".repeat(40)}`, `cfat-${"a".repeat(40)}`]) {
+      expect(() => loadWorkerProject(fixture({ build: { command: `API_KEY=${credential} npm run build`, output: "dist/worker.mjs" } }))).toThrow("must not contain credentials or Secret values");
+    }
+  });
+
   test("allows declared secret names but never credential-shaped values", () => {
     const namesRoot = fixture({
       environments: {
@@ -308,4 +375,36 @@ describe("Worker project configuration", () => {
       );
     }
   });
+});
+
+
+describe('native-friendly budgets and binding names', () => {
+  test('accepts no budget, explicit zero, large budget and mixed-case Secrets', () => {
+    const root = fixture({ environments: { preview: { secrets: ['myToken'] }, production: { dailyBudgetUsd: 200 } } });
+    const project = loadWorkerProject(root);
+    expect(project.config.environments.preview.dailyBudgetUsd).toBeNull();
+    expect(project.config.environments.preview.secrets).toEqual(['myToken']);
+    expect(project.config.environments.production.dailyBudgetUsd).toBe(200);
+  });
+});
+
+
+describe('Native provider Secret names', () => {
+  test('preserves non-identifier, long and Unicode names exactly', () => {
+    const names = ['_nativeToken', 'Native'+'X'.repeat(75), 'native-token', '原生Token'];
+    const root=fixture({environments:{preview:{secrets:names},production:{}}});
+    expect(loadWorkerProject(root).config.environments.preview.secrets).toEqual([...names].sort());
+  });
+});
+
+
+test('Container environment resolution preserves shared production configuration and explicit absence',()=>{
+  const a={name:'app',className:'AppContainer',image:'docker.io/library/nginx:alpine',instanceType:'basic',maxInstances:1};
+  const b={...a,instanceType:'lite'};
+  const root=fixture({containers:[a],environments:{preview:{containers:[b],resources:[{type:'durable_object',bindingName:'APP',className:'AppContainer'}]},production:{resources:[{type:'durable_object',bindingName:'APP',className:'AppContainer'}]}}});
+  const config=loadWorkerProject(root).config;
+  expect(workerEnvironmentContainers(config,'preview')?.[0]?.instanceType).toBe('lite');
+  expect(workerEnvironmentContainers(config,'production')?.[0]?.instanceType).toBe('basic');
+  const absent=fixture({environments:{preview:{containers:[b],resources:[{type:'durable_object',bindingName:'APP',className:'AppContainer'}]},production:{}}});
+  expect(workerEnvironmentContainers(loadWorkerProject(absent).config,'production')).toEqual([]);
 });

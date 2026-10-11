@@ -1,6 +1,7 @@
 /** Sandbox lifecycle and one-shot execution commands. */
 
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { readFile, open, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { HttpError } from '../client.ts';
@@ -8,6 +9,7 @@ import { getConfig, requireApiKey, XAPI_SANDBOX_HOST } from '../config.ts';
 import { err, getFormat, output } from '../format.ts';
 import * as sandbox from '../sandbox-client.ts';
 import type { SandboxClientOptions, SandboxDetail, SandboxRequirements } from '../sandbox-client.ts';
+import { consumeCfLogs, consumeCfTerminal, consumeCfFileEvents } from '../sandbox-cf-streams.ts';
 
 export const SANDBOX_HELP = `xapi-to sandbox - Managed, auditable cloud sandboxes
 
@@ -27,9 +29,13 @@ LIFECYCLE
   create                            Create from a quote, offering, or requirements
   wait <id>                         Wait for a state (default: RUNNING)
   exec <id> --command <shell>       Execute a shell command
+    --stream                        Full raw stdout/stderr, with backpressure
   suspend|resume|terminate <id>     Change state and wait for completion
+  snapshot <id>                     Invoke the native snapshot action
 
 FILES, PORTS, AUDIT
+  file download <id> <remote> --output <local>
+  file upload <id> <remote> --file <local>
   file write <id> <remote> --file <local>
   file write <id> <remote> --content <text>
   file read <id> <remote> [--output <local>]
@@ -40,9 +46,10 @@ FILES, PORTS, AUDIT
 
 SELECTION FLAGS
   --provider auto|daytona|cf-edge|e2b|runpod|runloop|modal|vc-sandbox|fly|blaxel|cubesandbox
-                                      Pin a provider gateway (default: auto)
+                                      Pin a published host prefix (default: auto)
   --capabilities exec,files,ports   Required capabilities
-  --cpu N  --memory N  --volume N  Minimum resources
+    extension:<ID>                  Require a declared provider extension
+  --cpu N  --memory N  --volume N  Minimum CPU, memory GiB, volume GiB
   --gpu-count N  --gpu-model NAME   GPU requirements
   --regions a,b                     Allowed regions
   --min-runtime 24h                 Minimum documented continuous runtime
@@ -63,10 +70,13 @@ HISTORY FLAGS
 SAFETY
   sandbox run terminates in finally, including command failure. Use --keep only
   when you intentionally want billing to continue after the CLI exits.
+  Provider names above are deployment aliases; a local published host prefix
+  can differ from the upstream vendor name. Inspect offerings without a pin first.
 
 EXAMPLES
   xapi-to sandbox offerings --format table
   xapi-to sandbox quote --capabilities exec,files --max-hourly-usd 0.20
+  xapi-to sandbox quote --capabilities exec,files,extension:cloudflare.files.watch --memory 4 --max-hourly-usd 0.15
   xapi-to sandbox run --command 'python3 -c "print(6*7)"'
   xapi-to sandbox run --provider cf-edge --capabilities exec,files,ports --command 'pwd'
   xapi-to sandbox exec <id> -- npm test
@@ -77,26 +87,49 @@ EXAMPLES
 type SandboxCommand =
   | 'offerings' | 'quote' | 'list' | 'history' | 'get' | 'create' | 'wait'
   | 'exec' | 'file' | 'port' | 'extension' | 'audit' | 'suspend' | 'resume'
-  | 'terminate' | 'run';
+  | 'terminate' | 'snapshot' | 'run';
 
 const SANDBOX_COMMAND_HELP: Record<SandboxCommand, string> = {
   offerings: `USAGE
   xapi-to sandbox offerings [--provider NAME] [--format json|pretty|table]
 
 Lists current resources, capabilities, lifecycle support, and hourly prices.
+Use JSON for extensionIds, extension inputSchema and the full rate card.
+Provider display names do not reveal a deployment's published host prefix;
+--provider pins that prefix, which need not be the upstream vendor name.
 This command does not create or bill an instance.`,
   quote: `USAGE
   xapi-to sandbox quote [selection flags] [--max-hourly-usd N]
 
 SELECTION
   --capabilities exec,files,ports   Required capabilities
-  --cpu N  --memory N  --volume N  Minimum resources
+    extension:<ID>                  Require an extension from extensionIds
+  --cpu N  --memory N  --volume N  Minimum CPU, memory GiB, volume GiB
   --gpu-count N  --gpu-model NAME   GPU requirements
   --regions a,b                     Allowed regions
   --min-runtime 24h                 Minimum documented continuous runtime
   --requirements <json>             Complete requirements object
   --max-hourly-usd N                Hard hourly price ceiling
 
+REQUIREMENTS JSON (all fields optional)
+  environmentId: string
+  cpu: {min: number >= 0}
+  memoryGiB: {min: number >= 0}
+  volumeGiB: {min: number >= 0}
+  gpu: {count: positive safe integer, model?: string}
+  regions: unique string[]
+  capabilities: unique string[]
+  minContinuousRuntimeSeconds: positive safe integer
+  Example: --requirements '{"cpu":{"min":2},"memoryGiB":{"min":4},"capabilities":["exec","files"]}'
+  offeringId, resources and resource max fields are not requirements fields.
+
+EXTENSION SELECTION
+  xapi-to sandbox quote --capabilities exec,files,extension:cloudflare.files.watch --memory 4 --max-hourly-usd 0.15
+  Common terminal/snapshot=false does not disable declared provider extensions.
+
+Quotes choose the cheapest compatible offering under the ceiling; check the
+returned offering.id, then create with --quote-id. For an exact catalog entry,
+inspect offerings and use create --offering-id; quote has no --offering-id flag.
 Returns a short-lived quote without creating or billing an instance.`,
   list: `USAGE
   xapi-to sandbox list [--provider NAME] [--format json|pretty|table]
@@ -127,6 +160,9 @@ CONTROL
   --wait                             Wait until RUNNING
   --wait-timeout 5m  --interval 2s   Polling controls
 
+Quote selection uses requirements; --offering-id chooses an exact catalog entry
+and cannot be combined with requirements or --max-hourly-usd. Review its rate card
+in offerings first, or quote requirements under a ceiling and use --quote-id.
 On a wait failure, the error includes the instance ID and recovery instructions.`,
   wait: `USAGE
   xapi-to sandbox wait <id> [--state RUNNING[,STATE]]
@@ -134,31 +170,60 @@ On a wait failure, the error includes the instance ID and recovery instructions.
 
 State names are case-insensitive and validated before polling.`,
   exec: `USAGE
-  xapi-to sandbox exec <id> --command <shell> [--cwd PATH] [--timeout SECONDS]
-    [--background]
+  xapi-to sandbox exec <id> --command <shell> [--cwd PATH] [--env <json>] [--timeout SECONDS]
+    [--background|--stream]
   xapi-to sandbox exec <id> -- <command...>
 
 Executes a command and maps a remote non-zero exit code to the local process.
+Each invocation launches once; command POSTs are not automatically retried.
+Ordinary exec has no caller --idempotency-key. After a timeout or lost response,
+inspect the original command's logs/state/artifacts before choosing a new execution.
+Foreground --timeout defaults to 60 seconds; background has no injected default.
 --background requires offering.capabilities.backgroundExec=true and returns a
-provider-managed session immediately; use it for long-running Web servers.`,
+provider-managed session immediately; this is launch acknowledgement, not readiness.
+Use it for long-running Web servers and verify the listening service separately.
+Stream disconnection has provider-specific process effects: Daytona deletes its
+private foreground session, which can stop that command and its shell children.
+--background retains its provider session; disconnecting an output reader does
+not request termination of a user background process.`,
   file: `USAGE
+  xapi-to sandbox file upload <id> <remote> --file <local>
+  xapi-to sandbox file download <id> <remote> --output <local>
   xapi-to sandbox file write <id> <remote> (--file <local>|--content <text>)
   xapi-to sandbox file read <id> <remote> [--output <local>]
   xapi-to sandbox file list <id> [--path <remote>] [--depth N]
 
-Binary local files are transferred as base64. --output never overwrites a file.`,
+file download streams native binary files when the provider supports it.
+file upload streams native binary uploads when the provider supports it.
+file write uses JSON/base64 for compatibility. --output never overwrites a file.`,
   port: `USAGE
   xapi-to sandbox port <id> <1-65535>
 
-Returns the provider's temporary public URL for a listening instance port.`,
+Returns the provider's temporary public URL for a listening instance port.
+Include returned headers in HTTP requests. Daytona uses x-daytona-preview-token;
+a browser opening the URL without that header can receive 401.
+Vercel ports may first require vercel.update with input {"ports":[3000]}.`,
   extension: `USAGE
   xapi-to sandbox extension <id> <extension-id> [--input <json>]
-    [--idempotency-key KEY]
+    [--idempotency-key KEY] [--stream]
 
-Invoke only extension IDs declared by the selected offering.`,
+Invoke extension IDs declared by the offering. --stream connects CF native PTY
+or a log/file subscription returned by the extension; it does not replay the operation.
+Inspect offering.capabilities.extensions for inputSchema and extensionIds for IDs.
+To select an offering by extension, quote --capabilities extension:<ID>.
+Common terminal/snapshot=false does not disable these provider-specific APIs.
+vercel.snapshot.list uses native input.limit 1-50; follow its cursor even when
+an ownership-filtered page is empty. These are provider limits, not new CLI flags.`,
   audit: `USAGE
   xapi-to sandbox audit <id> [--kind operations|events|usageSegments|billingPeriods]
+    [--billing-status settled|pending|all]
     [--page N] [--page-size 1-100] [--format json|pretty|table]`,
+  snapshot: `USAGE
+  xapi-to sandbox snapshot <id> [--idempotency-key KEY]
+
+Returns the snapshot operation. Native snapshot behavior differs by provider;
+inspect sandbox get and provider snapshot extensions for state and artifacts.
+A snapshot may stop runtime. No automatic resume or repeat is performed.`,
   suspend: `USAGE
   xapi-to sandbox suspend <id> [--no-wait] [--idempotency-key KEY]
     [--wait-timeout 5m] [--interval 2s]
@@ -198,7 +263,7 @@ const POLL_FLAGS = ['wait-timeout', 'interval'] as const;
 
 function help(flags: Record<string, string>, command: SandboxCommand): void {
   if (flags.help) {
-    console.log(`xapi-to sandbox ${command}\n\n${SANDBOX_COMMAND_HELP[command]}\n\nCOMMON\n  --host HOST  --provider NAME  --format json|pretty|table  --help`);
+    console.log(`xapi-to sandbox ${command}\n\n${SANDBOX_COMMAND_HELP[command]}\n\nCOMMON\n  --host HOST  --provider NAME  --format json|pretty|table  --help\n  --provider pins a published host prefix; vendor names need a deployed alias.\n  Omit it (or use auto) for compatible selection across the aggregation catalog.`);
     process.exit(0);
   }
 }
@@ -363,6 +428,16 @@ export function sandboxOptions(flags: Record<string, string>): SandboxClientOpti
   return { sandboxHost: host, apiKey: cfg.apiKey!, ...(provider ? { provider } : {}) };
 }
 
+/** Parse only the minimum lease requirement without rounding through milliseconds. */
+function minimumRuntimeSeconds(raw: string): number {
+  const match=raw.trim().toLowerCase().match(/^(\d+)(ms|s|m|h|d)?$/);
+  if (!match || BigInt(match[1]) <= 0n) err('--min-runtime must be a duration like 500ms, 2s, 5m, 1h, or 1d');
+  const factor={ms:1n,s:1000n,m:60000n,h:3600000n,d:86400000n}[match[2] || 'ms']!;
+  const seconds=(BigInt(match[1])*factor+999n)/1000n;
+  if (seconds > BigInt(Number.MAX_SAFE_INTEGER)) err('--min-runtime exceeds exact integer seconds');
+  return Number(seconds);
+}
+
 export function requirementsFromFlags(
   flags: Record<string, string>,
   defaultCapabilities?: string[],
@@ -377,6 +452,7 @@ export function requirementsFromFlags(
   const memory = positiveNumber(flagValue(flags, 'memory'), 'memory');
   const volume = positiveNumber(flagValue(flags, 'volume'), 'volume');
   const gpuCount = positiveInteger(flagValue(flags, 'gpu-count'), 'gpu-count');
+  if (gpuCount !== undefined && !Number.isSafeInteger(gpuCount)) err('--gpu-count must be a positive safe integer');
   const gpuModel = flagValue(flags, 'gpu-model');
   const minRuntime = flagValue(flags, 'min-runtime');
   if (gpuModel && gpuCount === undefined && !(Number(requirements.gpu?.count) > 0)) {
@@ -395,9 +471,7 @@ export function requirementsFromFlags(
     };
   }
   if (minRuntime !== undefined) {
-    requirements.minContinuousRuntimeSeconds = Math.ceil(
-      durationMs(minRuntime, 0, 'min-runtime') / 1_000,
-    );
+    requirements.minContinuousRuntimeSeconds = minimumRuntimeSeconds(minRuntime);
   }
   return requirements;
 }
@@ -483,7 +557,11 @@ async function terminateAndWait(
       intervalMs,
     );
   }
-  return { operation, sandbox: detail, clientIdempotencyKey };
+  const operationId = (operation as any)?.id;
+  const confirmed = Array.isArray(detail.operations)
+    ? detail.operations.find((item: any) => item.id === operationId)
+    : undefined;
+  return { operation: confirmed || operation, sandbox: detail, clientIdempotencyKey };
 }
 
 function cleanupSummary(cleanup: any): Record<string, unknown> | undefined {
@@ -650,15 +728,37 @@ export async function sandboxWait(args: string[], flags: Record<string, string>)
 
 export async function sandboxExec(args: string[], flags: Record<string, string>) {
   help(flags, 'exec');
-  validateFlags(flags, 'exec', ['command', 'timeout', 'cwd', 'background']);
+  validateFlags(flags, 'exec', ['command', 'timeout', 'cwd', 'env', 'background', 'stream']);
   const id = instanceId(args, 'usage: xapi-to sandbox exec <id> --command <shell>');
   const command = commandFrom(args.slice(1), flags, 'usage: xapi-to sandbox exec <id> --command <shell>');
-  const timeoutSeconds = positiveInteger(flagValue(flags, 'timeout'), 'timeout') || 60;
   const background = booleanFlag(flags, 'background');
+  const timeoutSeconds = positiveInteger(flagValue(flags, 'timeout'), 'timeout') ?? (background ? undefined : 60);
+  const envValue = flagValue(flags, 'env');
+  const env = envValue === undefined ? undefined : jsonObject(envValue, 'env');
+  if (env && Object.values(env).some(value => typeof value !== 'string')) err('--env must be a JSON object of string values');
   try {
+    if (booleanFlag(flags, 'stream')) {
+      if (background) err('--stream follows a foreground command; use --background without --stream to launch a process');
+      const cancel = new AbortController();
+      const interrupt = () => cancel.abort(new Error('Command output disconnected by caller'));
+      process.once('SIGINT', interrupt); process.once('SIGTERM', interrupt);
+      try {
+        for await (const event of sandbox.sandboxExecStream(sandboxOptions(flags), id,
+          { command, timeoutSeconds, ...(env ? { env: env as Record<string, string> } : {}), ...(flagValue(flags, 'cwd') ? { cwd: flagValue(flags, 'cwd') } : {}) }, cancel.signal)) {
+          if (event.type === 'stdout' || event.type === 'stderr') {
+            const target = event.type === 'stdout' ? process.stdout : process.stderr;
+            if (!target.write(Buffer.from(event.data, 'base64'))) await once(target, 'drain', { signal: cancel.signal });
+          } else if (event.type === 'exit') {
+            const exitCode = sandboxResultExitCode(event); if (exitCode !== undefined) process.exitCode = exitCode;
+          }
+        }
+      } finally { cancel.abort(); process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', interrupt); }
+      return;
+    }
     const result = await sandbox.sandboxExec(sandboxOptions(flags), id, {
       command,
-      timeoutSeconds,
+      ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
+      ...(env ? { env: env as Record<string, string> } : {}),
       ...(flagValue(flags, 'cwd') ? { cwd: flagValue(flags, 'cwd') } : {}),
       ...(background ? { background: true } : {}),
     });
@@ -672,9 +772,21 @@ export async function sandboxFile(args: string[], flags: Record<string, string>)
   help(flags, 'file');
   validateFlags(flags, 'file', ['file', 'content', 'output', 'path', 'depth']);
   const [action, id, remote] = args;
-  if (!action || !id) err('usage: xapi-to sandbox file <write|read|list> <id> [remote-path]');
+  if (!action || !id) err('usage: xapi-to sandbox file <write|upload|read|download|list> <id> [remote-path]');
   const opts = sandboxOptions(flags);
   try {
+    if (action === 'upload') {
+      const local = flagValue(flags, 'file');
+      if (!remote || !local) err('usage: xapi-to sandbox file upload <id> <remote-path> --file <local>');
+      if (flagValue(flags, 'content')) err('file upload reads binary data from --file');
+      const abort = new AbortController(), interrupted = () => abort.abort();
+      process.once('SIGINT', interrupted); process.once('SIGTERM', interrupted);
+      const handle = await open(local, 'r');
+      const source = handle.createReadStream({ autoClose: false });
+      try { output(await sandbox.sandboxFileUpload(opts, id, remote, source, abort.signal), flags.format as any); }
+      finally { source.destroy(); await handle.close(); process.removeListener('SIGINT', interrupted); process.removeListener('SIGTERM', interrupted); }
+      return;
+    }
     if (action === 'write') {
       if (!remote) err('usage: xapi-to sandbox file write <id> <remote-path> (--file <local>|--content <text>)');
       const local = flagValue(flags, 'file');
@@ -686,25 +798,65 @@ export async function sandboxFile(args: string[], flags: Record<string, string>)
       output(await sandbox.sandboxFileWrite(opts, id, body), flags.format as any);
       return;
     }
+    if (action === 'download') {
+      if (!remote) err('usage: xapi-to sandbox file download <id> <remote-path> --output <local>');
+      const outputPath = flagValue(flags, 'output');
+      if (!outputPath) err('sandbox file download requires --output');
+      const target = resolve(outputPath);
+      const abort = new AbortController();
+      const interrupted = () => abort.abort();
+      process.once('SIGINT', interrupted);
+      process.once('SIGTERM', interrupted);
+      try {
+        const file = await open(target, 'wx');
+        let complete = false;
+        try {
+          let bytes = 0;
+          const stream = await sandbox.sandboxFileDownload(opts, id, remote, abort.signal);
+          const reader = stream.getReader();
+          const cancel = () => { void reader.cancel().catch(() => undefined); };
+          abort.signal.addEventListener('abort', cancel, { once: true });
+          try {
+            if (abort.signal.aborted) throw new Error('Download interrupted');
+            for (;;) {
+              const next = await reader.read(); if (next.done) break;
+              let offset = 0;
+              while (offset < next.value.length) {
+                const written = (await file.write(next.value, offset, next.value.length-offset)).bytesWritten;
+                if (!written) throw new Error('Local file write made no progress');
+                offset += written;
+              }
+              bytes += next.value.length;
+            }
+            if (abort.signal.aborted) throw new Error('Download interrupted');
+          } finally {
+            abort.signal.removeEventListener('abort', cancel);
+            await reader.cancel().catch(() => undefined); reader.releaseLock();
+          }
+          complete = true;
+          output({ output: target, bytes, path: remote }, flags.format as any);
+        } finally {
+          await file.close();
+          if (!complete) await rm(target, { force: true });
+        }
+      } finally {
+        process.removeListener('SIGINT', interrupted);
+        process.removeListener('SIGTERM', interrupted);
+      }
+      return;
+    }
     if (action === 'read') {
       if (!remote) err('usage: xapi-to sandbox file read <id> <remote-path> [--output <local>]');
       const outputPath = flagValue(flags, 'output');
       const result = await sandbox.sandboxFileRead(opts, id, remote, outputPath ? 'base64' : 'utf8');
       if (!outputPath) { output(result, flags.format as any); return; }
       const target = resolve(outputPath);
-      const file = await open(target, 'wx');
-      let complete = false;
+      const file = await open(target, 'wx'); let complete = false;
       try {
-        const data = result?.encoding === 'base64'
-          ? Buffer.from(String(result.content || ''), 'base64')
-          : Buffer.from(String(result?.content || ''), 'utf8');
-        await file.writeFile(data);
-        complete = true;
+        const data = result?.encoding === 'base64' ? Buffer.from(String(result.content || ''), 'base64') : Buffer.from(String(result?.content || ''), 'utf8');
+        await file.writeFile(data); complete = true;
         output({ output: target, bytes: data.length, path: remote }, flags.format as any);
-      } finally {
-        await file.close();
-        if (!complete) await rm(target, { force: true });
-      }
+      } finally { await file.close(); if (!complete) await rm(target, { force: true }); }
       return;
     }
     if (action === 'list') {
@@ -728,32 +880,46 @@ export async function sandboxPort(args: string[], flags: Record<string, string>)
 
 export async function sandboxExtension(args: string[], flags: Record<string, string>) {
   help(flags, 'extension');
-  validateFlags(flags, 'extension', ['input', 'idempotency-key']);
+  validateFlags(flags, 'extension', ['input', 'idempotency-key', 'stream']);
   const id = instanceId(args, 'usage: xapi-to sandbox extension <id> <extension-id> --input <json>');
   const extensionId = args[1];
   if (!extensionId) err('usage: xapi-to sandbox extension <id> <extension-id> --input <json>');
   if (!/^[a-z0-9][a-z0-9._-]{0,119}$/i.test(extensionId)) err('invalid Sandbox extension id');
   const input = flagValue(flags, 'input') ? jsonObject(flagValue(flags, 'input')!, 'input') : {};
+  const streaming = booleanFlag(flags, 'stream');
+  if (streaming && !['cloudflare.terminal.open', 'cloudflare.process.log_stream', 'cloudflare.files.watch'].includes(extensionId))
+    err('--stream consumes terminal.open, process.log_stream or files.watch; other extensions return JSON');
   const clientIdempotencyKey = flagValue(flags, 'idempotency-key')
     || `cli:extension:${extensionId}:${randomUUID()}`;
+  let connectionReturned = false;
   try {
     const result = await sandbox.sandboxExtension(sandboxOptions(flags), id, extensionId, {
       input,
       idempotencyKey: clientIdempotencyKey,
     });
-    output({ ...result, clientIdempotencyKey }, flags.format as any);
+    if (streaming) {
+      connectionReturned = true;
+      const native = result?.result?.result ?? result?.result;
+      if (typeof native?.url !== 'string') throw new Error('Extension did not return a connection URL');
+      if (native.protocol === 'CF_NATIVE_PTY_V1') await consumeCfTerminal(native.url);
+      else if (native.protocol === 'CF_PROCESS_LOG_SSE_V1') await consumeCfLogs(native.url);
+      else if (native.protocol === 'CF_FILE_WATCH_SSE_V1') await consumeCfFileEvents(native.url);
+      else throw new Error('Extension does not return a supported streaming protocol');
+    } else output({ ...result, clientIdempotencyKey }, flags.format as any);
   } catch (error: any) {
     err('sandbox extension failed', {
       message: error.message,
       clientIdempotencyKey,
-      retry: `repeat with --idempotency-key ${clientIdempotencyKey}`,
+      retry: connectionReturned
+        ? 'Open a new connection grant with a new idempotency key; reuse sessionId or log byte offsets. This does not replay the business command.'
+        : `Check status with xapi-to sandbox audit ${id} --kind operations. For an unconfirmed outcome, reconcile with --idempotency-key ${clientIdempotencyKey}. For confirmed FAILED, fix the upstream reason, then deliberately use a NEW idempotency key; the original key returns the original failure.`,
     });
   }
 }
 
 export async function sandboxAudit(args: string[], flags: Record<string, string>) {
   help(flags, 'audit');
-  validateFlags(flags, 'audit', ['kind', 'page', 'page-size']);
+  validateFlags(flags, 'audit', ['kind', 'page', 'page-size', 'billing-status']);
   const id = instanceId(args, 'usage: xapi-to sandbox audit <id> [--kind operations]');
   const kind = flagValue(flags, 'kind') || 'operations';
   const allowed = ['operations', 'events', 'usageSegments', 'billingPeriods'];
@@ -761,8 +927,28 @@ export async function sandboxAudit(args: string[], flags: Record<string, string>
   const page = positiveInteger(flagValue(flags, 'page'), 'page') || 1;
   const pageSize = positiveInteger(flagValue(flags, 'page-size'), 'page-size') || 100;
   if (pageSize > 100) err('--page-size must be at most 100');
-  try { output(await sandbox.sandboxAudit(sandboxOptions(flags), id, kind, page, pageSize), flags.format as any); }
+  const billingStatus = flagValue(flags, 'billing-status');
+  if (billingStatus && !['settled', 'pending', 'all'].includes(billingStatus)) err('--billing-status must be settled, pending, or all');
+  try { output(await sandbox.sandboxAudit(sandboxOptions(flags), id, kind, page, pageSize, billingStatus), flags.format as any); }
   catch (error: any) { err('sandbox audit failed', error.message); }
+}
+
+export async function sandboxSnapshot(args: string[], flags: Record<string, string>) {
+  help(flags, 'snapshot');
+  validateFlags(flags, 'snapshot', ['idempotency-key']);
+  const id = instanceId(args, 'usage: xapi-to sandbox snapshot <id>');
+  const clientIdempotencyKey = flagValue(flags, 'idempotency-key') || `cli:snapshot:${randomUUID()}`;
+  try {
+    const operation = await sandbox.sandboxStateAction(sandboxOptions(flags), id, 'snapshot', {
+      idempotencyKey: clientIdempotencyKey,
+    });
+    output({ ...operation, clientIdempotencyKey }, flags.format as any);
+  } catch (error: any) {
+    err('sandbox snapshot failed', {
+      message: error.message, instanceId: id, clientIdempotencyKey,
+      recovery: { inspect: `xapi-to sandbox get ${id}`, retry: `repeat with --idempotency-key ${clientIdempotencyKey}` },
+    });
+  }
 }
 
 export async function sandboxState(
@@ -788,7 +974,10 @@ export async function sandboxState(
     const wanted = action === 'suspend' ? ['SUSPENDED'] : action === 'resume' ? ['RUNNING'] : ['TERMINATED', 'FAILED'];
     const settings = waitSettings(flags);
     const detail = await sandbox.sandboxWait(opts, id, wanted, settings.timeoutMs, settings.intervalMs);
-    output({ operation, sandbox: detail, clientIdempotencyKey }, flags.format as any);
+    const confirmed = operation?.id && Array.isArray(detail.operations)
+      ? detail.operations.find((item: any) => item.id === operation.id)
+      : undefined;
+    output({ operation: confirmed || operation, sandbox: detail, clientIdempotencyKey }, flags.format as any);
   } catch (error: any) {
     err(`sandbox ${action} failed`, {
       message: error.message,

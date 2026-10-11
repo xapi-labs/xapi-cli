@@ -3,6 +3,9 @@
  * exponential-backoff retry on transient failures.
  */
 
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { request, actionCall, actionSearch, actionStream, apiKeyApiRequest, deleteOAuthBinding, listOAuthProviders } from '../client.ts';
 
@@ -354,4 +357,103 @@ describe('client.request', () => {
       expect(calls).toBe(2);
     });
   });
+});
+
+describe('request-scoped Node transport deadlines', () => {
+  it('overrides fetch parser deadlines, closes the scoped agent and leaves the global dispatcher unchanged', async () => {
+    const { Agent, getGlobalDispatcher } = await import('undici/index.js');
+    const globalDispatcher = getGlobalDispatcher();
+    let transport: any; let dispatched: any;
+    const dispatchSpy = spyOn(Agent.prototype, 'dispatch').mockImplementation(((options: any) => { dispatched = options; return true; }) as any);
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (_url: any, init: any) => {
+      transport = init.dispatcher;
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      expect(init.signal.aborted).toBe(false);
+      transport.dispatch({ origin: 'http://localhost', path: '/', method: 'POST', headersTimeout: 300_000, bodyTimeout: 300_000 }, {});
+      return OK();
+    }) as any);
+    try {
+      expect(await request<{ok:boolean}>('https://action.xapi.to/long-exec', { method: 'POST' }, 1_230_000)).toEqual({ ok: true });
+      expect(dispatched.headersTimeout).toBe(0); expect(dispatched.bodyTimeout).toBe(0);
+      expect(transport.destroyed).toBe(true); expect(getGlobalDispatcher()).toBe(globalDispatcher);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally { fetchSpy.mockRestore(); dispatchSpy.mockRestore(); }
+  });
+
+  it('still aborts a stalled write at its explicit deadline without resending it', async () => {
+    let transport: any;
+    const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(((_url: any, init: any) => {
+      transport = init.dispatcher;
+      return new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(new DOMException('deadline abort', 'AbortError'))));
+    }) as any);
+    try {
+      await expect(request('https://action.xapi.to/long-exec', { method: 'POST' }, 15)).rejects.toThrow('timed out after 15ms');
+      expect(fetchSpy).toHaveBeenCalledTimes(1); expect(transport.destroyed).toBe(true);
+    } finally { fetchSpy.mockRestore(); }
+  });
+});
+
+
+it('uses the scoped parser deadlines with real Node fetch across delayed headers/body and aborts writes once', async () => {
+  const root = mkdtempSync(join(process.cwd(), '.transport-node-test-'));
+  try {
+    const build = await Bun.build({ entrypoints: [join(process.cwd(),'src/client.ts')], outdir: root, naming: 'request.mjs', target: 'node', format: 'esm', packages: 'external' });
+    expect(build.success).toBe(true);
+    const script = join(root,'verify.mjs');
+    writeFileSync(script, `import assert from 'node:assert/strict';
+import {createServer} from 'node:http';
+import {Agent,getGlobalDispatcher} from 'undici/index.js';
+import {request,RequestTimeoutError} from './request.mjs';
+const original = getGlobalDispatcher(); const dispatch = Agent.prototype.dispatch; const options = [];
+Agent.prototype.dispatch = function(input, handler) { options.push(input); return dispatch.call(this,input,handler); };
+let writes = 0;
+const server = createServer((req,res) => {
+  if(req.method === 'POST')writes++;
+  if(req.url === '/headers')setTimeout(()=>res.end('{"ok":true}'),40);
+  else if(req.url === '/body'){res.writeHead(200,{'content-type':'application/json'});res.write('{"ok":');setTimeout(()=>res.end('true}'),40);}
+});
+await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+const base = 'http://127.0.0.1:' + server.address().port;
+try {
+  assert.deepEqual(await request(base+'/headers',{method:'GET'},1000),{ok:true});
+  assert.deepEqual(await request(base+'/body',{method:'GET'},1000),{ok:true});
+  await assert.rejects(request(base+'/stalled',{method:'POST'},50),RequestTimeoutError);
+  const controller = new AbortController(); const cancelled=request(base+'/stalled',{method:'POST',signal:controller.signal},5000);
+  setTimeout(()=>controller.abort(),50); await assert.rejects(cancelled,/aborted/i);
+  assert.equal(writes,2); assert.equal(options.length,4);
+  assert.ok(options.every(input=>input.headersTimeout===0 && input.bodyTimeout===0));
+  assert.equal(getGlobalDispatcher(),original); console.log('Node loopback transport: headers/body/deadline/caller abort passed');
+} finally { server.closeAllConnections(); await new Promise(resolve=>server.close(resolve)); }
+`);
+    const result = spawnSync('node',[script],{encoding:'utf8',timeout:10_000});
+    expect(result.status).toBe(0); expect(result.stderr).toBe('');
+    expect(result.stdout).toContain('headers/body/deadline/caller abort passed');
+  } finally { rmSync(root,{recursive:true,force:true}); }
+});
+
+
+it('keeps a real Node upload alive while bytes move and never replays a stalled upload', async () => {
+  const root = mkdtempSync(join(process.cwd(), '.upload-node-test-'));
+  try {
+    const build = await Bun.build({entrypoints:[join(process.cwd(),'src/client.ts')],outdir:root,naming:'request.mjs',target:'node',format:'esm',packages:'external'});
+    expect(build.success).toBe(true);
+    const script=join(root,'verify.mjs');
+    writeFileSync(script, `import assert from 'node:assert/strict';
+import {createServer} from 'node:http';
+import {Readable} from 'node:stream';
+import {setTimeout as delay} from 'node:timers/promises';
+import {request,RequestTimeoutError} from './request.mjs';
+let writes=0;const server=createServer((req,res)=>{writes++;req.resume();if(req.url==='/moving')req.on('end',()=>res.end('{"ok":true}'));});
+await new Promise(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+server.address().port;
+try {
+  const body=Readable.from((async function*(){for(let i=0;i<8;i++){yield Buffer.alloc(65536);await delay(30);}})());
+  assert.deepEqual(await request(base+'/moving',{method:'POST',body,duplex:'half'},100,0,'idle'),{ok:true});
+  await assert.rejects(request(base+'/stalled',{method:'POST',body:'once'},100,0,'idle'),RequestTimeoutError);
+  assert.equal(writes,2);console.log('Node moving/stalled uploads: passed');
+}finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
+`);
+    const result=spawnSync('node',[script],{encoding:'utf8',timeout:10_000});
+    expect(result.status).toBe(0); expect(result.stderr).toBe('');
+    expect(result.stdout).toContain('Node moving/stalled uploads: passed');
+  } finally {rmSync(root,{recursive:true,force:true});}
 });
