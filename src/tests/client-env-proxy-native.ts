@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -96,7 +96,10 @@ if (process.argv[2] === '--probe') {
   await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
   const proxyPort = (proxy.address() as { port: number }).port;
   const report: Record<string, { proxyConnects: number; targetRequests: number }> = {};
+  const configRoot = await mkdtemp(join(tmpdir(), 'xapi-proxy-config-'));
+  const configPath = join(configRoot, 'node.config.json');
   try {
+    await writeFile(configPath, JSON.stringify({ nodeOptions: { 'use-env-proxy': mode !== 'config-direct' } }));
     for (const probe of ['native', 'request', 'session', 'stream', 'download', 'wrapper', 'timeout', 'cancel', 'redirect']) {
       const env = { ...process.env };
       // Never inherit real proxies, Node options or credentials into local probes.
@@ -106,15 +109,21 @@ if (process.argv[2] === '--probe') {
       env.NODE_USE_ENV_PROXY = '0';
       env.HTTP_PROXY = `http://127.0.0.1:${proxyPort}`;
       env.HTTPS_PROXY = env.HTTP_PROXY;
-      env.NO_PROXY = mode === 'no-proxy' ? '127.0.0.1' : '';
+      env.NO_PROXY = mode === 'no-proxy' || mode === 'config-no-proxy' ? '127.0.0.1' : '';
       const flags = mode === 'env' || mode === 'options' || mode === 'direct' ? [] : ['--use-env-proxy'];
       if (mode === 'env') env.NODE_USE_ENV_PROXY = '1';
       if (mode === 'options') env.NODE_OPTIONS = '"--use-env-proxy"';
       if (mode === 'disabled') { env.NODE_OPTIONS = '--use-env-proxy'; flags.push('--no-use-env-proxy'); }
+      if (mode.startsWith('config')) {
+        flags.splice(0, flags.length, `--experimental-config-file=${configPath}`);
+        if (mode === 'config-disabled') flags.push('--no-use-env-proxy');
+      }
+      if (mode === 'default-config') flags.splice(0, flags.length, '--experimental-default-config-file');
       const beforeProxy = proxyConnects;
       const beforeTarget = targetRequests;
       const child = spawn(process.execPath, [...flags, fileURLToPath(import.meta.url), '--probe', probe,
-        `127.0.0.1:${targetPort}`], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        `127.0.0.1:${targetPort}`], { env, cwd: mode === 'default-config' ? configRoot : undefined,
+          stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '';
       child.stdout.on('data', chunk => stdout += chunk);
       // Keep failure output private: it could contain a future transport detail.
@@ -130,6 +139,7 @@ if (process.argv[2] === '--probe') {
     }
     console.log(JSON.stringify({ node: process.version, mode, report }));
   } finally {
+    await rm(configRoot, { recursive: true, force: true });
     for (const socket of sockets) socket.destroy();
     target.closeAllConnections(); proxy.closeAllConnections();
     await Promise.all([target, proxy].map(server => new Promise<void>(resolve => server.close(() => resolve()))));

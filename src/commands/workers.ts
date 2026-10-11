@@ -853,7 +853,7 @@ export async function workersCommand(
         if (result.retentionHours) console.log(`Legacy retention estimate: ${result.retentionHours} hours. This does not authorize automatic deletion.`);
         if (result.estimateBasisHours) console.log(`Freeze estimate basis: ${result.estimateBasisHours} hours; minimum preservation is seven full days, not a fixed deletion deadline.`);
         if (result.policyVersion === "retention-v3" || state.retentionPolicyVersion === "retention-v3") {
-          console.log("Manual recovery does not happen just by recharging. At least seven full days are protected; afterward, remaining spendable retention funds extend preservation until exhausted, then system cleanup applies. Owner deletion is available at any time.");
+          console.log("Manual recovery does not happen just by recharging. At least seven full days are protected; afterward, remaining spendable retention funds extend preservation until exhausted, then system cleanup applies. User deletion is unavailable during financial retention; add sufficient funds and explicitly recover first. System cleanup remains independent.");
           if (result.environmentDeposit?.fundingMode === 'UNIFIED_WORKER_DEPOSIT_V1') console.log(`Environment deposit remaining: $${result.environmentDeposit.remainingUsd}; frozen funds are not an additional fee.`);
           if (result.reserveBudget) console.log(`Remaining for retention: $${result.reserveBudget.retentionSpendableUsd ?? "unknown"}; cleanup allowance: $${result.reserveBudget.cleanupReserveUsd ?? "unknown"}`);
         }

@@ -5,6 +5,7 @@
 import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici/index.js';
 import { scheme, assertAllowedHost } from './config.ts';
 import { open, rm } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { once } from 'node:events';
 import { resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
@@ -17,9 +18,33 @@ import { requestDeadline } from './request-deadline.ts';
 // already be a preload interceptor. Resolve other globals at call time, and use
 // the intrinsic toString so an override's own toString cannot hide that override.
 const matchedFetch = undiciFetch as unknown as typeof fetch;
+// Snapshot only the proxy option from Node's already validated startup config.
+// Config is lower priority than environment/CLI flags and is not in execArgv.
+const configEnvironmentProxyEnabled = (() => {
+  if (process.versions.bun) return false;
+  let path: string | undefined;
+  for (const [index, option] of process.execArgv.entries()) {
+    if (option.startsWith('--experimental-config-file=')) path = option.slice(option.indexOf('=') + 1);
+    else if (option === '--experimental-config-file') path = process.execArgv[index + 1] || 'node.config.json';
+    else if (option === '--experimental-default-config-file' && !path) path = 'node.config.json';
+  }
+  if (!path) return false;
+  try {
+    const config = JSON.parse(readFileSync(resolve(path), 'utf8'));
+    const selected = Array.isArray(config.configs)
+      ? config.configs.find((entry: { nodeVersion: number }) => entry.nodeVersion === Number(process.versions.node.split('.')[0]))?.config
+      : config;
+    return selected?.nodeOptions?.['use-env-proxy'] === true;
+  } catch {
+    // If the validated file is no longer readable, keep native routing rather
+    // than risk bypassing a proxy configured before this module was imported.
+    return true;
+  }
+})();
+
 function nativeEnvironmentProxyEnabled(): boolean {
   if (process.versions.bun || !process.allowedNodeEnvironmentFlags.has('--use-env-proxy')) return false;
-  let enabled = process.env.NODE_USE_ENV_PROXY === '1';
+  let enabled = configEnvironmentProxyEnabled || process.env.NODE_USE_ENV_PROXY === '1';
   // Node normalizes the existing environment setting and startup flags. CLI
   // flags override NODE_OPTIONS; later positive/negative flags win. Keep quoted
   // NODE_OPTIONS arguments together so a filename cannot look like a flag.

@@ -21,9 +21,11 @@ const node = candidates.find(binary => {
   const result = spawnSync(binary, ['--help'], { env, encoding: 'utf8', timeout: 5000 });
   return result.status === 0 && result.stdout.includes('--use-env-proxy');
 });
+const configSupported = node && spawnSync(node, ['--help'], { env, encoding: 'utf8' }).stdout.includes('--experimental-config-file');
 
-for (const mode of ['flag', 'env', 'options', 'no-proxy', 'disabled', 'direct']) {
-  test.skipIf(!node)(`native environment proxy routing is preserved (${mode})`, async () => {
+for (const mode of ['flag', 'env', 'options', 'no-proxy', 'disabled', 'direct',
+  'config', 'config-disabled', 'config-no-proxy', 'config-direct', 'default-config']) {
+  test.skipIf(!node || (mode.includes('config') && !configSupported))(`native environment proxy routing is preserved (${mode})`, async () => {
     const root = mkdtempSync(join(process.cwd(), '.env-proxy-test-'));
     try {
       const build = await Bun.build({ entrypoints: [join(import.meta.dir, 'client-env-proxy-native.ts')],
@@ -32,7 +34,7 @@ for (const mode of ['flag', 'env', 'options', 'no-proxy', 'disabled', 'direct'])
       const result = spawnSync(node!, [join(root, 'runner.mjs'), mode], { env, encoding: 'utf8', timeout: 30_000 });
       expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
       const { report } = JSON.parse(result.stdout);
-      const expected = ['no-proxy', 'disabled', 'direct'].includes(mode) ? 0 : 1;
+      const expected = ['no-proxy', 'disabled', 'direct', 'config-disabled', 'config-no-proxy', 'config-direct'].includes(mode) ? 0 : 1;
       for (const operation of ['native', 'request', 'session', 'stream', 'download', 'wrapper', 'timeout', 'cancel', 'redirect']) {
         // Node can replenish a proxy connection after abort without replaying
         // the HTTP request. Count target requests separately from CONNECTs.

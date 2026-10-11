@@ -104,3 +104,29 @@ test("system suspension stays observable with pending native stop evidence", asy
     expect(result.stdout).toContain("xapi workers retention show worker-1 --env preview --format json");
   } finally { await f.close(); }
 }, 30_000);
+
+for (const action of ["show", "quote"]) for (const retained of [true, false]) for (const format of ["human", "json"])
+  test(`retention ${action} gives consistent financial retention guidance: retained=${retained}, ${format}`, async () => {
+    const receipt = { policyVersion: "retention-v3", lifecycle: {
+      state: retained ? "SUSPENDED_GRACE" : "ACTIVE",
+      retentionStartedAt: retained ? "2026-10-11T00:00:00.000Z" : null,
+    } };
+    const f = await fixture(receipt);
+    try {
+      const args = ["retention", action, "worker-1", "--env", "preview"];
+      if (format === "json") args.push("--format", "json");
+      const result = await run(args, f.host);
+      expect(result.code).toBe(0);
+      expect(f.calls).toHaveLength(1);
+      expect(f.calls[0].method).toBe("GET");
+      expect(f.calls[0].path).toEndWith(action === "quote" ? "/retention/quote/WORKER" : "/retention");
+      if (format === "json") expect(JSON.parse(result.stdout)).toEqual(receipt);
+      else {
+        expect(result.stdout).not.toContain("Owner deletion is available at any time");
+        expect(result.stdout).toContain("User deletion is unavailable during financial retention");
+        expect(result.stdout).toContain("add sufficient funds and explicitly recover first");
+        expect(result.stdout).toContain("System cleanup remains independent");
+      }
+      expect(result.stdout + result.stderr).not.toContain("synthetic-retention-key");
+    } finally { await f.close(); }
+  }, 30_000);
