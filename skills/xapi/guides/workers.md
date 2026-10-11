@@ -908,3 +908,32 @@ Link an existing Worker with top-level `workerId` in `xapi.worker.json`; do not 
 After an upload response is lost, the original operation remains UNKNOWN. Recovery reads the exact deployment and operation tags from CF. Only when **all** writes are confirmed and the native observation matches may a later explicit push create a new publication identity. It does not replay the old write. Script tags do not confirm Container or Workflow writes. Conflicting targets require evidence; unrelated targets are not gated. The immutable server execution deadline is capped at 15 minutes and each provider request uses the remaining time; local build and temporary upload deadlines remain separate.
 
 A complete native CF authentication rejection (HTTP 401, parsed failure envelope with code 10000) is recorded as REJECTED, not UNKNOWN. The platform must repair its credentials; this does not blame the user balance, grant new permissions or automatically replay the write. Incomplete bodies, connection loss and unrelated errors remain UNKNOWN. Historical UNKNOWN operations are not silently rewritten by this change.
+
+### Explicit D1/R2 data export
+
+Use `xapi workers d1 export [worker-id] --env preview|production --binding DB
+--output ./fresh-backup.sql` or `xapi workers r2 export [worker-id] --env
+preview|production --binding FILES --output ./fresh-directory`. Omit Worker ID to
+use project `workerId`; `--config PATH` selects another project file. Binding
+metadata requires `workers:read` **and** export needs separate
+`workers:data:read`; management read/write does not grant data access.
+
+D1 polls at most 600 seconds with `PENDING/COMPLETE/FAILED/EXPIRED` states. Use the
+displayed `exportId` with `--export-id ID` and a fresh output to resume the same
+job. Expired jobs need a new explicit start without that flag. No POST or lost
+result is automatically replayed. R2 processes live pages (default 100, maximum
+200), with four reused download connections, `If-Match` and ETag/byte verification.
+Concurrent writes can change listing or objects: this is not an atomic snapshot.
+
+Fresh outputs are private (0700 directories, 0600 files), without symlink or
+clobbering. Safe hash filenames map original keys and response metadata in a
+private JSONL manifest. Failed/interrupted files remain partial; R2 restart uses
+a new directory. Ordinary output/errors omit object keys, signed URLs and raw
+upstream errors. Direct unexpired HTTPS GET downloads allow only
+`.r2.cloudflarestorage.com`, no credentials/explicit ports/redirects, and optional
+`If-Match`. Preserve signed URL/header bytes; never send xAPI credentials to CF.
+Connection/header and idle budgets are 30/60 seconds, with no short total cap on
+progress. Read [the export workflow](../../xapi-workers/references/resources.md#export-d1-and-r2-business-data)
+for manifests and recovery. Local key safety does not establish native CF key
+support. Imports are outside this feature; optional Container scripts/bridges are
+not required. Export completion does not establish migration completion.

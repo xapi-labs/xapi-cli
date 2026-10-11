@@ -179,3 +179,70 @@ Binding names are preserved as nonempty strings, including long, Unicode, dollar
 The current native `exports` upload API limits class names to 128 characters; the legacy `migrations` API can behave differently. Preserve the upstream error and correct the exported class name explicitly. A legacy native-upload success does not prove the current managed deployment path accepts the same class length.
 
 Capability GET success verifies READ_ACCESS only, not Edit/Write permissions. A cached capability failure is not a provisioning gate: actual creation reports its own upstream result. Inspect AUTHENTICATION (401/403), RATE_LIMITED (429), provider error codes, Retry-After, rate-limit policy and CF-Ray. Credential changes invalidate diagnostics; concurrent probes merge. The 60-second diagnostic cache may respect a 429 Retry-After up to 300 seconds; no business operation is blocked or replayed by this cache. Durable Object availability is a declarative statement, not a live permission probe.
+
+## Export D1 and R2 business data
+
+```sh
+xapi workers d1 export [worker-id] --env preview --binding DB --output ./fresh-backup.sql
+xapi workers r2 export [worker-id] --env preview --binding FILES --output ./fresh-directory
+xapi workers d1 export [worker-id] --env preview --binding DB --export-id <export-id> --output ./resumed-backup.sql
+```
+
+Replace bracketed placeholders or omit Worker ID to use top-level `workerId` from
+`xapi.worker.json`; `--config PATH` selects another project file. Select preview
+or production explicitly and use the exact owned ACTIVE binding name. Keys need
+**both `workers:read`** for binding metadata and **`workers:data:read`** for export,
+plus access to the Worker. Management read/write scopes do not imply data access.
+Permission errors do not justify creating another binding or bypassing the API.
+
+D1 starts one native SQL export and displays safe `exportId` on stderr. The job
+states are `PENDING/COMPLETE/FAILED/EXPIRED`. Polling stops after 600 seconds; the
+backend job lifetime is 15 minutes. Explicit `--export-id` polls the same job and
+requests a fresh download descriptor without another start. Choose a new output
+path. Expired jobs need an explicit new export without that flag; failed jobs
+stay failed. A lost start response may be UNKNOWN without a recoverable ID:
+inspect platform job evidence before starting again. **No POST is automatically
+replayed**, including descriptor requests. HTTP status is preserved; raw provider
+messages, object keys, signed URLs and credentials are excluded from ordinary
+output and errors.
+
+R2 processes one live page at a time (default 100, maximum 200 objects; opaque
+cursor up to 24000 bytes), with four concurrent downloads over four reused
+connections and a 100000-page safety bound. It buffers neither whole objects nor
+the whole bucket. Send the descriptor's `If-Match` unchanged after checking it
+against the listed ETag; if absent, send the listed ETag. Verify response ETag,
+listed size and actual bytes. Changed objects fail. **Listing is not an atomic
+bucket snapshot: concurrent writes can change objects or listing.** Arrange
+application quiescence separately for a consistent backup.
+
+Output must be fresh. R2 creates a 0700 directory; objects and `manifest.jsonl`
+are exclusive 0600 files. D1 creates an exclusive 0600 SQL file and
+`<output>.manifest.jsonl` in an existing trusted parent. Existing paths, symlinks
+and untrusted non-sticky shared writable ancestors are refused. Relative paths
+use the CLI working directory. R2 filenames are `sha256(UTF-8 key).bin`; the
+private JSONL manifest maps exact original keys, listed ETags/sizes, downloaded
+SHA-256 and response metadata (content type/encoding/disposition, last-modified,
+`x-amz-meta-*`). Each object has a `partial` entry followed by `completed` after
+verification; page/final receipts count completed objects and bytes. Duplicate
+keys or filename collisions stop without overwriting. Keep manifests private.
+
+Failure/interruption retains completed and potentially incomplete files. Only
+verified completed entries are usable; a missing final completed result means
+an incomplete export. R2 has no resume flag: explicitly restart into a new
+directory. D1 resumes the server job, never local partial bytes.
+
+Direct descriptors require GET, unexpired `expiresAt`, HTTPS at
+`.r2.cloudflarestorage.com`, no explicit port/credentials/redirect, and only
+optional `If-Match` headers. Downloads use no xAPI key, cookie or Authorization
+header. Preserve signed URL/header bytes; reject ambiguous dot-segment/backslash
+paths. Never constrain the account prefix: native D1 may use a CF service account.
+Unknown domains fail closed. Local safe-key tests do not prove native CF support
+for every unusual key; provider URL encoding/transport must also be verified.
+Compressed bytes stay unchanged with their response metadata. Connection/header
+budget is 30 seconds and body idle budget 60 seconds; progressing transfers have
+no short total limit.
+
+Export neither provisions/deploys nor imports/switches bindings. A backup receipt
+is not migration completion. Imports are outside this feature. Container
+HTTP/outbound binding scripts are optional user-owned workflows; no Container
+bridge is required or implemented by D1/R2 export.
