@@ -360,17 +360,12 @@ TLS, root-relative assets or OAuth callback readiness.
 
 After deployment reaches ACTIVE, run health plus business persistence and asynchronous completion checks in resources.md.
 
-For `workers push`, a public health HTTP 403 is an expected access closure only
-when authenticated management reads confirm the same Worker/environment is
-owner-paused (`SUSPENDED_GRACE`, `pauseReason=USER`, no pending resume or deletion),
-disabled, and still points to this ACTIVE deployment. The CLI then exits 0 for
-deployment success while reporting `paused=true`, `publicAccessStatus=PAUSED`
-and `healthReady=false`; this does not prove application health or business
-acceptance. Preserve the full deployment ID, inspect the environment, and use
-the returned `retention resume` command only with user authorization to resume.
-After recovery, verify health and business access; do not push again to open
-access. Never trust a tenant's 403 body as pause evidence. Missing, failed or
-mismatched management evidence and ordinary health failures remain failures;
+`workers push` requires a successful public health response to report success.
+HTTP 403 and ordinary health failures remain nonzero failures even when the
+deployment is ACTIVE. Preserve the
+released deployment ID and inspect status and logs before choosing recovery.
+System funding protection requires sufficient funds and explicit `retention resume`
+when recovery is intended; recharge or deployment does not resume execution.
 UNKNOWN deployment outcomes are not replayed.
 
 `ACTIVE` does not mean public access authorization is ready. For exactly

@@ -42,7 +42,7 @@ This is an informational reminder, not a separate approval gate. Use existing cr
 - **Use and verify resources, including Containers:** read [resources.md](references/resources.md).
 - **Configure public vars and runtime credentials (including first-project setup):** read [secrets.md](references/secrets.md). Secret values go to the environment's Cloudflare User Worker binding; never ask xAPI to reveal them.
 - **How much did it cost?** Read [billing.md](references/billing.md) before answering, collecting, or reconciling consumption.
-- **Pause/recover/delete/refund:** read [lifecycle.md](references/lifecycle.md) before lifecycle mutations.
+- **Funding protection/recover/delete/refund:** read [lifecycle.md](references/lifecycle.md) before lifecycle mutations.
 - **Bind/switch a domain, handle DNS conflicts, or buy an xdomain domain:** read [domains.md](references/domains.md). Check zone eligibility and existing records first. Use combined attach for xdomain, or challenge plus manual TXT and attach for an eligible zone without an xdomain record. Do not manually create a CNAME to the Dispatcher or expose Cloudflare zone IDs.
 
 ## Evidence and completion
@@ -55,7 +55,7 @@ For Cloudflare Containers, `ACTIVE` means the Worker upload, matching Durable Ob
 
 For incomplete observations report **unknown**, not zero or success. Keep deployment completion, resource behavior, xAPI consumption, storage-day finalization, provider invoice reconciliation, and physical cleanup as separate verdicts. Report only verified outcomes and the next concrete unresolved check.
 
-Pause exit 0 or `ACCEPTED` confirms a returned receipt, not completed suspension.
+Lifecycle action exit 0 or `ACCEPTED` confirms a returned receipt, not completion.
 With `SUSPENDING` / `CONTAINER_STOP_PENDING`, inspect `billing lifecycle` and
 `retention show --format json` for the current steps. Runtime upload success or a
 `SKIPPED` native stop does not prove the Container stopped. `retryRequired` calls

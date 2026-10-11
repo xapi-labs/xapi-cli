@@ -74,8 +74,6 @@ export function workerLifecycleGuidance(dataValue: unknown): string[] {
 
   if (data.retentionStartedAt != null) {
     lines.push("Financial retention is active: user writes, including deployment, Secret changes and resource deletion, are unavailable. Read billing/status, add sufficient funds and explicitly request recovery; recharge alone does not resume execution.");
-  } else if (data.pauseReason === "USER" && ["SUSPENDED", "SUSPENDED_GRACE", "PAUSED"].includes(state || "")) {
-    lines.push("Owner pause keeps management available while business execution stays stopped. Configuration changes do not resume public access or background consumers.");
   }
 
   if (data.phase != null || data.completedSteps != null || data.totalSteps != null) {
@@ -94,7 +92,7 @@ export function workerLifecycleGuidance(dataValue: unknown): string[] {
 }
 
 export interface WorkerRetentionGuidanceOptions extends WorkerGuidanceTarget {
-  action: "show" | "quote" | "accept" | "pause" | "resume" | "keep-paused" | "delete";
+  action: "show" | "quote" | "accept" | "resume" | "delete";
   response: unknown;
   /** Set only when an optional client-side polling session actually ended. */
   pollingEnded?: boolean;

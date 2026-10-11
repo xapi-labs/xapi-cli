@@ -102,7 +102,7 @@ RESOURCES, BILLING, AND LIFECYCLE
   environment <worker-id> <environment> [--daily-usd USD] [--data-location apac] [--placement smart]
   billing-status
   billing ledger <worker-id> --env ENV [--all] [--snapshot-time ISO] [--json]
-  retention show|quote|accept|pause|resume|keep-paused|delete <worker-id> --env ENV
+  retention show|quote|accept|resume|delete <worker-id> --env ENV
   billing prices|overview|usage|ledger|forecast|risk|lifecycle <worker-id> --env preview|production
   domains list <worker-id>
   domains challenge <worker-id> --env ENV --hostname HOSTNAME --format json
@@ -804,7 +804,7 @@ export async function workersCommand(
     case "retention": {
       assertFlags(flags, ["env", "type", "price-version", "yes", "json"]);
       const [action, id, ...extra] = rest;
-      if (!id || extra.length || !["show", "quote", "accept", "pause", "resume", "keep-paused", "delete"].includes(action)) err("usage: workers retention show|quote|accept|pause|resume|keep-paused|delete <worker-id> --env ENV");
+      if (!id || extra.length || !["show", "quote", "accept", "resume", "delete"].includes(action)) err("usage: workers retention show|quote|accept|resume|delete <worker-id> --env ENV");
       const env = environment(flags.env);
       const retentionOutputMode = workerBillingOutputMode(flags);
       if (["accept", "delete"].includes(action) && flags.yes !== "true") err("--yes is required to accept automatic reserve-exhaustion deletion or delete this environment");

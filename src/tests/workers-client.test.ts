@@ -67,7 +67,7 @@ describe("workers client", () => {
     expect(target).toEndWith('/worker-1');
     expect(init.method).toBe('DELETE');
   });
-  for (const action of ['pause', 'resume', 'keep-paused', 'delete', 'whole-worker-delete']) {
+  for (const action of ['resume', 'delete', 'whole-worker-delete']) {
     for (const code of ['UND_ERR_SOCKET', 'ECONNRESET', 'ETIMEDOUT']) {
       it(`preserves ${code} and read-only recovery for ${action} without replay`, async () => {
         const cause = Object.assign(new Error('socket disconnected'), { code });
@@ -99,7 +99,7 @@ describe("workers client", () => {
     it(`preserves non-transport failure ${original.message}`, async () => {
       fetchSpy = spyOn(globalThis, 'fetch').mockRejectedValue(original) as any;
       expect(await deleteWorker(options, 'worker-1').catch(error => error)).toBe(original);
-      expect(await workerRetention(options, 'worker-1', 'preview', '/actions', { action: 'pause' }).catch(error => error)).toBe(original);
+      expect(await workerRetention(options, 'worker-1', 'preview', '/actions', { action: 'resume' }).catch(error => error)).toBe(original);
       expect(fetchSpy).toHaveBeenCalledTimes(2);
     });
   }

@@ -28,12 +28,12 @@ export function formatWorkerPushResult(result: WorkerPushResult): string {
   const lines = [
     "xAPI Worker Push",
     RULE,
-    metadata("Status", result.paused ? "ACTIVE — deployment succeeded; environment remains owner-paused" : "ACTIVE — public health check passed"),
+    metadata("Status", "ACTIVE — public health check passed"),
     metadata("Project", result.initialPlan.project.slug),
     metadata("Environment", result.initialPlan.environment),
     metadata("Worker", result.worker.id),
     metadata("URL", result.publicUrl),
-    metadata("Deployment", result.paused ? result.deployment.id : short(result.deployment.id)),
+    metadata("Deployment", short(result.deployment.id)),
     metadata(
       "Artifact",
       `${short(result.artifact.contentSha256)} · ${bytes(result.artifact.sizeBytes)}`,
@@ -50,18 +50,10 @@ export function formatWorkerPushResult(result: WorkerPushResult): string {
           : "Native configuration unconfirmed")] : []),
     "",
     "Next steps",
-    ...(result.paused ? [
-      "  Public access is closed; health is not ready. Do not republish to retry health.",
-      `  Inspect: ${result.commands.inspect}`,
-      `  Resume: ${result.commands.resume}`,
-      `  After resuming, check health: ${result.health.url}`,
-      `  Then verify business access: ${result.publicUrl}`,
-    ] : [
-      `  1. Open: ${result.publicUrl}`,
-      `  2. Inspect: ${result.commands.inspect}`,
-      `  3. Logs: ${result.commands.logs}`,
-      `  4. Production: ${result.commands.promote}`,
-    ]),
+    `  1. Open: ${result.publicUrl}`,
+    `  2. Inspect: ${result.commands.inspect}`,
+    `  3. Logs: ${result.commands.logs}`,
+    `  4. Production: ${result.commands.promote}`,
     RULE,
   ];
   return lines.join("\n");

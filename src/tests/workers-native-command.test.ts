@@ -40,6 +40,22 @@ test('explicit Queue consumer configure/disable commands pass scoped native inte
   } finally {api.restore();}
 });
 
+test('schedule pause/resume stays independent and requires no environment flag', async () => {
+  const api = mockApi();
+  try {
+    for (const action of ['pause', 'resume']) {
+      await workersCommand(['schedules', action, 'worker/owned', 'schedule/owned'], {});
+    }
+    expect(api.fetchSpy).toHaveBeenCalledTimes(2);
+    for (const [index, enabled] of [false, true].entries()) {
+      const [url, init] = api.fetchSpy.mock.calls[index];
+      expect(String(url)).toEndWith('/workers/worker%2Fowned/schedules/schedule%2Fowned');
+      expect(init.method).toBe('PATCH');
+      expect(JSON.parse(init.body)).toEqual({ enabled });
+    }
+  } finally { api.restore(); }
+});
+
 test('paused Queue commands print saved/disabled receipts without resuming or probing', async () => {
   const api = mockApi();
   const configured = { status: 'CONFIGURED', activation: 'ON_RESUME', paused: true };

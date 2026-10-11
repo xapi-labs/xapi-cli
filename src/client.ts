@@ -20,7 +20,9 @@ const matchedFetch = undiciFetch as unknown as typeof fetch;
 function defaultFetch(): typeof fetch {
   const fetcher = globalThis.fetch;
   const source = Function.prototype.toString.call(fetcher);
-  return /\brequire\(['"]internal\/deps\/undici\/undici['"]\)/.test(source)
+  const node18Loader = source.replace(/\s+/g, '') ===
+    'asyncfunctionfetch(input,init=undefined){returnlazyUndici().fetch(input,init);}';
+  return node18Loader || /\brequire\(['"]internal\/deps\/undici\/undici['"]\)/.test(source)
     ? matchedFetch : fetcher;
 }
 
