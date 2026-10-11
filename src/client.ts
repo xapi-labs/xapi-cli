@@ -187,6 +187,12 @@ class RequestDeadlineAgent extends Agent {
   }
 }
 
+// Private dispatcher hooks are valid only for this exact undici implementation.
+// A preserved wrapper/proxy may delegate to a different bundled undici version.
+function requestTransport(fetcher: typeof fetch, sessionTransport?: RequestDeadlineAgent) {
+  return fetcher === matchedFetch ? sessionTransport || new RequestDeadlineAgent() : undefined;
+}
+
 export async function request<T>(
   url: string,
   options: RequestInit,
@@ -199,7 +205,7 @@ export async function request<T>(
   // Enforce the host allowlist before the API key ever leaves the machine.
   assertAllowedHost(url);
 
-  const transport = sessionTransport || new RequestDeadlineAgent();
+  const transport = requestTransport(fetcher, sessionTransport);
   try {
     let attempt = 0;
     while (true) {
@@ -211,7 +217,7 @@ export async function request<T>(
       let timedOut = false;
       let finished = false;
       let timer = requestDeadline(() => { timedOut = true; controller.abort(); }, timeoutMs);
-      transport.progress = deadlineMode === 'idle' ? () => {
+      if (transport) transport.progress = deadlineMode === 'idle' ? () => {
         if (finished || controller.signal.aborted) return;
         timer.dispose();
         timer = requestDeadline(() => { timedOut = true; controller.abort(); }, timeoutMs);
@@ -220,7 +226,7 @@ export async function request<T>(
         // redirect: 'manual' — never auto-follow. fetch forwards custom headers
         // (including XAPI-Key) across redirects, which would carry the API key to a
         // host outside the allowlist. The xapi API never legitimately redirects.
-        const fetchOptions = { ...options, redirect: 'manual', signal: controller.signal, dispatcher: transport } as RequestInit;
+        const fetchOptions = { ...options, redirect: 'manual', signal: controller.signal, ...(transport ? { dispatcher: transport } : {}) } as RequestInit;
         const res = await fetcher(url, fetchOptions);
         if (res.status >= 300 && res.status < 400) {
           throw new Error(
@@ -295,11 +301,14 @@ export async function request<T>(
       }
     }
   } finally {
-    if (!sessionTransport) await transport.destroy().catch(() => undefined);
+    if (!sessionTransport) await transport?.destroy().catch(() => undefined);
   }
 }
 
-/** A continuing upload has no total-duration cutoff. Never replay the write. */
+/** Matched transport uploads reset the budget on actual socket progress. Foreign
+ * fetch implementations cannot expose those private hooks: their upload budget
+ * is a total bound via AbortSignal, with parser deadlines owned by that fetch.
+ * Never replay the write. SSE/download response idle timers remain independent. */
 export function uploadRequest<T>(url: string, options: RequestInit): Promise<T> {
   return request<T>(url, options, transferIdleTimeoutMs(), 0, 'idle');
 }
@@ -648,7 +657,8 @@ export async function actionStream(
   opts: ClientOptions,
   httpMethod?: string,
 ): Promise<void> {
-  const transport = new RequestDeadlineAgent();
+  const fetcher = defaultFetch();
+  const transport = requestTransport(fetcher);
   const controller = new AbortController();
   let timedOut = false;
   let activeTimeoutMs = EXECUTE_TIMEOUT_MS;
@@ -666,7 +676,7 @@ export async function actionStream(
 
   try {
     assertAllowedHost(url);
-    const res = await defaultFetch()(url, {
+    const res = await fetcher(url, {
       method: 'POST',
       headers: {
         ...headers(opts.apiKey),
@@ -680,7 +690,7 @@ export async function actionStream(
       }),
       redirect: 'manual',
       signal: controller.signal,
-      dispatcher: transport,
+      ...(transport ? { dispatcher: transport } : {}),
     } as RequestInit);
     if (res.status >= 300 && res.status < 400) {
       throw new Error(
@@ -718,7 +728,7 @@ export async function actionStream(
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
-    await transport.destroy().catch(() => undefined);
+    await transport?.destroy().catch(() => undefined);
   }
 }
 
@@ -738,7 +748,8 @@ export async function actionDownload(
   outputPath: string,
   httpMethod?: string,
 ): Promise<ActionDownloadResult> {
-  const transport = new RequestDeadlineAgent();
+  const fetcher = defaultFetch();
+  const transport = requestTransport(fetcher);
   const controller = new AbortController();
   let timedOut = false;
   let activeTimeoutMs = EXECUTE_TIMEOUT_MS;
@@ -770,7 +781,7 @@ export async function actionDownload(
 
     const url = `${baseUrl(opts)}/v1/actions/execute`;
     assertAllowedHost(url);
-    const res = await defaultFetch()(url, {
+    const res = await fetcher(url, {
       method: 'POST',
       headers: headers(opts.apiKey),
       body: JSON.stringify({
@@ -781,7 +792,7 @@ export async function actionDownload(
       }),
       redirect: 'manual',
       signal: controller.signal,
-      dispatcher: transport,
+      ...(transport ? { dispatcher: transport } : {}),
     } as RequestInit);
     if (res.status >= 300 && res.status < 400) {
       throw new Error(
@@ -831,7 +842,7 @@ export async function actionDownload(
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
-    await transport.destroy().catch(() => undefined);
+    await transport?.destroy().catch(() => undefined);
     if (!complete && file) {
       await file.close().catch(() => undefined);
       await rm(target, { force: true }).catch(() => undefined);

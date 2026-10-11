@@ -5,8 +5,9 @@ const calls: Array<{ url: string; method?: string }> = [];
 (globalThis as any).__preloadFetchCalls = calls;
 function intercept(input: RequestInfo | URL, init?: RequestInit) {
   calls.push({ url: String(input), method: init?.method });
-  if (init?.redirect !== 'manual' || !init.signal || !(init as any).dispatcher)
-    throw new Error('preload lost request security/deadline options');
+  if (init?.redirect !== 'manual' || !init.signal || 'dispatcher' in init)
+    throw new Error('preload received incompatible options or lost security/deadline options');
+  if (process.env.XAPI_TEST_PRELOAD_DELEGATE === '1') return originalFetch(input, init);
   if (init.headers && new Headers(init.headers).get('Accept') === 'text/event-stream')
     return Promise.resolve(new Response('data: preload\n\n', { headers: { 'content-type': 'text/event-stream' } }));
   return Promise.resolve(new Response('{"source":"preload"}'));
