@@ -11,13 +11,16 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { requestDeadline } from './request-deadline.ts';
 
-// Pair fetch and Agent from the same undici version: Node's bundled fetch may
-// speak a newer dispatcher protocol (notably Node 26). Keep explicit fetchers
-// and existing global fetch overrides usable by embedders and tests.
-const runtimeFetch = globalThis.fetch;
+// Node's bundled fetch may speak a newer dispatcher protocol (notably Node 26).
+// Only substitute its built-in lazy undici loader; an import-time snapshot can
+// already be a preload interceptor. Resolve other globals at call time, and use
+// the intrinsic toString so an override's own toString cannot hide that override.
 const matchedFetch = undiciFetch as unknown as typeof fetch;
 function defaultFetch(): typeof fetch {
-  return globalThis.fetch === runtimeFetch ? matchedFetch : globalThis.fetch;
+  const fetcher = globalThis.fetch;
+  const source = Function.prototype.toString.call(fetcher);
+  return /\brequire\(['"]internal\/deps\/undici\/undici['"]\)/.test(source)
+    ? matchedFetch : fetcher;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
