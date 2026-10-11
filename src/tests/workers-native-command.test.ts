@@ -40,6 +40,29 @@ test('explicit Queue consumer configure/disable commands pass scoped native inte
   } finally {api.restore();}
 });
 
+test('paused Queue commands print saved/disabled receipts without resuming or probing', async () => {
+  const api = mockApi();
+  const configured = { status: 'CONFIGURED', activation: 'ON_RESUME', paused: true };
+  const disabled = { status: 'DISABLED', paused: true };
+  try {
+    api.fetchSpy.mockResolvedValueOnce(Response.json(configured)).mockResolvedValueOnce(Response.json(disabled));
+    const body = { queue: 'jobs', max_batch_size: 7 };
+    await workersCommand(['resources', 'queue-consumer', 'configure', 'worker-owned', 'queue-owned'],
+      { env: 'preview', body: JSON.stringify(body), format: 'json' });
+    expect(JSON.parse(String(api.logSpy.mock.calls[0][0]))).toEqual(configured);
+    expect(api.fetchSpy).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(api.fetchSpy.mock.calls[0][1].body)).toEqual(body);
+    await workersCommand(['resources', 'queue-consumer', 'disable', 'worker-owned', 'queue-owned'],
+      { env: 'preview', format: 'json' });
+    expect(JSON.parse(String(api.logSpy.mock.calls[1][0]))).toEqual(disabled);
+    expect(api.fetchSpy.mock.calls.map(([url, init]: any[]) => [new URL(url).pathname, init.method])).toEqual([
+      ['/api/v1/workers/worker-owned/environments/preview/resources/queue-owned/queue-consumer', 'PUT'],
+      ['/api/v1/workers/worker-owned/environments/preview/resources/queue-owned/queue-consumer', 'DELETE'],
+    ]);
+    expect(api.logSpy.mock.calls.map(args => String(args[0])).join('\n')).not.toMatch(/running|ACTIVE/);
+  } finally { api.restore(); }
+});
+
 test('remote build accepts over 200 files, large source and Unicode/space paths inside its actual source/transport budgets',async()=>{
   const root=realpathSync(mkdtempSync(join(tmpdir(),'xapi-source-budget-')));roots.push(root);
   writeFileSync(join(root,'中文 入口.mjs'),'//'+ '字'.repeat(600_000));
