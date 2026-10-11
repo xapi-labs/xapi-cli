@@ -20,25 +20,36 @@ import { requestDeadline } from './request-deadline.ts';
 const matchedFetch = undiciFetch as unknown as typeof fetch;
 // Snapshot only the proxy option from Node's startup config. Node still owns
 // config loading and activation; preserving native fetch cannot enable a proxy.
-// Config is lower priority than environment/CLI flags and is not in execArgv.
+// Config overrides NODE_USE_ENV_PROXY; NODE_OPTIONS/CLI flags override config.
+// Configuration values are not in execArgv.
 const configEnvironmentProxyEnabled = (() => {
   if (process.versions.bun) return false;
   let path: string | undefined;
+  let aliasedConfigFlag = false;
   for (const [index, option] of process.execArgv.entries()) {
     const separator = option.indexOf('=');
     // Node treats underscores and dashes alike in option names, not values.
-    const name = option.split('=', 1)[0].replace(/_/g, '-');
-    if (name === '--experimental-config-file' && separator !== -1) path = option.slice(separator + 1);
-    else if (name === '--experimental-config-file') path = process.execArgv[index + 1] || 'node.config.json';
-    else if (name === '--experimental-default-config-file' && !path) path = 'node.config.json';
+    const rawName = option.split('=', 1)[0];
+    const name = rawName.replace(/_/g, '-');
+    if (name === '--experimental-config-file') {
+      path = separator !== -1 ? option.slice(separator + 1) : process.execArgv[index + 1] || 'node.config.json';
+      aliasedConfigFlag = rawName !== name;
+    } else if (name === '--experimental-default-config-file' && !path) {
+      path = 'node.config.json';
+      aliasedConfigFlag = rawName !== name;
+    }
   }
-  if (!path) return false;
+  if (!path) return undefined;
   try {
     const config = JSON.parse(readFileSync(resolve(path), 'utf8'));
     const selected = Array.isArray(config.configs)
       ? config.configs.find((entry: { nodeVersion: number }) => entry.nodeVersion === Number(process.versions.node.split('.')[0]))?.config
       : config;
-    return selected?.nodeOptions?.['use-env-proxy'] === true;
+    const enabled = selected?.nodeOptions?.['use-env-proxy'];
+    // Node 24 accepts aliased config flags without loading their file. Such a
+    // false value cannot prove deactivation of an environment-enabled proxy.
+    if (enabled === false && aliasedConfigFlag) return undefined;
+    return typeof enabled === 'boolean' ? enabled : undefined;
   } catch {
     // If the startup file is no longer readable, keep native routing rather
     // than risk bypassing a proxy configured before this module was imported.
@@ -48,7 +59,7 @@ const configEnvironmentProxyEnabled = (() => {
 
 function nativeEnvironmentProxyEnabled(): boolean {
   if (process.versions.bun || !process.allowedNodeEnvironmentFlags.has('--use-env-proxy')) return false;
-  let enabled = configEnvironmentProxyEnabled || process.env.NODE_USE_ENV_PROXY === '1';
+  let enabled = configEnvironmentProxyEnabled ?? process.env.NODE_USE_ENV_PROXY === '1';
   // Node normalizes the existing environment setting and startup flags. CLI
   // flags override NODE_OPTIONS; later positive/negative flags win. Keep quoted
   // NODE_OPTIONS arguments together so a filename cannot look like a flag.

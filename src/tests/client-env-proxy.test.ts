@@ -25,7 +25,9 @@ const configSupported = node && spawnSync(node, ['--help'], { env, encoding: 'ut
 
 for (const mode of ['flag', 'env', 'options', 'no-proxy', 'disabled', 'direct',
   'config', 'config-disabled', 'config-no-proxy', 'config-direct', 'default-config',
-  'flag-underscore', 'options-underscore', 'config-underscore', 'config-underscore-direct', 'negative-underscore']) {
+  'flag-underscore', 'options-underscore', 'config-underscore', 'config-underscore-direct', 'negative-underscore',
+  'config-false-env', 'default-config-false-env', 'config-absent-env', 'config-false-env-options', 'config-false-env-flag',
+  'config-underscore-false-env']) {
   test.skipIf(!node || (mode.includes('config') && !configSupported))(`native environment proxy routing is preserved (${mode})`, async () => {
     const root = mkdtempSync(join(process.cwd(), '.env-proxy-test-'));
     try {
@@ -36,7 +38,7 @@ for (const mode of ['flag', 'env', 'options', 'no-proxy', 'disabled', 'direct',
       expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
       const { report } = JSON.parse(result.stdout);
       const disabled = ['disabled', 'direct', 'config-disabled', 'config-direct',
-        'config-underscore-direct', 'negative-underscore'].includes(mode);
+        'config-underscore-direct', 'negative-underscore', 'config-false-env', 'default-config-false-env'].includes(mode);
       // Some Node versions accept the underscore config flag but do not load
       // that file. Preserve actual native routing; never synthesize a proxy.
       const expected = mode === 'config-underscore' ? report.native.proxyConnects

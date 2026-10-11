@@ -105,9 +105,11 @@ if (process.argv[2] === '--probe') {
   const proxyPort = (proxy.address() as { port: number }).port;
   const report: Record<string, { proxyConnects: number; targetRequests: number; deadlineDispatches: number }> = {};
   const configRoot = await mkdtemp(join(tmpdir(), 'xapi-proxy-config-'));
-  const configPath = join(configRoot, mode === 'default-config' ? 'node.config.json' : 'proxy_settings_config.json');
+  const configPath = join(configRoot, mode.startsWith('default-config') ? 'node.config.json' : 'proxy_settings_config.json');
   try {
-    await writeFile(configPath, JSON.stringify({ nodeOptions: { 'use-env-proxy': !['config-direct', 'config-underscore-direct'].includes(mode) } }));
+    const configDirect = ['config-direct', 'config-underscore-direct', 'config-false-env', 'default-config-false-env',
+      'config-false-env-options', 'config-false-env-flag', 'config-underscore-false-env'].includes(mode);
+    await writeFile(configPath, JSON.stringify({ nodeOptions: mode === 'config-absent-env' ? {} : { 'use-env-proxy': !configDirect } }));
     for (const probe of ['native', 'request', 'session', 'stream', 'download', 'wrapper', 'timeout', 'cancel', 'redirect']) {
       const env = { ...process.env };
       // Never inherit real proxies, Node options or credentials into local probes.
@@ -121,6 +123,8 @@ if (process.argv[2] === '--probe') {
       const flags = ['env', 'options', 'options-underscore', 'direct'].includes(mode) ? [] : ['--use-env-proxy'];
       if (mode === 'flag-underscore') flags.splice(0, flags.length, '--use_env_proxy');
       if (mode === 'env') env.NODE_USE_ENV_PROXY = '1';
+      if (mode.includes('-env')) env.NODE_USE_ENV_PROXY = '1';
+      if (mode === 'config-false-env-options') env.NODE_OPTIONS = '"--use-env-proxy"';
       if (mode === 'options') env.NODE_OPTIONS = '"--use-env-proxy"';
       if (mode === 'options-underscore') env.NODE_OPTIONS = '"--use_env_proxy"';
       if (mode === 'disabled') { env.NODE_OPTIONS = '--use-env-proxy'; flags.push('--no-use-env-proxy'); }
@@ -129,12 +133,13 @@ if (process.argv[2] === '--probe') {
         const configFlag = mode.startsWith('config-underscore') ? '--experimental_config_file' : '--experimental-config-file';
         flags.splice(0, flags.length, `${configFlag}=${configPath}`);
         if (mode === 'config-disabled') flags.push('--no-use-env-proxy');
+        if (mode === 'config-false-env-flag') flags.push('--use-env-proxy');
       }
-      if (mode === 'default-config') flags.splice(0, flags.length, '--experimental-default-config-file');
+      if (mode.startsWith('default-config')) flags.splice(0, flags.length, '--experimental-default-config-file');
       const beforeProxy = proxyConnects;
       const beforeTarget = targetRequests;
       const child = spawn(process.execPath, [...flags, fileURLToPath(import.meta.url), '--probe', probe,
-        `127.0.0.1:${targetPort}`], { env, cwd: mode === 'default-config' ? configRoot : undefined,
+        `127.0.0.1:${targetPort}`], { env, cwd: mode.startsWith('default-config') ? configRoot : undefined,
           stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '';
       child.stdout.on('data', chunk => stdout += chunk);
