@@ -193,6 +193,59 @@ function requestTransport(fetcher: typeof fetch, sessionTransport?: RequestDeadl
   return fetcher === matchedFetch ? sessionTransport || new RequestDeadlineAgent() : undefined;
 }
 
+// Foreign fetch exposes body demand, not socket callbacks. Keep the stream
+// backpressured and split large encoder chunks so progress follows consumption.
+// Do not tee/buffer the upload or count empty pulls as activity.
+function progressBody(source: ReadableStream<Uint8Array>, progress: () => void, signal: AbortSignal) {
+  const reader = source.getReader();
+  let pending: Uint8Array | undefined;
+  let offset = 0;
+  let stopped = false;
+  let output: ReadableStreamDefaultController<Uint8Array>;
+  const cancel = (reason?: unknown) => {
+    if (stopped) return;
+    stopped = true;
+    pending = undefined;
+    signal.removeEventListener('abort', onAbort);
+    // A custom producer's cancel hook may never settle; do not let it hold up
+    // deadline/cancellation reporting or replace the original fetch error.
+    void reader.cancel(reason).catch(() => undefined);
+  };
+  const dispose = () => { cancel(); output.error(abortError(signal)); };
+  const onAbort = () => { cancel(signal.reason); output.error(abortError(signal)); };
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      output = controller;
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    },
+    async pull(controller) {
+      try {
+        while (!stopped && (!pending || offset === pending.byteLength)) {
+          const chunk = await reader.read();
+          if (stopped) return;
+          if (chunk.done) {
+            stopped = true;
+            signal.removeEventListener('abort', onAbort);
+            reader.releaseLock();
+            controller.close();
+            return;
+          }
+          pending = chunk.value;
+          offset = 0;
+        }
+        if (stopped || !pending) return;
+        const chunk = pending.subarray(offset, offset + 65_536);
+        offset += chunk.byteLength;
+        controller.enqueue(chunk);
+        progress();
+      } catch (error) { cancel(error); controller.error(error); }
+    },
+    cancel,
+  }, { highWaterMark: 0 });
+  return { body, dispose };
+}
+
 export async function request<T>(
   url: string,
   options: RequestInit,
@@ -217,17 +270,35 @@ export async function request<T>(
       let timedOut = false;
       let finished = false;
       let timer = requestDeadline(() => { timedOut = true; controller.abort(); }, timeoutMs);
-      if (transport) transport.progress = deadlineMode === 'idle' ? () => {
+      const progress = deadlineMode === 'idle' ? () => {
         if (finished || controller.signal.aborted) return;
         timer.dispose();
         timer = requestDeadline(() => { timedOut = true; controller.abort(); }, timeoutMs);
       } : undefined;
+      if (transport) transport.progress = progress;
+      let uploadBody: ReturnType<typeof progressBody> | undefined;
       try {
         // redirect: 'manual' — never auto-follow. fetch forwards custom headers
         // (including XAPI-Key) across redirects, which would carry the API key to a
         // host outside the allowlist. The xapi API never legitimately redirects.
         const fetchOptions = { ...options, redirect: 'manual', signal: controller.signal, ...(transport ? { dispatcher: transport } : {}) } as RequestInit;
+        if (!transport && progress && options.body != null) {
+          // Encode once: these headers carry the boundary matching this exact
+          // FormData stream. Never serialize it again after wrapping its body.
+          const encoded = new Request(url, { ...fetchOptions, duplex: 'half' } as RequestInit);
+          if (encoded.body) {
+            uploadBody = progressBody(encoded.body, progress, controller.signal);
+            Object.assign(fetchOptions, { body: uploadBody.body, headers: encoded.headers, duplex: 'half' });
+          }
+        }
         const res = await fetcher(url, fetchOptions);
+        const readText = async () => {
+          if (transport || !progress || !res.body) return res.text();
+          const responseBody = progressBody(res.body, progress, controller.signal);
+          try { return await new Response(responseBody.body).text(); }
+          finally { responseBody.dispose(); }
+        };
+        if (!transport) progress?.();
         if (res.status >= 300 && res.status < 400) {
           throw new Error(
             `refusing to follow redirect to "${res.headers.get('location') ?? '?'}" `
@@ -237,13 +308,13 @@ export async function request<T>(
         if (!res.ok) {
           const retryAfterMs = isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined;
           if (isRetryableStatus(res.status) && attempt < retries) {
-            await res.text().catch(() => ''); // drain body so the socket can be reused
+            await readText().catch(() => ''); // drain body so the socket can be reused
             timer.dispose();
             await sleep(backoffDelayMs(attempt, retryAfterMs), callerSignal);
             attempt++;
             continue;
           }
-          const text = await res.text().catch((cause: unknown) => {
+          const text = await readText().catch((cause: unknown) => {
             // Headers already establish a definite HTTP failure, even if its
             // body is interrupted. Do not relabel it as an unknown write.
             throw new HttpError(res.status, 'could not read error response', retryAfterMs, undefined, { cause });
@@ -255,7 +326,7 @@ export async function request<T>(
         if (res.status === 204) {
           return undefined as T;
         }
-        const text = await res.text();
+        const text = await readText();
         if (!text.trim()) {
           return undefined as T;
         }
@@ -297,6 +368,7 @@ export async function request<T>(
       } finally {
         finished = true;
         timer.dispose();
+        uploadBody?.dispose();
         callerSignal?.removeEventListener('abort', abortFromCaller);
       }
     }
@@ -305,10 +377,9 @@ export async function request<T>(
   }
 }
 
-/** Matched transport uploads reset the budget on actual socket progress. Foreign
- * fetch implementations cannot expose those private hooks: their upload budget
- * is a total bound via AbortSignal, with parser deadlines owned by that fetch.
- * Never replay the write. SSE/download response idle timers remain independent. */
+/** No total upload cutoff and no write replay. Matched transport observes socket
+ * progress; foreign fetch observes backpressured body consumption and response
+ * chunks via standard streams. Its internal parser deadlines remain its own. */
 export function uploadRequest<T>(url: string, options: RequestInit): Promise<T> {
   return request<T>(url, options, transferIdleTimeoutMs(), 0, 'idle');
 }

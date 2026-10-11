@@ -70,9 +70,13 @@ test('remote build accepts over 200 files, large source and Unicode/space paths 
   for(let i=0;i<201;i++)writeFileSync(join(root,`part-${i}.js`),'export {};');
   const api=mockApi();
   try {
+    let body: any;
+    api.fetchSpy.mockImplementation(async (target: string, init: RequestInit) => {
+      body = await new Request(target, init).json();
+      return Response.json({status:'CONFIGURED',id:'fixture'});
+    });
     await workersCommand(['build','worker-owned'],{project:root,entrypoint:'中文 入口.mjs',command:'npm run build'});
     expect(api.fetchSpy).toHaveBeenCalledTimes(1);
-    const body=JSON.parse(api.fetchSpy.mock.calls[0][1].body);
     expect(body.files).toHaveLength(203);expect(body.entrypoint).toBe('中文 入口.mjs');
     expect(body.files.find((file:any)=>file.path==='helper.mjs').content.length).toBeGreaterThan(1_000_000);
     expect(body.files.find((file:any)=>file.path==='中文 入口.mjs').content).toStartWith('//字');

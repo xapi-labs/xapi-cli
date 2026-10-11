@@ -229,9 +229,12 @@ describe("workers client", () => {
   });
 
   it("uploads a bundled module as an immutable artifact", async () => {
-    fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (target:any) => new Response(JSON.stringify(
-      String(target).endsWith("/artifact-provider/status")?{directUpload:false}:{id:"artifact-1"}
-    ),{status:200,headers:{"content-type":"application/json"}})) as any);
+    let uploaded: any;
+    fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (target:any, init:any) => {
+      if (String(target).endsWith('/artifact-provider/status')) return Response.json({directUpload:false});
+      uploaded = await new Request(target, init).json();
+      return Response.json({id:"artifact-1"});
+    }) as any);
     await uploadWorkerArtifact(options, "worker/id", {
       moduleCode: "export default {}",
       idempotencyKey: "showcase-upload-v1",
@@ -240,13 +243,16 @@ describe("workers client", () => {
     expect(target).toBe(
       "https://test.xapi.to/api/v1/workers/worker%2Fid/artifacts",
     );
-    expect(JSON.parse(init.body).idempotencyKey).toBe("showcase-upload-v1");
+    expect(uploaded.idempotencyKey).toBe("showcase-upload-v1");
   });
 
   it("uploads a multi-module bundle in one immutable artifact request", async () => {
-    fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (target:any) => new Response(JSON.stringify(
-      String(target).endsWith("/artifact-provider/status")?{directUpload:false}:{id:"artifact-2"}
-    ),{status:200,headers:{"content-type":"application/json"}})) as any);
+    let uploaded: any;
+    fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (target:any, init:any) => {
+      if (String(target).endsWith('/artifact-provider/status')) return Response.json({directUpload:false});
+      uploaded = await new Request(target, init).json();
+      return Response.json({id:"artifact-2"});
+    }) as any);
     const bundle = {
       version: 1 as const,
       mainModule: "worker.js",
@@ -269,8 +275,7 @@ describe("workers client", () => {
       bundle,
       idempotencyKey: "showcase-bundle-v1",
     });
-    const [, init] = fetchSpy.mock.calls[1] as any[];
-    expect(JSON.parse(init.body)).toEqual({
+    expect(uploaded).toEqual({
       bundle,
       idempotencyKey: "showcase-bundle-v1",
     });
@@ -297,8 +302,10 @@ describe("workers client", () => {
   });
 
   it("preserves explicit Artifact rejection and never retries on a legacy endpoint", async () => {
-    fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (target: any) => {
+    let uploaded: any;
+    fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (target: any, init: any) => {
       if (String(target).endsWith('/artifact-provider/status'))return Response.json({directUpload:false});
+      uploaded = await new Request(target, init).json();
       return Response.json({message:'Cannot POST /artifacts'},{status:404});
     }) as typeof fetch) as any;
     const input = {bundle:{version:1 as const,mainModule:'worker.js',modules:[{
@@ -309,14 +316,15 @@ describe("workers client", () => {
     expect(fetchSpy.mock.calls[0][0]).toEndWith('/artifact-provider/status');
     expect(fetchSpy.mock.calls[1][0]).toEndWith('/artifacts');
     expect(fetchSpy.mock.calls[1][1].method).toBe('POST');
-    expect(JSON.parse(fetchSpy.mock.calls[1][1].body)).toEqual(input);
+    expect(uploaded).toEqual(input);
   });
 
   it("keeps a large bundle on its multipart channel without a legacy-size user gate", async () => {
     fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (target: any,init:any) => {
       if(String(target).endsWith('/artifact-provider/status'))return Response.json({directUpload:false});
       expect(String(target)).toEndWith('/artifacts/bundle');
-      expect(init.body instanceof FormData).toBe(true);
+      expect(new Headers(init.headers).get('content-type')).toMatch(/^multipart\/form-data; boundary=/);
+      expect(init.body instanceof ReadableStream).toBe(true);
       return Response.json({message:'Cannot POST /artifacts/bundle'},{status:404});
     }) as typeof fetch) as any;
     const input={bundle:{version:1 as const,mainModule:'worker.js',modules:[{
@@ -557,8 +565,8 @@ it('uploads a large binary bundle over multipart with the server manifest protoc
   fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (target: any, init: any) => {
     if(String(target).endsWith('/artifact-provider/status'))return new Response(JSON.stringify({directUpload:false}));
     expect(target).toBe('https://test.xapi.to/api/v1/workers/worker%2Fid/artifacts/bundle');
-    expect(init.headers['XAPI-KEY']).toBe(options.apiKey);
-    expect(init.headers['Content-Type']).toBeUndefined();
+    expect(new Headers(init.headers).get('XAPI-KEY')).toBe(options.apiKey);
+    expect(new Headers(init.headers).get('Content-Type')).toMatch(/^multipart\/form-data; boundary=/);
     expect(init.redirect).toBe('manual');
     // Serialize the real Request body before parsing its multipart wire format.
     const outgoing = new Request(target, init);
