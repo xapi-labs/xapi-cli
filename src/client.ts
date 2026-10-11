@@ -18,15 +18,19 @@ import { requestDeadline } from './request-deadline.ts';
 // already be a preload interceptor. Resolve other globals at call time, and use
 // the intrinsic toString so an override's own toString cannot hide that override.
 const matchedFetch = undiciFetch as unknown as typeof fetch;
-// Snapshot only the proxy option from Node's already validated startup config.
+// Snapshot only the proxy option from Node's startup config. Node still owns
+// config loading and activation; preserving native fetch cannot enable a proxy.
 // Config is lower priority than environment/CLI flags and is not in execArgv.
 const configEnvironmentProxyEnabled = (() => {
   if (process.versions.bun) return false;
   let path: string | undefined;
   for (const [index, option] of process.execArgv.entries()) {
-    if (option.startsWith('--experimental-config-file=')) path = option.slice(option.indexOf('=') + 1);
-    else if (option === '--experimental-config-file') path = process.execArgv[index + 1] || 'node.config.json';
-    else if (option === '--experimental-default-config-file' && !path) path = 'node.config.json';
+    const separator = option.indexOf('=');
+    // Node treats underscores and dashes alike in option names, not values.
+    const name = option.split('=', 1)[0].replace(/_/g, '-');
+    if (name === '--experimental-config-file' && separator !== -1) path = option.slice(separator + 1);
+    else if (name === '--experimental-config-file') path = process.execArgv[index + 1] || 'node.config.json';
+    else if (name === '--experimental-default-config-file' && !path) path = 'node.config.json';
   }
   if (!path) return false;
   try {
@@ -36,7 +40,7 @@ const configEnvironmentProxyEnabled = (() => {
       : config;
     return selected?.nodeOptions?.['use-env-proxy'] === true;
   } catch {
-    // If the validated file is no longer readable, keep native routing rather
+    // If the startup file is no longer readable, keep native routing rather
     // than risk bypassing a proxy configured before this module was imported.
     return true;
   }
@@ -50,8 +54,9 @@ function nativeEnvironmentProxyEnabled(): boolean {
   // NODE_OPTIONS arguments together so a filename cannot look like a flag.
   const envOptions = (process.env.NODE_OPTIONS || '').match(/(?:[^\s"]+|"[^"]*")+/g) || [];
   for (const option of [...envOptions.map(value => value.replace(/"/g, '')), ...process.execArgv]) {
-    if (/^--use-env-proxy(?:=|$)/.test(option)) enabled = true;
-    else if (/^--no-use-env-proxy(?:=|$)/.test(option)) enabled = false;
+    const name = option.split('=', 1)[0].replace(/_/g, '-');
+    if (name === '--use-env-proxy') enabled = true;
+    else if (name === '--no-use-env-proxy') enabled = false;
   }
   return enabled;
 }

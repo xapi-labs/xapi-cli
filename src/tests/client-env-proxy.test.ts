@@ -24,7 +24,8 @@ const node = candidates.find(binary => {
 const configSupported = node && spawnSync(node, ['--help'], { env, encoding: 'utf8' }).stdout.includes('--experimental-config-file');
 
 for (const mode of ['flag', 'env', 'options', 'no-proxy', 'disabled', 'direct',
-  'config', 'config-disabled', 'config-no-proxy', 'config-direct', 'default-config']) {
+  'config', 'config-disabled', 'config-no-proxy', 'config-direct', 'default-config',
+  'flag-underscore', 'options-underscore', 'config-underscore', 'config-underscore-direct', 'negative-underscore']) {
   test.skipIf(!node || (mode.includes('config') && !configSupported))(`native environment proxy routing is preserved (${mode})`, async () => {
     const root = mkdtempSync(join(process.cwd(), '.env-proxy-test-'));
     try {
@@ -34,7 +35,12 @@ for (const mode of ['flag', 'env', 'options', 'no-proxy', 'disabled', 'direct',
       const result = spawnSync(node!, [join(root, 'runner.mjs'), mode], { env, encoding: 'utf8', timeout: 30_000 });
       expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' });
       const { report } = JSON.parse(result.stdout);
-      const expected = ['no-proxy', 'disabled', 'direct', 'config-disabled', 'config-no-proxy', 'config-direct'].includes(mode) ? 0 : 1;
+      const disabled = ['disabled', 'direct', 'config-disabled', 'config-direct',
+        'config-underscore-direct', 'negative-underscore'].includes(mode);
+      // Some Node versions accept the underscore config flag but do not load
+      // that file. Preserve actual native routing; never synthesize a proxy.
+      const expected = mode === 'config-underscore' ? report.native.proxyConnects
+        : disabled || ['no-proxy', 'config-no-proxy'].includes(mode) ? 0 : 1;
       for (const operation of ['native', 'request', 'session', 'stream', 'download', 'wrapper', 'timeout', 'cancel', 'redirect']) {
         // Node can replenish a proxy connection after abort without replaying
         // the HTTP request. Count target requests separately from CONNECTs.
@@ -42,6 +48,11 @@ for (const mode of ['flag', 'env', 'options', 'no-proxy', 'disabled', 'direct',
         if (expected && ['timeout', 'cancel'].includes(operation)) {
           expect(report[operation].proxyConnects).toBeGreaterThanOrEqual(1);
         } else expect(report[operation].proxyConnects).toBe(expected);
+        if (['request', 'session'].includes(operation)) {
+          // NO_PROXY still uses native routing. Explicitly disabled proxy modes
+          // must recover the paired transport as well as making direct requests.
+          expect(report[operation].deadlineDispatches).toBe(disabled ? 1 : 0);
+        }
       }
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 40_000);

@@ -7,10 +7,18 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Agent } from 'undici/index.js';
 import { actionStream, actionDownload, request, RequestTimeoutError, createArtifactControlSession } from '../client.ts';
 
 const operation = process.argv[3];
 if (process.argv[2] === '--probe') {
+  // Observe the real paired transport without replacing its network behavior.
+  let deadlineDispatches = 0;
+  const originalDispatch = Agent.prototype.dispatch;
+  Agent.prototype.dispatch = function (options, handler) {
+    if (this.constructor.name === 'RequestDeadlineAgent') deadlineDispatches++;
+    return originalDispatch.call(this, options, handler);
+  };
   const host = process.argv[4];
   const options = { actionHost: host, apiKey: 'local-proxy-fixture' };
   if (operation === 'native') {
@@ -50,7 +58,7 @@ if (process.argv[2] === '--probe') {
       assert.deepEqual(await readFile(target), Buffer.from([0, 255, 128, 13, 10, 42]));
     } finally { await rm(root, { recursive: true, force: true }); }
   } else throw new Error('unknown local probe');
-  console.log(JSON.stringify({ result: 'passed' }));
+  console.log(JSON.stringify({ result: 'passed', deadlineDispatches }));
 } else {
   const mode = process.argv[2] || 'flag';
   const sockets = new Set<Duplex>();
@@ -95,11 +103,11 @@ if (process.argv[2] === '--probe') {
   });
   await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
   const proxyPort = (proxy.address() as { port: number }).port;
-  const report: Record<string, { proxyConnects: number; targetRequests: number }> = {};
+  const report: Record<string, { proxyConnects: number; targetRequests: number; deadlineDispatches: number }> = {};
   const configRoot = await mkdtemp(join(tmpdir(), 'xapi-proxy-config-'));
-  const configPath = join(configRoot, 'node.config.json');
+  const configPath = join(configRoot, mode === 'default-config' ? 'node.config.json' : 'proxy_settings_config.json');
   try {
-    await writeFile(configPath, JSON.stringify({ nodeOptions: { 'use-env-proxy': mode !== 'config-direct' } }));
+    await writeFile(configPath, JSON.stringify({ nodeOptions: { 'use-env-proxy': !['config-direct', 'config-underscore-direct'].includes(mode) } }));
     for (const probe of ['native', 'request', 'session', 'stream', 'download', 'wrapper', 'timeout', 'cancel', 'redirect']) {
       const env = { ...process.env };
       // Never inherit real proxies, Node options or credentials into local probes.
@@ -110,12 +118,16 @@ if (process.argv[2] === '--probe') {
       env.HTTP_PROXY = `http://127.0.0.1:${proxyPort}`;
       env.HTTPS_PROXY = env.HTTP_PROXY;
       env.NO_PROXY = mode === 'no-proxy' || mode === 'config-no-proxy' ? '127.0.0.1' : '';
-      const flags = mode === 'env' || mode === 'options' || mode === 'direct' ? [] : ['--use-env-proxy'];
+      const flags = ['env', 'options', 'options-underscore', 'direct'].includes(mode) ? [] : ['--use-env-proxy'];
+      if (mode === 'flag-underscore') flags.splice(0, flags.length, '--use_env_proxy');
       if (mode === 'env') env.NODE_USE_ENV_PROXY = '1';
       if (mode === 'options') env.NODE_OPTIONS = '"--use-env-proxy"';
+      if (mode === 'options-underscore') env.NODE_OPTIONS = '"--use_env_proxy"';
       if (mode === 'disabled') { env.NODE_OPTIONS = '--use-env-proxy'; flags.push('--no-use-env-proxy'); }
+      if (mode === 'negative-underscore') { env.NODE_OPTIONS = '--use-env-proxy'; flags.push('--no_use_env_proxy'); }
       if (mode.startsWith('config')) {
-        flags.splice(0, flags.length, `--experimental-config-file=${configPath}`);
+        const configFlag = mode.startsWith('config-underscore') ? '--experimental_config_file' : '--experimental-config-file';
+        flags.splice(0, flags.length, `${configFlag}=${configPath}`);
         if (mode === 'config-disabled') flags.push('--no-use-env-proxy');
       }
       if (mode === 'default-config') flags.splice(0, flags.length, '--experimental-default-config-file');
@@ -134,8 +146,10 @@ if (process.argv[2] === '--probe') {
         child.on('close', result => { clearTimeout(timer); resolve(result); });
       });
       assert.equal(code, 0, `local ${probe} probe failed`);
-      assert.equal(JSON.parse(stdout).result, 'passed');
-      report[probe] = { proxyConnects: proxyConnects - beforeProxy, targetRequests: targetRequests - beforeTarget };
+      const result = JSON.parse(stdout);
+      assert.equal(result.result, 'passed');
+      report[probe] = { proxyConnects: proxyConnects - beforeProxy, targetRequests: targetRequests - beforeTarget,
+        deadlineDispatches: result.deadlineDispatches };
     }
     console.log(JSON.stringify({ node: process.version, mode, report }));
   } finally {
