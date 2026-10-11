@@ -52,13 +52,17 @@ for (const mode of ['flag', 'env', 'options', 'no-proxy', 'disabled', 'direct',
       const expected = nativePrecedence ? report.native.proxyConnects
         : direct || ['no-proxy', 'config-no-proxy'].includes(mode) ? 0 : 1;
       const disabled = direct || (!expected && ['config-false-env', 'default-config-false-env'].includes(mode));
-      for (const operation of ['native', 'request', 'session', 'stream', 'download', 'wrapper', 'timeout', 'cancel', 'redirect']) {
+      for (const operation of ['native', 'request', 'session', 'session-wrapper', 'stream', 'download', 'wrapper', 'timeout', 'cancel', 'redirect']) {
         // Node can replenish a proxy connection after abort without replaying
         // the HTTP request. Count target requests separately from CONNECTs.
         expect(report[operation].targetRequests).toBe(1);
         if (expected && ['timeout', 'cancel'].includes(operation)) {
           expect(report[operation].proxyConnects).toBeGreaterThanOrEqual(1);
         } else expect(report[operation].proxyConnects).toBe(expected);
+        if (operation === 'session-wrapper') {
+          expect(report[operation].intercepted).toBe(1);
+          expect(report[operation].deadlineDispatches).toBe(0);
+        }
         if (['request', 'session'].includes(operation)) {
           // NO_PROXY still uses native routing. Explicitly disabled proxy modes
           // must recover the paired transport as well as making direct requests.

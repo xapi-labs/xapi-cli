@@ -14,6 +14,7 @@ const operation = process.argv[3];
 if (process.argv[2] === '--probe') {
   // Observe the real paired transport without replacing its network behavior.
   let deadlineDispatches = 0;
+  let intercepted = 0;
   const originalDispatch = Agent.prototype.dispatch;
   Agent.prototype.dispatch = function (options, handler) {
     if (this.constructor.name === 'RequestDeadlineAgent') deadlineDispatches++;
@@ -25,7 +26,15 @@ if (process.argv[2] === '--probe') {
     assert.deepEqual(await (await fetch(`http://${host}/read`)).json(), { ok: true });
   } else if (operation === 'request') {
     assert.deepEqual(await request(`http://${host}/read`, {}, 2000), { ok: true });
-  } else if (operation === 'session') {
+  } else if (operation === 'session' || operation === 'session-wrapper') {
+    if (operation === 'session-wrapper') {
+      const native = globalThis.fetch;
+      globalThis.fetch = ((input, init) => {
+        intercepted++;
+        assert.equal('dispatcher' in (init || {}), false);
+        return native(input, init);
+      }) as typeof fetch;
+    }
     const session = createArtifactControlSession();
     try { assert.deepEqual(await session.request(`http://${host}/read`, {}, 2000, 0), { ok: true }); }
     finally { await session.close(); }
@@ -58,7 +67,7 @@ if (process.argv[2] === '--probe') {
       assert.deepEqual(await readFile(target), Buffer.from([0, 255, 128, 13, 10, 42]));
     } finally { await rm(root, { recursive: true, force: true }); }
   } else throw new Error('unknown local probe');
-  console.log(JSON.stringify({ result: 'passed', deadlineDispatches }));
+  console.log(JSON.stringify({ result: 'passed', deadlineDispatches, intercepted }));
 } else {
   const mode = process.argv[2] || 'flag';
   const sockets = new Set<Duplex>();
@@ -103,7 +112,7 @@ if (process.argv[2] === '--probe') {
   });
   await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
   const proxyPort = (proxy.address() as { port: number }).port;
-  const report: Record<string, { proxyConnects: number; targetRequests: number; deadlineDispatches: number }> = {};
+  const report: Record<string, { proxyConnects: number; targetRequests: number; deadlineDispatches: number; intercepted: number }> = {};
   const configRoot = await mkdtemp(join(tmpdir(), 'xapi-proxy-config-'));
   const configPath = join(configRoot, mode.startsWith('default-config') ? 'node.config.json' : 'proxy_settings_config.json');
   try {
@@ -127,7 +136,7 @@ if (process.argv[2] === '--probe') {
     const nodeOptions = mode === 'config-absent-env' ? {} : { 'use-env-proxy': !configDirect };
     await writeFile(configPath, JSON.stringify({ nodeOptions: { ...nodeOptions,
       ...(mode === 'config-false-env-preload' ? { import: [preload] } : {}) } }));
-    for (const probe of ['native', 'request', 'session', 'stream', 'download', 'wrapper', 'timeout', 'cancel', 'redirect']) {
+    for (const probe of ['native', 'request', 'session', 'session-wrapper', 'stream', 'download', 'wrapper', 'timeout', 'cancel', 'redirect']) {
       const env = { ...process.env };
       // Never inherit real proxies, Node options or credentials into local probes.
       for (const key of Object.keys(env)) {
@@ -181,7 +190,7 @@ if (process.argv[2] === '--probe') {
       const result = JSON.parse(stdout);
       assert.equal(result.result, 'passed');
       report[probe] = { proxyConnects: proxyConnects - beforeProxy, targetRequests: targetRequests - beforeTarget,
-        deadlineDispatches: result.deadlineDispatches };
+        deadlineDispatches: result.deadlineDispatches, intercepted: result.intercepted || 0 };
     }
     console.log(JSON.stringify({ node: process.version, mode, report }));
   } finally {

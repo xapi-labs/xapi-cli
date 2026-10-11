@@ -475,7 +475,7 @@ export function uploadRequest<T>(url: string, options: RequestInit): Promise<T> 
  * Native proxy/preload mode reuses Node's pool without an external dispatcher. Like
  * foreign fetch, Node owns its internal parser deadlines in that mode. */
 export function createArtifactControlSession() {
-  const fetcher = preserveNativeFetch() ? defaultFetch() : matchedFetch;
+  const fetcher = defaultFetch();
   const transport = requestTransport(fetcher);
   return {
     request: <T>(url: string, options: RequestInit, budget: number, retries: number) =>
