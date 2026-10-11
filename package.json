@@ -27,7 +27,10 @@
     "README.md",
     "schemas",
     "skills",
-    "templates"
+    "templates",
+    "src/sandbox-extension-budget.ts",
+    "src/sandbox-command-stream-codec.ts",
+    "src/sandbox-cf-streams.ts"
   ],
   "license": "MIT",
   "homepage": "https://xapi.to",

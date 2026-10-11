@@ -2,6 +2,21 @@ import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import * as client from '../sandbox-client.ts';
 
 describe('sandbox client', () => {
+  it('never replays a failed port allocation just because its public route uses GET', async () => {
+    const fetch = spyOn(globalThis, 'fetch').mockImplementation((async () => new Response('upstream pending', { status: 502 })) as unknown as typeof globalThis.fetch);
+    try {
+      await expect(client.sandboxPort({ sandboxHost: 'localhost:3312', apiKey: 'test' }, 'owned', 3000)).rejects.toThrow();
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally { fetch.mockRestore(); }
+  });
+  it('covers cold startup without an arbitrary one hour ceiling', () => {
+    expect(client.sandboxCommandTransportMs(60)).toBe(360_000);
+    expect(client.sandboxCommandTransportMs(7200)).toBe(7_500_000);
+    expect(client.sandboxCommandTransportMs(7200, true)).toBe(300_000);
+    for (const seconds of [0, 1.5, Infinity, Number.MAX_SAFE_INTEGER])
+      expect(() => client.sandboxCommandTransportMs(seconds)).toThrow();
+  });
+
   let fetchSpy: ReturnType<typeof spyOn> | undefined;
 
   afterEach(() => fetchSpy?.mockRestore());
@@ -21,6 +36,33 @@ describe('sandbox client', () => {
       .toBe('https://e2b-sandbox.sandbox.xapi.to');
     expect(client.sandboxBaseUrl('sandbox.xapi.to', 'cf-edge'))
       .toBe('https://cf-edge.sandbox.xapi.to');
+  });
+
+  it('pins a loopback provider using the provider-scoped path', async () => {
+    expect(client.sandboxBaseUrl('http://127.0.0.1:3312', 'daytona')).toBe('http://127.0.0.1:3312/providers/daytona');
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response('[]'));
+    await client.sandboxOfferings({ sandboxHost: 'http://127.0.0.1:3312', provider: 'daytona', apiKey: 'local-key' });
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://127.0.0.1:3312/providers/daytona/v1/offerings');
+    const headers = new Headers(init.headers);
+    expect(headers.has('host')).toBe(false);
+    expect(headers.get('xapi-key')).toBe('local-key');
+  });
+
+  it('keeps auto and public pinning free of local routing hints', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () => new Response('[]')) as unknown as typeof fetch);
+    for (const opts of [
+      { sandboxHost: 'localhost:3312', provider: 'auto', apiKey: 'local-key' },
+      { sandboxHost: 'sandbox.xapi.to', provider: 'daytona', apiKey: 'public-key' },
+    ]) await client.sandboxOfferings(opts);
+    for (const [, init] of fetchSpy.mock.calls as [string, RequestInit][]) expect(new Headers(init.headers).has('x-xapi-sandbox-provider')).toBe(false);
+  });
+
+  it('retains local provider scope for raw binary downloads', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response(new Uint8Array([0, 255, 7])));
+    const stream = await client.sandboxFileDownload({ sandboxHost: 'localhost:3312', provider: 'daytona', apiKey: 'key' }, 'box', '/tmp/file');
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/providers/daytona/v1/sandboxes/box/files/download');
+    expect(new Uint8Array(await new Response(stream).arrayBuffer())).toEqual(new Uint8Array([0, 255, 7]));
   });
 
   it('sends cwd and background using the public command contract', async () => {
@@ -102,6 +144,9 @@ describe('sandbox client', () => {
       'https://cf-edge.sandbox.test.xapi.to/v1/sandboxes/box%2Funsafe/audit?kind=billingPeriods&page=2&pageSize=25',
     );
     expect((init.headers as Record<string, string>)['XAPI-Key']).toBe('sk-test');
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({items:[]}),{headers:{'content-type':'application/json'}}));
+    await client.sandboxAudit({sandboxHost:'sandbox.test.xapi.to',apiKey:'sk-test'},'box','billingPeriods',1,100,'pending');
+    expect(fetchSpy.mock.calls[1][0]).toContain('billingStatus=pending');
   });
 
   it('uses the dedicated history endpoint with encoded filters', async () => {
@@ -208,5 +253,17 @@ describe('sandbox client', () => {
       5_000,
       controller.signal,
     )).rejects.toThrow(/interrupted/);
+  });
+});
+
+
+describe('Sandbox financial error trace',()=>{
+  it('preserves operation and billing identity when the native message is long, without echoing arbitrary fields',()=>{
+    const raw=JSON.stringify({code:'SANDBOX_EXTENSION_PROVIDER_ERROR',message:'timeout '.repeat(200),operationId:'native-op',executionStatus:'FAILED',billingStatus:'SETTLED',token:'private-secret'});
+    const detail=JSON.parse(client.sandboxErrorDetail(raw));
+    expect(detail).toMatchObject({operationId:'native-op',executionStatus:'FAILED',billingStatus:'SETTLED'});
+    expect(detail.message.length).toBeGreaterThan(300);
+    expect(detail.token).toBeUndefined();
+    expect(client.sandboxErrorDetail('plain '.repeat(100))).toHaveLength(300);
   });
 });

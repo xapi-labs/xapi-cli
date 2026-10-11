@@ -18,6 +18,8 @@ import {
   sandboxOptions,
   sandboxResultExitCode,
   sandboxRun,
+  sandboxSnapshot,
+  sandboxState,
   sandboxTableRows,
   sandboxWait,
 } from '../commands/sandbox.ts';
@@ -43,6 +45,48 @@ describe('sandbox commands', () => {
     outputSpy.mockRestore();
     errSpy.mockRestore();
     while (spies.length) spies.pop()!.mockRestore();
+  });
+
+  it('streams binary downloads and removes partial files on interruption', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sandbox-download-'));
+    const target = join(dir, 'binary');
+    try {
+      const bytes = Buffer.from([0, 255, 128, 10, 0, 240, 159, 152, 128]);
+      const spy = spyOn(sandboxClient, 'sandboxFileDownload').mockResolvedValue(new ReadableStream({
+        start(controller) { controller.enqueue(bytes.subarray(0, 5)); controller.enqueue(bytes.subarray(5)); controller.close(); },
+      }));
+      spies.push(spy);
+      await sandboxFile(['download', 'box', '/tmp/binary'], { output: target });
+      expect(await readFile(target)).toEqual(bytes);
+      await expect(sandboxFile(['download', 'box', '/tmp/binary'], { output: target })).rejects.toThrow();
+      expect(spy).toHaveBeenCalledTimes(1);
+      const partial = join(dir, 'partial');
+      let reads = 0;
+      spy.mockResolvedValue(new ReadableStream({ pull(controller) {
+        if (reads++ === 0) controller.enqueue(bytes); else controller.error(new Error('network interrupted'));
+      } }));
+      await expect(sandboxFile(['download', 'box', '/tmp/binary'], { output: partial })).rejects.toThrow();
+      await expect(readFile(partial)).rejects.toThrow();
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('snapshots once and preserves the operation without resuming or state polling', async () => {
+    const action = spyOn(sandboxClient, 'sandboxStateAction').mockResolvedValue({ id: 'snap-op', status: 'SUCCEEDED' });
+    const wait = spyOn(sandboxClient, 'sandboxWait').mockResolvedValue({} as any);
+    spies.push(action, wait);
+    await sandboxSnapshot(['box'], { 'idempotency-key': 'snap-key' });
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(action).toHaveBeenCalledWith(expect.any(Object), 'box', 'snapshot', { idempotencyKey: 'snap-key' });
+    expect(wait).not.toHaveBeenCalled();
+    expect(outputSpy).toHaveBeenCalledWith({ id: 'snap-op', status: 'SUCCEEDED', clientIdempotencyKey: 'snap-key' }, undefined);
+  });
+
+  it('keeps the snapshot recovery key after a lost response without replaying', async () => {
+    const action = spyOn(sandboxClient, 'sandboxStateAction').mockRejectedValue(new Error('response lost'));
+    spies.push(action);
+    await expect(sandboxSnapshot(['box'], { 'idempotency-key': 'snap-key' })).rejects.toThrow('err called');
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(errSpy).toHaveBeenCalledWith('sandbox snapshot failed', expect.objectContaining({ instanceId: 'box', clientIdempotencyKey: 'snap-key', message: 'response lost' }));
   });
 
   it('advertises every adapter-backed provider in the top-level help', () => {
@@ -179,7 +223,7 @@ describe('sandbox commands', () => {
     );
   });
 
-  it('forwards cwd and explicit background execution', async () => {
+  it('forwards cwd, environment and explicit background execution', async () => {
     const execSpy = spyOn(sandboxClient, 'sandboxExec').mockResolvedValue({
       exitCode: 0,
       background: { sessionId: 'session-1', commandId: 'command-1' },
@@ -188,6 +232,7 @@ describe('sandbox commands', () => {
     await sandboxExec(['box-1'], {
       command: 'python3 -m http.server 25319 --bind 0.0.0.0',
       cwd: '/workspace',
+      env: '{"TASK_MODE":"demo","SPACE":"value with spaces"}',
       background: 'true',
     });
     expect(execSpy).toHaveBeenCalledWith(
@@ -195,8 +240,8 @@ describe('sandbox commands', () => {
       'box-1',
       {
         command: 'python3 -m http.server 25319 --bind 0.0.0.0',
-        timeoutSeconds: 60,
         cwd: '/workspace',
+        env: { TASK_MODE: 'demo', SPACE: 'value with spaces' },
         background: true,
       },
     );
@@ -216,6 +261,40 @@ describe('sandbox commands', () => {
       'runpod.connection_info',
       { input: { includePorts: true }, idempotencyKey: 'extension-key-1' },
     );
+  });
+
+  it.each(['unconfirmed', 'confirmed FAILED'])('explains status-dependent extension recovery without retrying (%s)', async outcome => {
+    const error = outcome === 'unconfirmed' ? new Error('response lost')
+      : new HttpError(403, 'operation status FAILED: fix upstream permission');
+    const extensionSpy = spyOn(sandboxClient, 'sandboxExtension').mockRejectedValue(error);
+    spies.push(extensionSpy);
+    await expect(sandboxExtension(['box-1', 'daytona.snapshot.delete'], {
+      input: '{"name":"owned-snapshot"}', 'idempotency-key': 'original-extension-key',
+    })).rejects.toThrow('err called');
+    expect(extensionSpy).toHaveBeenCalledTimes(1);
+    expect(errSpy).toHaveBeenCalledWith('sandbox extension failed', expect.objectContaining({
+      message: error.message, clientIdempotencyKey: 'original-extension-key',
+      retry: expect.stringContaining('xapi-to sandbox audit box-1 --kind operations'),
+    }));
+    const hint = (errSpy.mock.calls[0]![1] as any).retry as string;
+    expect(hint).toContain('For an unconfirmed outcome, reconcile with --idempotency-key original-extension-key');
+    expect(hint).toContain('For confirmed FAILED, fix the upstream reason, then deliberately use a NEW idempotency key');
+    expect(hint).toContain('the original key returns the original failure');
+  });
+
+  it('preserves the existing streaming connection recovery hint and original key', async () => {
+    const extensionSpy = spyOn(sandboxClient, 'sandboxExtension').mockResolvedValue({
+      result: { url: 'https://unused.example.invalid/connection', protocol: 'unsupported' },
+    });
+    spies.push(extensionSpy);
+    await expect(sandboxExtension(['box-1', 'cloudflare.terminal.open'], {
+      stream: 'true', 'idempotency-key': 'connection-key',
+    })).rejects.toThrow('err called');
+    expect(extensionSpy).toHaveBeenCalledTimes(1);
+    expect(errSpy).toHaveBeenCalledWith('sandbox extension failed', expect.objectContaining({
+      clientIdempotencyKey: 'connection-key',
+      retry: 'Open a new connection grant with a new idempotency key; reuse sessionId or log byte offsets. This does not replay the business command.',
+    }));
   });
 
   it('downloads binary files using base64 without UTF-8 corruption', async () => {
@@ -259,6 +338,12 @@ describe('sandbox commands', () => {
     spies.push(auditSpy);
     await expect(sandboxAudit(['box-1'], { 'page-size': '101' })).rejects.toThrow('err called');
     expect(auditSpy).not.toHaveBeenCalled();
+  });
+
+  it('lets a consumer query pending holds without changing default settled audit',async()=>{
+    const auditSpy=spyOn(sandboxClient,'sandboxAudit').mockResolvedValue({items:[]});spies.push(auditSpy);
+    await sandboxAudit(['box-1'],{kind:'billingPeriods','billing-status':'pending'});
+    expect(auditSpy).toHaveBeenCalledWith(expect.any(Object),'box-1','billingPeriods',1,100,'pending');
   });
 
   it('projects offerings into a concise Sandbox-specific table', () => {
@@ -306,6 +391,50 @@ describe('sandbox commands', () => {
     const stateSpy = spyOn(sandboxClient, 'sandboxStateAction').mockResolvedValue({ status: 'RUNNING' });
     spies.push(quoteSpy, createSpy, waitSpy, execSpy, getSpy, stateSpy);
     return { quoteSpy, createSpy, waitSpy, execSpy, getSpy, stateSpy };
+  }
+
+  it('returns the confirmed matching terminate operation instead of the launch snapshot', async () => {
+    const get = spyOn(sandboxClient, 'sandboxGet').mockResolvedValue({ id: 'box', observedState: 'RUNNING' });
+    const state = spyOn(sandboxClient, 'sandboxStateAction').mockResolvedValue({ id: 'terminate-op', status: 'RUNNING', completedAt: null });
+    const confirmed = { id: 'terminate-op', status: 'SUCCEEDED', completedAt: '2026-10-09T06:14:00Z' };
+    const wait = spyOn(sandboxClient, 'sandboxWait').mockResolvedValue({ id: 'box', observedState: 'TERMINATED', operations: [confirmed] });
+    spies.push(get, state, wait);
+    await sandboxState('terminate', ['box'], {});
+    expect((outputSpy.mock.calls.at(-1)?.[0] as any).operation).toEqual(confirmed);
+    expect(state).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not invent an operation result from a different operation or just a terminal state', async () => {
+    const get = spyOn(sandboxClient, 'sandboxGet').mockResolvedValue({ id: 'box', observedState: 'RUNNING' });
+    const acknowledgement = { id: 'current-op', status: 'RUNNING' };
+    const state = spyOn(sandboxClient, 'sandboxStateAction').mockResolvedValue(acknowledgement);
+    const wait = spyOn(sandboxClient, 'sandboxWait').mockResolvedValue({ id: 'box', observedState: 'TERMINATED', operations: [{ id: 'other-op', status: 'SUCCEEDED' }] });
+    spies.push(get, state, wait);
+    await sandboxState('terminate', ['box'], {});
+    expect((outputSpy.mock.calls.at(-1)?.[0] as any).operation).toEqual(acknowledgement);
+    expect(state).toHaveBeenCalledTimes(1);
+  });
+
+  for (const action of ['suspend', 'resume'] as const) {
+    it(`returns the confirmed matching ${action} receipt without another mutation`, async () => {
+      const state = spyOn(sandboxClient, 'sandboxStateAction').mockResolvedValue({ id: 'current-op', status: 'RUNNING' });
+      const confirmed = { id: 'current-op', status: 'SUCCEEDED', completedAt: '2026-10-09T08:45:00Z' };
+      const wait = spyOn(sandboxClient, 'sandboxWait').mockResolvedValue({ id: 'box', observedState: action === 'suspend' ? 'SUSPENDED' : 'RUNNING', operations: [confirmed] });
+      spies.push(state, wait);
+      await sandboxState(action, ['box'], {});
+      expect((outputSpy.mock.calls.at(-1)?.[0] as any).operation).toEqual(confirmed);
+      expect(state).toHaveBeenCalledTimes(1);
+      expect(wait).toHaveBeenCalledTimes(1);
+    });
+    it(`keeps the original ${action} receipt if only another operation is available`, async () => {
+      const acknowledgement = { id: 'current-op', status: 'RUNNING' };
+      const state = spyOn(sandboxClient, 'sandboxStateAction').mockResolvedValue(acknowledgement);
+      const wait = spyOn(sandboxClient, 'sandboxWait').mockResolvedValue({ id: 'box', observedState: action === 'suspend' ? 'SUSPENDED' : 'RUNNING', operations: [{ id: 'other-op', status: 'SUCCEEDED' }] });
+      spies.push(state, wait);
+      await sandboxState(action, ['box'], {});
+      expect((outputSpy.mock.calls.at(-1)?.[0] as any).operation).toEqual(acknowledgement);
+      expect(state).toHaveBeenCalledTimes(1);
+    });
   }
 
   it('run quotes, creates, waits, executes, and always terminates', async () => {
@@ -398,5 +527,21 @@ describe('sandbox commands', () => {
     expect(sandboxResultExitCode({ exitCode: 0 })).toBeUndefined();
     expect(sandboxResultExitCode({ exitCode: 7 })).toBe(7);
     expect(sandboxResultExitCode({ exitCode: 999 })).toBe(255);
+  });
+});
+
+
+describe('Sandbox native capacity flags',()=>{
+  it('ceil-divides large millisecond values exactly before checking seconds representability',()=>{
+    expect(requirementsFromFlags({'min-runtime':'9007199254740989001ms'}).minContinuousRuntimeSeconds).toBe(9007199254740990);
+    expect(requirementsFromFlags({'min-runtime':'1ms'}).minContinuousRuntimeSeconds).toBe(1);
+  });
+
+  it('passes capacity and lifetime beyond the old product ceilings unchanged',()=>{
+    const requirements=requirementsFromFlags({'gpu-count':'2048','gpu-model':'native-'+ 'x'.repeat(130),'min-runtime':'366d','cpu':'0.0000001'});
+    expect(requirements.gpu?.count).toBe(2048);
+    expect(requirements.gpu?.model?.length).toBeGreaterThan(120);
+    expect(requirements.minContinuousRuntimeSeconds).toBe(31622400);
+    expect(requirements.cpu?.min).toBe(0.0000001);
   });
 });
