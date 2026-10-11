@@ -768,6 +768,15 @@ export function applyWorkerD1Migration(options: WorkersClientOptions, id: string
   });
 }
 
+/** Data export POSTs are deliberately never replayed, including descriptor requests. */
+export function workerDataExportRequest(options: WorkersClientOptions, id: string, environment: string,
+  resourceId: string, path: string, body?: Record<string, unknown>, timeoutMs = 30_000) {
+  return request<unknown>(url(options, `/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/resources/${encodeURIComponent(resourceId)}${path}`), {
+    method: body === undefined ? 'GET' : 'POST', headers: headers(options, body !== undefined),
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  }, timeoutMs, 0);
+}
+
 export function configureWorkerQueueConsumer(options: WorkersClientOptions, id: string, environment: string, resourceId: string, input: Record<string,unknown>) {
   return request<unknown>(url(options,`/${encodeURIComponent(id)}/environments/${encodeURIComponent(environment)}/resources/${encodeURIComponent(resourceId)}/queue-consumer`),{
     method:"PUT",headers:headers(options,true),body:JSON.stringify(input),

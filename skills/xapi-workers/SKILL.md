@@ -40,6 +40,7 @@ This is an informational reminder, not a separate approval gate. Use existing cr
 
 - **Build/deploy/import/CI:** read [deployment.md](references/deployment.md).
 - **Use and verify resources, including Containers:** read [resources.md](references/resources.md).
+- **Export owned D1/R2 data:** read [the export workflow](references/resources.md#export-d1-and-r2-business-data). Binding selection needs `workers:read` plus the separate `workers:data:read` scope; management read/write does not grant data access. Export completion does not establish migration or import completion.
 - **Configure public vars and runtime credentials (including first-project setup):** read [secrets.md](references/secrets.md). Secret values go to the environment's Cloudflare User Worker binding; never ask xAPI to reveal them.
 - **How much did it cost?** Read [billing.md](references/billing.md) before answering, collecting, or reconciling consumption.
 - **Funding protection/recover/delete/refund:** read [lifecycle.md](references/lifecycle.md) before lifecycle mutations.
