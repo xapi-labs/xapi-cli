@@ -5,7 +5,6 @@
 
 ### Bug Fixes
 
-* **cli:** respect polling delays when timers wake early ([b5333eb](https://github.com/xapi-labs/xapi-cli/commit/b5333eb3a9822425283d84c023b3448d41cb0911))
 * **cli:** respect polling delays when timers wake early ([03a98ea](https://github.com/xapi-labs/xapi-cli/commit/03a98eac7e365759b243c40d503dab5429d4e344))
 * **workers:** preserve native deployment flows and simplify client controls ([#47](https://github.com/xapi-labs/xapi-cli/issues/47)) ([da62e96](https://github.com/xapi-labs/xapi-cli/commit/da62e963b6c8d158a08cd944c2b44b8b57451d9c))
 * **workers:** recover uploads and preserve production settings and usage totals ([#48](https://github.com/xapi-labs/xapi-cli/issues/48)) ([c81669c](https://github.com/xapi-labs/xapi-cli/commit/c81669c47133d8969a21cd64ce449df8b01d9503))
