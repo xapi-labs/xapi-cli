@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.1](https://github.com/xapi-labs/xapi-cli/compare/v0.2.0...v0.2.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **cli:** respect polling delays when timers wake early ([03a98ea](https://github.com/xapi-labs/xapi-cli/commit/03a98eac7e365759b243c40d503dab5429d4e344))
+* **workers:** preserve native deployment flows and simplify client controls ([#47](https://github.com/xapi-labs/xapi-cli/issues/47)) ([da62e96](https://github.com/xapi-labs/xapi-cli/commit/da62e963b6c8d158a08cd944c2b44b8b57451d9c))
+* **workers:** recover uploads and preserve production settings and usage totals ([#48](https://github.com/xapi-labs/xapi-cli/issues/48)) ([c81669c](https://github.com/xapi-labs/xapi-cli/commit/c81669c47133d8969a21cd64ce449df8b01d9503))
+* **workers:** report successful pushes to owner-paused environments ([#49](https://github.com/xapi-labs/xapi-cli/issues/49)) ([df39e56](https://github.com/xapi-labs/xapi-cli/commit/df39e566d9d428f240e420cd3004cf93a229c28b))
+
 ## [0.2.0](https://github.com/xapi-labs/xapi-cli/compare/v0.1.23...v0.2.0) (2026-09-29)
 
 
