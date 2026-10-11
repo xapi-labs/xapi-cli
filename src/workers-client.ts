@@ -33,12 +33,14 @@ function unknownWriteError(error: unknown, subject: string, recovery: string): W
     seen.add(current);
     const candidate = (current as Error & { code?: unknown }).code;
     if (typeof candidate === 'string' && /^(UND_ERR_(INVALID_ARG|INVALID_RETURN_VALUE|NOT_SUPPORTED)|ERR_INVALID_ARG_(TYPE|VALUE)|ERR_INVALID_URL|ERR_MISSING_ARGS|ERR_OUT_OF_RANGE)$/.test(candidate)) return;
-    if (typeof candidate === 'string' && /^(UND_ERR_(SOCKET|CONNECT_TIMEOUT|HEADERS_TIMEOUT|BODY_TIMEOUT)|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH)$/.test(candidate)) {
+    if (typeof candidate === 'string' && /^(UND_ERR_|ECONN|ENET|EHOST|EAI_)|^(EPIPE|ETIMEDOUT|ENOTFOUND)$/.test(candidate)) {
       code = candidate;
       knownTransport = true;
     }
     // A new transport code does not prove that the write was never sent.
-    // Preserve it and still inspect the fetch failure, including deeper causes.
+    // Transport namespaces apply to direct Error rejections too; validation
+    // codes above and definite HTTP responses remain excluded. Preserve other
+    // codes and still inspect the fetch failure, including deeper causes.
     if (typeof candidate === 'string' && !code) code = candidate;
   }
   // Do not turn validation/programming errors or definite HTTP rejections into

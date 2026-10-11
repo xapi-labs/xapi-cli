@@ -32,7 +32,7 @@ import {
   deleteWorker,
   WorkerWriteUnknownError,
 } from "../workers-client.ts";
-import { RequestTimeoutError } from "../client.ts";
+import { HttpError, RequestTimeoutError } from "../client.ts";
 
 const options = { apiHost: "test.xapi.to", apiKey: "sk-test-value" };
 let fetchSpy: ReturnType<typeof spyOn> | undefined;
@@ -90,6 +90,25 @@ describe("workers client", () => {
       });
     }
   }
+  for (const action of ['resume', 'delete', 'whole-worker-delete']) {
+    for (const code of ['ECONNABORTED', 'UND_ERR_HEADERS_OVERFLOW', 'ECONNFUTURE']) {
+      it(`reports directly thrown ${code} as unknown for ${action} without replay`, async () => {
+        const original = Object.assign(new Error('transport disconnected'), { code });
+        fetchSpy = spyOn(globalThis, 'fetch').mockRejectedValue(original) as any;
+        const error = await (action === 'whole-worker-delete'
+          ? deleteWorker(options, 'worker-1')
+          : workerRetention(options, 'worker-1', 'preview', '/actions', { action })).catch(error => error);
+        expect(error).toBeInstanceOf(WorkerWriteUnknownError);
+        if (!(error instanceof WorkerWriteUnknownError)) throw error;
+        expect(error.cause).toBe(original);
+        expect(error.code).toBe(code);
+        expect(error.message).toContain(action === 'whole-worker-delete'
+          ? 'xapi workers get worker-1 --format json'
+          : 'xapi workers retention show worker-1 --env preview --format json');
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+      });
+    }
+  }
   for (const original of [
     new TypeError('invalid request option'),
     new TypeError('fetch failed', { cause: Object.assign(new Error('invalid onError method'), { code: 'UND_ERR_INVALID_ARG' }) }),
@@ -133,6 +152,20 @@ describe("workers client", () => {
     await expect(workerRetention(options, "worker-1", "preview", "/actions", { action: "delete" }))
       .rejects.toThrow("HTTP 409: workflow is running");
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+  it('preserves definite business responses even with a transport-shaped response code', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () => new Response(JSON.stringify({
+      code: 'ECONNABORTED', message: 'financial recovery required',
+    }), { status: 409, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch) as any;
+    for (const write of [() => deleteWorker(options, 'worker-1'),
+      () => workerRetention(options, 'worker-1', 'preview', '/actions', { action: 'resume' })]) {
+      const error = await write().catch(error => error);
+      expect(error).toBeInstanceOf(HttpError);
+      expect(error).not.toBeInstanceOf(WorkerWriteUnknownError);
+      if (!(error instanceof HttpError)) throw error;
+      expect(error.status).toBe(409);
+    }
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
   it("applies secret mutations without retrying or exposing values in the URL", async () => {
     fetchSpy = spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({status:"ACTIVE"}),{status:200,headers:{"content-type":"application/json"}})) as any;

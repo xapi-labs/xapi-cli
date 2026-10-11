@@ -107,9 +107,19 @@ if (process.argv[2] === '--probe') {
   const configRoot = await mkdtemp(join(tmpdir(), 'xapi-proxy-config-'));
   const configPath = join(configRoot, mode.startsWith('default-config') ? 'node.config.json' : 'proxy_settings_config.json');
   try {
+    // This control child imports no CLI or adapter code: its routing is solely
+    // Node's bootstrap plus the same startup options used by each CLI probe.
+    const nativeProbe = join(configRoot, 'native_control.mjs');
+    await writeFile(nativeProbe, `import assert from 'node:assert/strict';
+      assert.deepEqual(await (await fetch('http://' + process.argv[4] + '/read')).json(), { ok: true });
+      console.log(JSON.stringify({ result: 'passed', deadlineDispatches: 0 }));`);
+    const preload = join(configRoot, mode === 'require-delete-env' ? 'clear_env.cjs' : 'clear_env.mjs');
+    await writeFile(preload, 'delete process.env.NODE_USE_ENV_PROXY;');
     const configDirect = ['config-direct', 'config-underscore-direct', 'config-false-env', 'default-config-false-env',
-      'config-false-env-options', 'config-false-env-flag', 'config-underscore-false-env'].includes(mode);
-    await writeFile(configPath, JSON.stringify({ nodeOptions: mode === 'config-absent-env' ? {} : { 'use-env-proxy': !configDirect } }));
+      'config-false-env-options', 'config-false-env-flag', 'config-underscore-false-env', 'config-false-env-preload'].includes(mode);
+    const nodeOptions = mode === 'config-absent-env' ? {} : { 'use-env-proxy': !configDirect };
+    await writeFile(configPath, JSON.stringify({ nodeOptions: { ...nodeOptions,
+      ...(mode === 'config-false-env-preload' ? { import: [preload] } : {}) } }));
     for (const probe of ['native', 'request', 'session', 'stream', 'download', 'wrapper', 'timeout', 'cancel', 'redirect']) {
       const env = { ...process.env };
       // Never inherit real proxies, Node options or credentials into local probes.
@@ -120,10 +130,15 @@ if (process.argv[2] === '--probe') {
       env.HTTP_PROXY = `http://127.0.0.1:${proxyPort}`;
       env.HTTPS_PROXY = env.HTTP_PROXY;
       env.NO_PROXY = mode === 'no-proxy' || mode === 'config-no-proxy' ? '127.0.0.1' : '';
-      const flags = ['env', 'options', 'options-underscore', 'direct'].includes(mode) ? [] : ['--use-env-proxy'];
+      const startupPreload = ['preload-delete-env', 'preload-options-delete-env', 'require-delete-env'].includes(mode);
+      const flags = ['env', 'options', 'options-underscore', 'direct'].includes(mode) || startupPreload ? [] : ['--use-env-proxy'];
       if (mode === 'flag-underscore') flags.splice(0, flags.length, '--use_env_proxy');
       if (mode === 'env') env.NODE_USE_ENV_PROXY = '1';
       if (mode.includes('-env')) env.NODE_USE_ENV_PROXY = '1';
+      if (mode === 'preload-delete-env') flags.push('--import', preload);
+      if (mode === 'preload-options-delete-env') env.NODE_OPTIONS = `--import "${preload}"`;
+      if (mode === 'require-delete-env') flags.push('-r', preload);
+      if (mode === 'disabled-env') flags.splice(0, flags.length, '--no-use-env-proxy');
       if (mode === 'config-false-env-options') env.NODE_OPTIONS = '"--use-env-proxy"';
       if (mode === 'options') env.NODE_OPTIONS = '"--use-env-proxy"';
       if (mode === 'options-underscore') env.NODE_OPTIONS = '"--use_env_proxy"';
@@ -138,7 +153,7 @@ if (process.argv[2] === '--probe') {
       if (mode.startsWith('default-config')) flags.splice(0, flags.length, '--experimental-default-config-file');
       const beforeProxy = proxyConnects;
       const beforeTarget = targetRequests;
-      const child = spawn(process.execPath, [...flags, fileURLToPath(import.meta.url), '--probe', probe,
+      const child = spawn(process.execPath, [...flags, probe === 'native' ? nativeProbe : fileURLToPath(import.meta.url), '--probe', probe,
         `127.0.0.1:${targetPort}`], { env, cwd: mode.startsWith('default-config') ? configRoot : undefined,
           stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '';

@@ -20,8 +20,10 @@ import { requestDeadline } from './request-deadline.ts';
 const matchedFetch = undiciFetch as unknown as typeof fetch;
 // Snapshot only the proxy option from Node's startup config. Node still owns
 // config loading and activation; preserving native fetch cannot enable a proxy.
-// Config overrides NODE_USE_ENV_PROXY; NODE_OPTIONS/CLI flags override config.
+// Config false overrides NODE_USE_ENV_PROXY in Node 24; Node 22 still enables
+// its native proxy for that environment setting. NODE_OPTIONS/CLI flags win.
 // Configuration values are not in execArgv.
+let configHasPreload = false;
 const configEnvironmentProxyEnabled = (() => {
   if (process.versions.bun) return false;
   let path: string | undefined;
@@ -45,7 +47,10 @@ const configEnvironmentProxyEnabled = (() => {
     const selected = Array.isArray(config.configs)
       ? config.configs.find((entry: { nodeVersion: number }) => entry.nodeVersion === Number(process.versions.node.split('.')[0]))?.config
       : config;
-    const enabled = selected?.nodeOptions?.['use-env-proxy'];
+    const nodeOptions = selected?.nodeOptions;
+    configHasPreload = Boolean(nodeOptions?.import?.length || nodeOptions?.require?.length ||
+      nodeOptions?.loader?.length || nodeOptions?.['experimental-loader']?.length);
+    const enabled = nodeOptions?.['use-env-proxy'];
     // Node 24 accepts aliased config flags without loading their file. Such a
     // false value cannot prove deactivation of an environment-enabled proxy.
     if (enabled === false && aliasedConfigFlag) return undefined;
@@ -57,15 +62,24 @@ const configEnvironmentProxyEnabled = (() => {
   }
 })();
 
-function nativeEnvironmentProxyEnabled(): boolean {
-  if (process.versions.bun || !process.allowedNodeEnvironmentFlags.has('--use-env-proxy')) return false;
-  let enabled = configEnvironmentProxyEnabled ?? process.env.NODE_USE_ENV_PROXY === '1';
+function preserveNativeFetch(): boolean {
+  if (process.versions.bun) return false;
   // Node normalizes the existing environment setting and startup flags. CLI
   // flags override NODE_OPTIONS; later positive/negative flags win. Keep quoted
   // NODE_OPTIONS arguments together so a filename cannot look like a flag.
   const envOptions = (process.env.NODE_OPTIONS || '').match(/(?:[^\s"]+|"[^"]*")+/g) || [];
-  for (const option of [...envOptions.map(value => value.replace(/"/g, '')), ...process.execArgv]) {
-    const name = option.split('=', 1)[0].replace(/_/g, '-');
+  const optionNames = [...envOptions.map(value => value.replace(/"/g, '')), ...process.execArgv]
+    .map(option => option.split('=', 1)[0].replace(/_/g, '-'));
+  // Startup modules can mutate environment variables after native proxy setup.
+  // Keep Node's transport when that state cannot be reconstructed safely.
+  if (configHasPreload || optionNames.some(name => name.startsWith('-r') ||
+      ['--require', '--import', '--loader', '--experimental-loader'].includes(name))) return true;
+  if (!process.allowedNodeEnvironmentFlags.has('--use-env-proxy')) return false;
+  const environmentEnabled = process.env.NODE_USE_ENV_PROXY === '1';
+  let enabled = process.versions.node.startsWith('22.')
+    ? Boolean(configEnvironmentProxyEnabled || environmentEnabled)
+    : configEnvironmentProxyEnabled ?? environmentEnabled;
+  for (const name of optionNames) {
     if (name === '--use-env-proxy') enabled = true;
     else if (name === '--no-use-env-proxy') enabled = false;
   }
@@ -80,9 +94,10 @@ function defaultFetch(): typeof fetch {
   // A paired direct Agent would bypass Node's opted-in proxy routing. Preserve
   // native fetch in that mode, with no external dispatcher; Node owns its proxy
   // and NO_PROXY behavior just as it does for a transparent native delegate.
-  // Like foreign fetch, its internal parser deadlines remain Node's own; our
+  // Startup preload/loader uncertainty also retains native fetch. Like foreign
+  // fetch, its internal parser deadlines remain Node's own; our
   // AbortSignal deadlines do not override those internal deadlines.
-  return !nativeEnvironmentProxyEnabled() &&
+  return !preserveNativeFetch() &&
     (node18Loader || /\brequire\(['"]internal\/deps\/undici\/undici['"]\)/.test(source))
     ? matchedFetch : fetcher;
 }
@@ -455,10 +470,10 @@ export function uploadRequest<T>(url: string, options: RequestInit): Promise<T> 
 
 /** Control-plane calls in one upload share their connection while retaining
  * host/redirect checks and an independent total deadline for every request.
- * Native proxy mode reuses Node's pool without an external dispatcher. Like
+ * Native proxy/preload mode reuses Node's pool without an external dispatcher. Like
  * foreign fetch, Node owns its internal parser deadlines in that mode. */
 export function createArtifactControlSession() {
-  const fetcher = nativeEnvironmentProxyEnabled() ? defaultFetch() : matchedFetch;
+  const fetcher = preserveNativeFetch() ? defaultFetch() : matchedFetch;
   const transport = requestTransport(fetcher);
   return {
     request: <T>(url: string, options: RequestInit, budget: number, retries: number) =>
