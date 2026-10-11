@@ -68,7 +68,7 @@ describe("workers client", () => {
     expect(init.method).toBe('DELETE');
   });
   for (const action of ['resume', 'delete', 'whole-worker-delete']) {
-    for (const code of ['UND_ERR_SOCKET', 'ECONNRESET', 'ETIMEDOUT']) {
+    for (const code of ['UND_ERR_SOCKET', 'ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED', 'UND_ERR_HEADERS_OVERFLOW', 'FUTURE_TRANSPORT_FAILURE']) {
       it(`preserves ${code} and read-only recovery for ${action} without replay`, async () => {
         const cause = Object.assign(new Error('socket disconnected'), { code });
         const original = new TypeError('fetch failed', { cause });
@@ -93,6 +93,8 @@ describe("workers client", () => {
   for (const original of [
     new TypeError('invalid request option'),
     new TypeError('fetch failed', { cause: Object.assign(new Error('invalid onError method'), { code: 'UND_ERR_INVALID_ARG' }) }),
+    Object.assign(new Error('application validation failed'), { code: 'CUSTOM_VALIDATION' }),
+    new TypeError('fetch failed', { cause: Object.assign(new Error('invalid argument'), { code: 'ERR_INVALID_ARG_VALUE' }) }),
     new DOMException('cancelled', 'AbortError'),
     new SyntaxError('invalid JSON'),
   ]) {

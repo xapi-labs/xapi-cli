@@ -17,12 +17,32 @@ import { requestDeadline } from './request-deadline.ts';
 // already be a preload interceptor. Resolve other globals at call time, and use
 // the intrinsic toString so an override's own toString cannot hide that override.
 const matchedFetch = undiciFetch as unknown as typeof fetch;
+function nativeEnvironmentProxyEnabled(): boolean {
+  if (process.versions.bun || !process.allowedNodeEnvironmentFlags.has('--use-env-proxy')) return false;
+  let enabled = process.env.NODE_USE_ENV_PROXY === '1';
+  // Node normalizes the existing environment setting and startup flags. CLI
+  // flags override NODE_OPTIONS; later positive/negative flags win. Keep quoted
+  // NODE_OPTIONS arguments together so a filename cannot look like a flag.
+  const envOptions = (process.env.NODE_OPTIONS || '').match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+  for (const option of [...envOptions.map(value => value.replace(/"/g, '')), ...process.execArgv]) {
+    if (/^--use-env-proxy(?:=|$)/.test(option)) enabled = true;
+    else if (/^--no-use-env-proxy(?:=|$)/.test(option)) enabled = false;
+  }
+  return enabled;
+}
+
 function defaultFetch(): typeof fetch {
   const fetcher = globalThis.fetch;
   const source = Function.prototype.toString.call(fetcher);
   const node18Loader = source.replace(/\s+/g, '') ===
     'asyncfunctionfetch(input,init=undefined){returnlazyUndici().fetch(input,init);}';
-  return node18Loader || /\brequire\(['"]internal\/deps\/undici\/undici['"]\)/.test(source)
+  // A paired direct Agent would bypass Node's opted-in proxy routing. Preserve
+  // native fetch in that mode, with no external dispatcher; Node owns its proxy
+  // and NO_PROXY behavior just as it does for a transparent native delegate.
+  // Like foreign fetch, its internal parser deadlines remain Node's own; our
+  // AbortSignal deadlines do not override those internal deadlines.
+  return !nativeEnvironmentProxyEnabled() &&
+    (node18Loader || /\brequire\(['"]internal\/deps\/undici\/undici['"]\)/.test(source))
     ? matchedFetch : fetcher;
 }
 
@@ -393,13 +413,16 @@ export function uploadRequest<T>(url: string, options: RequestInit): Promise<T> 
 }
 
 /** Control-plane calls in one upload share their connection while retaining
- * host/redirect checks and an independent total deadline for every request. */
+ * host/redirect checks and an independent total deadline for every request.
+ * Native proxy mode reuses Node's pool without an external dispatcher. Like
+ * foreign fetch, Node owns its internal parser deadlines in that mode. */
 export function createArtifactControlSession() {
-  const transport = new RequestDeadlineAgent();
+  const fetcher = nativeEnvironmentProxyEnabled() ? defaultFetch() : matchedFetch;
+  const transport = requestTransport(fetcher);
   return {
     request: <T>(url: string, options: RequestInit, budget: number, retries: number) =>
-      request<T>(url, options, budget, retries, 'total', matchedFetch, transport),
-    close: () => transport.destroy().catch(() => undefined),
+      request<T>(url, options, budget, retries, 'total', fetcher, transport),
+    close: async () => { await transport?.destroy().catch(() => undefined); },
   };
 }
 

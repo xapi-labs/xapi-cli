@@ -28,18 +28,22 @@ function unknownWriteError(error: unknown, subject: string, recovery: string): W
   if (!(error instanceof Error) || error instanceof HttpError || error.name === 'AbortError') return;
   const seen = new Set<Error>();
   let code: string | undefined;
+  let knownTransport = false;
   for (let current: unknown = error; current instanceof Error && !seen.has(current); current = current.cause) {
     seen.add(current);
     const candidate = (current as Error & { code?: unknown }).code;
+    if (typeof candidate === 'string' && /^(UND_ERR_(INVALID_ARG|INVALID_RETURN_VALUE|NOT_SUPPORTED)|ERR_INVALID_ARG_(TYPE|VALUE)|ERR_INVALID_URL|ERR_MISSING_ARGS|ERR_OUT_OF_RANGE)$/.test(candidate)) return;
     if (typeof candidate === 'string' && /^(UND_ERR_(SOCKET|CONNECT_TIMEOUT|HEADERS_TIMEOUT|BODY_TIMEOUT)|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH)$/.test(candidate)) {
       code = candidate;
-      break;
+      knownTransport = true;
     }
-    if (candidate !== undefined) return;
+    // A new transport code does not prove that the write was never sent.
+    // Preserve it and still inspect the fetch failure, including deeper causes.
+    if (typeof candidate === 'string' && !code) code = candidate;
   }
   // Do not turn validation/programming errors or definite HTTP rejections into
   // ambiguous results. The original error chain is retained for diagnostics.
-  if (error instanceof RequestTimeoutError || code ||
+  if (error instanceof RequestTimeoutError || knownTransport ||
       (error instanceof TypeError && /^(fetch failed|terminated|network error)$/i.test(error.message))) {
     return new WorkerWriteUnknownError(subject, recovery, error, code);
   }
