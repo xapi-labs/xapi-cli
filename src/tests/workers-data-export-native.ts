@@ -103,7 +103,7 @@ try{
         peakExternalBytes = Math.max(peakExternalBytes, memory.external);
         peakQueuedBytes = Math.max(peakQueuedBytes, largeBody?.readableLength || 0);
         return largeFile.write(buffer, offset, length);
-      }, sync: () => largeFile.sync(),
+      }, sync: async () => { /* /dev/null has no durable data; fsync returns EINVAL on Linux. */ },
     } as FileHandle, { ...object, size: largeBytes }, { transport });
     assert.equal(receipt.bytes, largeBytes);
     assert.equal(receipt.sha256, largeSha256);
