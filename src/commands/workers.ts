@@ -270,6 +270,8 @@ SECRET FLAGS
 
 AUTHORIZATION
   API keys need workers:read for reads and workers:write for mutations.
+  D1/R2 exports need workers:read for binding metadata plus workers:data:read.
+  The independent workers:data:read scope is not implied by workers:read/write.
   XAPI_KEY overrides XAPI_API_KEY and ~/.xapi/config.json.
 
 EXAMPLES

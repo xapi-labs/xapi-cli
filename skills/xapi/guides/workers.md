@@ -920,8 +920,14 @@ metadata requires `workers:read` **and** export needs separate
 
 D1 polls at most 600 seconds with `PENDING/COMPLETE/FAILED/EXPIRED` states. Use the
 displayed `exportId` with `--export-id ID` and a fresh output to resume the same
-job. Expired jobs need a new explicit start without that flag. No POST or lost
-result is automatically replayed. R2 processes live pages (default 100, maximum
+job. Expired jobs need a new explicit start without that flag. If the first start
+response is lost without an ID, the user can explicitly re-run export for the
+same Worker/environment/binding with a fresh `--output` and no `--export-id`.
+The backend returns the original ID of an existing same-owner/resource `PENDING`
+job; an unconfirmed start already marked `FAILED` can allow a new job on this
+explicit re-execution. For HTTP 409 `worker_export_start_retry`, explicitly try
+again later with a fresh output, using the same scoped xAPI credentials.
+No POST or lost result is automatically replayed. R2 processes live pages (default 100, maximum
 200), with four reused download connections, `If-Match` and ETag/byte verification.
 Concurrent writes can change listing or objects: this is not an atomic snapshot.
 

@@ -199,9 +199,14 @@ D1 starts one native SQL export and displays safe `exportId` on stderr. The job
 states are `PENDING/COMPLETE/FAILED/EXPIRED`. Polling stops after 600 seconds; the
 backend job lifetime is 15 minutes. Explicit `--export-id` polls the same job and
 requests a fresh download descriptor without another start. Choose a new output
-path. Expired jobs need an explicit new export without that flag; failed jobs
-stay failed. A lost start response may be UNKNOWN without a recoverable ID:
-inspect platform job evidence before starting again. **No POST is automatically
+path. Expired jobs need an explicit new export without that flag. If the first
+start response is lost and no ID is available, the user can explicitly re-run
+export for the same Worker, environment and binding with a fresh `--output` and
+no `--export-id`. The backend reuses the original ID of an existing `PENDING`
+job for the same owner/resource. An unconfirmed start already marked `FAILED`
+can allow a new job on that explicit re-execution. For HTTP 409
+`worker_export_start_retry`, the user can explicitly try again later with a
+fresh output. Use the same scoped xAPI credentials. **No POST is automatically
 replayed**, including descriptor requests. HTTP status is preserved; raw provider
 messages, object keys, signed URLs and credentials are excluded from ordinary
 output and errors.
