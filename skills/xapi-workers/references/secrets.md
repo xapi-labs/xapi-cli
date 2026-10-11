@@ -96,6 +96,8 @@ JSON lists required Secret names, not values or an exclusive allowlist. Removing
 
 Code deploy, promotion, rollback, pause, and resume preserve provider secrets with Cloudflare native binding inheritance. They do not read values from xAPI or copy values between environments. A missing required binding should block activation rather than opening a route with incomplete runtime configuration.
 
+Secret management remains available during a funded owner pause; changing a value does not resume business execution. During financial retention (`retentionStartedAt` is non-null), adding, rotating or deleting Secrets is blocked along with other user writes. Add sufficient funds and explicitly recover the environment first; do not repeatedly retry Secret writes or treat a USER pause reason as proof that financial retention is absent. See [billing.md](billing.md).
+
 Delete only with explicit authorization:
 
 ```sh

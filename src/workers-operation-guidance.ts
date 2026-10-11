@@ -72,6 +72,12 @@ export function workerLifecycleGuidance(dataValue: unknown): string[] {
       lines.push("Lifecycle completion is unknown. Read the current lifecycle and retention evidence before choosing an action.");
   }
 
+  if (data.retentionStartedAt != null) {
+    lines.push("Financial retention is active: user writes, including deployment, Secret changes and resource deletion, are unavailable. Read billing/status, add sufficient funds and explicitly request recovery; recharge alone does not resume execution.");
+  } else if (data.pauseReason === "USER" && ["SUSPENDED", "SUSPENDED_GRACE", "PAUSED"].includes(state || "")) {
+    lines.push("Owner pause keeps management available while business execution stays stopped. Configuration changes do not resume public access or background consumers.");
+  }
+
   if (data.phase != null || data.completedSteps != null || data.totalSteps != null) {
     lines.push("Phase and progress describe recorded step receipts, not an exhaustive plan. Even all recorded steps completed or a completed phase does not prove the whole operation is done.");
   }

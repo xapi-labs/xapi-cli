@@ -13,6 +13,20 @@ import {
 const target = { workerId: "worker-1", environment: "preview" };
 
 describe("lifecycle observation guidance", () => {
+  it("distinguishes funded owner maintenance from USER pause that entered financial retention", () => {
+    const paused = { state: "SUSPENDED_GRACE", pauseReason: "USER", retentionStartedAt: null };
+    const before = JSON.stringify(paused);
+    const maintenance = workerLifecycleGuidance(paused).join("\n");
+    expect(maintenance).toContain("Owner pause keeps management available");
+    expect(maintenance).not.toContain("Financial retention is active");
+    const retained = { ...paused, retentionStartedAt: "2026-10-11T00:00:00Z" };
+    const financial = workerLifecycleGuidance(retained).join("\n");
+    expect(financial).toContain("Financial retention is active");
+    expect(financial).not.toContain("Owner pause keeps management available");
+    expect(financial).toContain("recharge alone does not resume execution");
+    expect(JSON.stringify(paused)).toBe(before);
+  });
+
   it("shows the pending pause receipt without treating native upload or SKIPPED stop as completion", () => {
     const response = { status: "ACCEPTED", state: "SUSPENDING", retryRequired: true,
       errorCode: "CONTAINER_STOP_PENDING", errorMessage: "https://provider.invalid/signed?secret=hidden" };
