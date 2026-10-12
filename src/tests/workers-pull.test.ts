@@ -19,6 +19,13 @@ function fixture(){const parent=mkdtempSync(join(tmpdir(),'worker-pull-'));roots
   return {root,wrangler,source,remote};
 }
 describe('deployment configuration pull',()=>{
+  it('pulls native Vite configuration in a clean checkout without local build output',async()=>{
+    const f=fixture();writeFileSync(f.wrangler,JSON.stringify({assets:{binding:'ASSETS',not_found_handling:'single-page-application'},vars:{PUBLIC:'local'}}));
+    const result=await pullWorkerDeploymentConfiguration({cwd:f.root,environment:'preview',clientOptions:options,client:async()=>f.remote});
+    expect(result.available).toBe(true);
+    expect(result.differences).toContainEqual({field:'variables',local:{vars:{PUBLIC:'local'}},remote:{vars:{PUBLIC:'remote'}}});
+    expect(readdirSync(f.root)).not.toContain('.wrangler');
+  });
   it('compares effective environment Container clearing, image and rollout overrides',async()=>{
     const f=fixture(),path=join(f.root,'xapi.worker.json');
     const config=JSON.parse(readFileSync(path,'utf8'));

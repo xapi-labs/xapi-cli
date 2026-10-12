@@ -28,6 +28,36 @@ function workspace(): string {
 }
 
 describe("Wrangler project import", () => {
+  test("imports build-generated asset routing and resolves the actual directory after the native build", () => {
+    const root = workspace();
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "pi-agent" }));
+    const source = { name: "pi-agent", main: "src/index.ts", assets: {
+      not_found_handling: "single-page-application", run_worker_first: ["/api/*", "/rt/*"],
+    } };
+    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify(source));
+    const result = importWranglerProject({ cwd: root, wranglerPath: "wrangler.jsonc" });
+    expect(result.wrote).toBe(true);
+    expect(result.report.compatible).toBe(true);
+    expect(result.config?.assets).toBeUndefined(); // Never invent dist/client.
+    const project = loadWorkerProject(root);
+    expect(() => readWranglerDeploymentSettings(project, "preview")).toThrow("assets.directory is supplied by the native build");
+    mkdirSync(join(root, ".wrangler/deploy"), { recursive: true });
+    mkdirSync(join(root, "custom/worker"), { recursive: true });
+    writeFileSync(join(root, ".wrangler/deploy/config.json"), JSON.stringify({ configPath: "../../custom/worker/wrangler.json" }));
+    writeFileSync(join(root, "custom/worker/wrangler.json"), JSON.stringify({ assets: { directory: "../client", binding: "ASSETS", not_found_handling: "none", run_worker_first: false } }));
+    expect(readWranglerDeploymentSettings(project, "preview").assets).toEqual({
+      directory: "custom/client", binding: "ASSETS", notFoundHandling: "single-page-application", runWorkerFirst: ["/api/*", "/rt/*"],
+    });
+    expect(readFileSync(join(root, "wrangler.jsonc"), "utf8")).toBe(JSON.stringify(source));
+  });
+
+  test("reports the exact invalid asset field instead of blaming supported routing", () => {
+    const root = workspace();
+    writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify({ name: "pi", main: "index.ts", assets: { directory: 123 } }));
+    const result = importWranglerProject({ cwd: root, wranglerPath: "wrangler.jsonc" });
+    expect(result.wrote).toBe(false);
+    expect(result.report.entries).toContainEqual(expect.objectContaining({ path: "assets.directory", category: "UNSUPPORTED" }));
+  });
   test("imports the official durable-chat Chat binding and initial SQLite migration unchanged", () => {
     const root = workspace();
     // cloudflare/templates@a0bb6ef9a990a5ec4afecab50edf56c69676b031,

@@ -294,6 +294,16 @@ describe("Worker project configuration", () => {
     }))).toThrow("must not contain credentials or Secret values");
   });
 
+  test("does not combine separate path components into a credential", () => {
+    const root = fixture({ wrangler: "dist/xapi_pi_agent/wrangler.json",
+      build: { command: "npm run build", output: "dist/xapi_pi_agent/worker.mjs", main: "xapi_pi_agent/worker.mjs" },
+      assets: { directory: "dist/xapi_pi_agent/client" } });
+    expect(loadWorkerProject(root).config.wrangler).toBe("dist/xapi_pi_agent/wrangler.json");
+    expect(() => loadWorkerProject(fixture({ build: { command: `API_KEY=xapi_${"a".repeat(32)}/more npm run build`, output: "dist/worker.mjs" } }))).toThrow("must not contain credentials");
+    expect(() => loadWorkerProject(fixture({ build: { command: "API_KEY=xapi_abc/defghijklmno npm run build", output: "dist/worker.mjs" } }))).toThrow("must not contain credentials");
+    expect(() => loadWorkerProject(fixture({ build: { command: "tool 'xapi_abc/defghijklmno.json'", output: "dist/worker.mjs" } }))).toThrow("must not contain credentials");
+  });
+
   test("allows xapi-prefixed build paths while rejecting embedded credentials", () => {
     for (const command of [
       "node /Users/dev/xapi-backend/worktrees/sandbox-production-local/build.mjs",

@@ -21,7 +21,7 @@ import {
   formatWorkerPlan,
   useHumanWorkerPlanOutput,
 } from "../workers-plan-output.ts";
-import { pushWorkerProject, WorkerPushError } from "../workers-push.ts";
+import { pushWorkerProject, createLinkedWorkerProject, WorkerPushError } from "../workers-push.ts";
 import {
   formatWorkerPushResult,
   useHumanWorkerPushOutput,
@@ -67,6 +67,7 @@ USAGE
 NORMAL PROJECT WORKFLOW (recommended)
   templates
   init [directory] --template TEMPLATE
+  create --config xapi.worker.json     Create/link only; set Secrets before first push
   plan --env preview|production
   push --env preview
   pull --env preview|production [--output deployment-snapshot.json]
@@ -142,6 +143,7 @@ RESOURCES, BILLING, AND LIFECYCLE
 
 CHOOSING A WORKFLOW
   Normal application: init -> plan -> push -> promote
+  Required Secrets in CI: init -> create --config xapi.worker.json -> secrets apply -> plan -> push
   Read-only review: inspect; use plan when comparing local desired state
   workers plan runs the local build and validates the exact Artifact, then
   compares it with live state. It never writes to the xAPI control plane.
@@ -1089,6 +1091,7 @@ export async function workersCommand(
     }
     case "create": {
       assertFlags(flags, [
+        "config",
         "name",
         "slug",
         "description",
@@ -1099,6 +1102,17 @@ export async function workersCommand(
         "placement",
       ]);
       if (rest.length) err("usage: xapi-to workers create [flags]");
+      if (flags.config !== undefined) {
+        const explicit = ["name", "slug", "description", "template", "preview-budget", "production-budget", "data-location", "placement"].filter(flag => flags[flag] !== undefined);
+        if (explicit.length) err("workers create --config uses the project's settings; use either --config or explicit creation flags");
+        try {
+          output(await createLinkedWorkerProject({ configPath: required(flags.config, "--config"), clientOptions: options() }));
+        } catch (error) {
+          if (error instanceof WorkerPushError) err(error.message, error.recovery);
+          throw error;
+        }
+        return;
+      }
       const template = flags.template || "worker";
       if (!["worker", "agent"].includes(template))
         err("--template must be worker or agent");

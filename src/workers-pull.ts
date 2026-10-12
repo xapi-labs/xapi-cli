@@ -36,7 +36,7 @@ export async function pullWorkerDeploymentConfiguration(options:{cwd?:string;con
   if(!result.available)return {...result,differences:[],savedPath:null};
   const remote=result.configuration;
   if(!remote||remote.version!==1)throw new Error('Invalid Worker deployment snapshot');
-  const local=readWranglerDeploymentSettings(project,options.environment);
+  const local=readWranglerDeploymentSettings(project,options.environment,undefined,{localAssets:false});
   const comparison={compatibilityDate:local.compatibilityDate,compatibilityFlags:local.compatibilityFlags,
     requiredSecrets:local.requiredSecrets,variables:local.variables,nativeMetadata:local.nativeMetadata,queueBindingAliases:local.queueBindingAliases,
     containers:workerEnvironmentContainers(project.config,options.environment)};
