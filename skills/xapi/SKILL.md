@@ -1,6 +1,6 @@
 ---
 name: xapi
-description: Access real-time external data, managed cloud sandboxes, and hosted Workers via the xapi CLI — Twitter/X, social platforms, domain purchase and DNS, normalized crypto, BlockPI RPC, Binance Web3 API, web/news search, AI generation, SMS verification, and auditable compute. Configure xAPI AI or WebSocket Gateways, run ephemeral Sandbox jobs, or deploy JavaScript and persistent Agents to xAPI Workers.
+description: Access real-time external data, managed cloud sandboxes, and hosted Workers via the xapi CLI — Twitter/X, social platforms, domain purchase and DNS, normalized crypto, BlockPI RPC, Binance Web3 API, web/news search, AI generation, ElevenLabs music/SFX/voice audio, SMS verification, and auditable compute. Configure xAPI AI or WebSocket Gateways, run ephemeral Sandbox jobs, or deploy JavaScript and persistent Agents to xAPI Workers.
 metadata:
   { "openclaw": { "emoji": "x", "requires": { "anyBins": ["npx"] }, "primaryEnv": "XAPI_KEY" } }
 ---
@@ -161,6 +161,7 @@ Always use `--input` with JSON for passing parameters.
 - Normalized token, wallet, DEX, CEX, and crypto-news data → `guides/crypto.md`.
 - General/news/image/video/scholar/maps/places/shopping search → `guides/google_search.md`.
 - AI text, embeddings, image/video/audio generation, and transcription → `guides/ai.md`.
+- Music, sound effects, ElevenLabs text-to-speech, voice discovery, and voice design → `guides/elevenlabs.md`.
 
 Common read-only examples:
 
@@ -202,6 +203,10 @@ npx xapi-to call ai.text.chat.fast \
   --input '{"messages":[{"role":"user","content":"Hello"}]}'
 npx xapi-to task wait <task_id> --interval 2s --timeout 10m
 ```
+
+For music, sound effects, or ElevenLabs voices, read `guides/elevenlabs.md`; those
+are third-party `elevenlabs.*` actions that return raw audio, so save them with
+`--output`.
 
 For application integrations, read `guides/ai_gateway.md` before configuring an
 Anthropic/OpenAI-compatible client. Read `guides/ws_gateway.md` before opening a
@@ -300,6 +305,7 @@ Beyond built-in capabilities, xapi proxies **dozens** of third-party API service
 - **5SIM SMS** (`5sim-sms`) — SMS verification (virtual numbers, activation codes)
 - **Serper API** (`serper`) — 12 provider-native Google Search actions including web, images, news, maps, places, video, shopping, scholar, patents, autocomplete, Lens, and reviews. Eleven support mini-batch; Reviews does not. Read `guides/serper.md` before calling them
 - **OpenRouter API** (`openrouter`) — Multi-model AI gateway (chat, embeddings, audio transcription/speech, video)
+- **ElevenLabs** (`elevenlabs`, 13 actions) — music generation, sound effects, text-to-speech, voice/model lookup, voice design. Read `guides/elevenlabs.md` first: four upload-based actions are not callable from the CLI
 - **Web3 infrastructure** — BlockPI RPC (`rpc`, 13 actions) and Binance Web3 API (`binance-web3-api`, 58 actions); read `guides/blockpi.md` or `guides/binance_web3.md` before calling them
 
 The full catalog also spans many other categories — crypto/on-chain data, CEX market data, stocks & macro, social platforms, news, weather, and more. Discover them with `search` / `services`.
@@ -331,6 +337,7 @@ When the user's task involves these workflows, read the corresponding guide file
 - **`guides/crypto.md`** — Crypto (加密货币): on-chain token price/overview/holders/security/OHLCV, wallet analytics, DEX pairs, CEX spot prices by symbol, news — covers contract-address vs symbol addressing and multi-chain
 - **`guides/domains.md`**, **`guides/blockpi.md`**, **`guides/binance_web3.md`** — unverified domain search, batch availability checks, domain purchase and DNS writes; BlockPI EVM JSON-RPC; and the official Binance Web3 API catalog. Read the domain guide before using domain capabilities; read the other matching guide before any mutation, transaction build, signing, or broadcast
 - **`guides/ai.md`** — AI (人工智能): synchronous or SSE-streamed text, embeddings, asynchronous image/video generation with `task wait`, text-to-speech, and speech-to-text
+- **`guides/elevenlabs.md`** — ElevenLabs audio: promo/background music from a prompt with `music_length_ms`, sound effects, text-to-speech with `voice_id`/`model_id`/`output_format`, voice and model lookup, voice design, saving audio with `--output`, dynamic billing, and which upload-based actions the CLI cannot call
 - **`guides/ai_gateway.md`** — xAPI AI Gateway: Claude Code and Anthropic/OpenAI SDK setup, model discovery, routing strategies, streaming, fallback, routing/billing headers, direct media endpoints, and known limitations
 - **`guides/ws_gateway.md`** — xAPI WebSocket Gateway: GPT Live, OpenAI Realtime, streaming ASR/TTS, simultaneous interpretation, podcast generation, service/path routing, browser authentication, native protocols, limits, billing, close codes, and reconnects
 - **`guides/sandbox.md`** — managed Sandbox compute: AI tool selection, one-shot and multi-step lifecycles, provider pinning, files, Cloudflare Web previews, suspension, GPU jobs, parallel agents, cleanup recovery, audit/history, and billing verification
