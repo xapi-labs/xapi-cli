@@ -392,7 +392,13 @@ export async function createLinkedWorkerProject(options: {
   return {
     ...result.worker,
     project: { configPath: project.configPath, linked: true, created: result.created },
-    next: `Set required Secrets with xapi workers secrets apply ${result.id} --env preview --env-file .env.worker, then run workers plan/push`,
+    next: [
+      "If an environment requires Secrets, set values for that environment explicitly.",
+      `Preview: xapi workers secrets apply ${result.id} --env preview --env-file .env.preview`,
+      `Production: xapi workers secrets apply ${result.id} --env production --env-file .env.production`,
+      "These file names are examples; select the file containing values for the target environment.",
+      "Then plan/push preview or promote to production.",
+    ].join("\n"),
   };
 }
 

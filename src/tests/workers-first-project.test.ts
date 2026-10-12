@@ -40,5 +40,24 @@ test("the actual create --config CLI links required Secrets without build or res
     const second = await run();
     expect(second.project).toMatchObject({ linked: true, created: false });
     expect(requests).toEqual(["POST /api/v1/workers", `GET /api/v1/workers/${id}`]);
+    // Config-only creation must stay independent of Secret values and build
+    // output, even when the environment declarations differ.
+    for (const [preview, production] of [
+      [[], ["PRODUCTION_KEY"]],
+      [["PREVIEW_KEY"], ["PRODUCTION_KEY"]],
+      [["SHARED_NAME"], ["SHARED_NAME"]],
+      [[], []],
+    ]) {
+      const declared = JSON.parse(readFileSync(config, "utf8"));
+      declared.environments.preview.secrets = preview;
+      declared.environments.production.secrets = production;
+      writeFileSync(config, JSON.stringify(declared));
+      const linked = await run();
+      expect(linked.project.created).toBe(false);
+      expect(linked.next).toContain("If an environment requires Secrets");
+      expect(linked.next).toContain(`Preview: xapi workers secrets apply ${id} --env preview --env-file .env.preview`);
+      expect(linked.next).toContain(`Production: xapi workers secrets apply ${id} --env production --env-file .env.production`);
+    }
+    expect(requests.slice(2)).toEqual(Array(4).fill(`GET /api/v1/workers/${id}`));
   } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
 });
