@@ -14,6 +14,18 @@ import { WORKER_PROJECT_SCHEMA_URL } from "../workers-project.ts";
 const roots: string[] = [];
 const workerId = "33333333-3333-4333-8333-333333333333";
 
+test("promotes the immutable preview Artifact without native Vite build output", async () => {
+  const root = fixture();
+  writeFileSync(join(root,"wrangler.jsonc"),JSON.stringify({compatibility_date:"2026-08-26",assets:{binding:"ASSETS",not_found_handling:"single-page-application"}}));
+  const platform=fakePlatform({webAppReady:true});
+  const result=await promoteWorkerProject({cwd:root,to:"production",nonInteractive:true,
+    clientOptions:{apiHost:"localhost:3003",apiKey:"test"},client:platform.client,
+    fetchPublic:(async()=>{platform.calls.health++;return new Response("ok");}) as unknown as typeof fetch,sleep:async()=>{}});
+  expect(result.status).toBe("ACTIVE");
+  expect(result.artifact.id).toBe("artifact-latest");
+  expect(platform.calls.deploy).toBe(1);
+});
+
 for (const bindingName of ["STATE", "ASSETS"]) {
   test(`required Secret collision with ${bindingName} blocks promotion before resource/deployment writes`, async () => {
     const root = fixture();

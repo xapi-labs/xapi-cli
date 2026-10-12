@@ -780,7 +780,7 @@ export async function ensureActiveDeployment(
   workerId: string,
   artifactId: string,
   environment: "preview" | "production",
-  compatibility: ReturnType<typeof readWranglerDeploymentSettings>,
+  compatibility: Omit<ReturnType<typeof readWranglerDeploymentSettings>, "assets">,
   sleep: (milliseconds: number) => Promise<void>,
   retentionPriceVersion?: string,
   desiredBindings?: string[],

@@ -110,6 +110,10 @@ export interface WranglerDeploymentSettings {
   variables?: WorkerPublicVariables;
 }
 
+export type WranglerConfigurationSettings = Omit<WranglerDeploymentSettings, "assets"> & {
+  assets?: Omit<NonNullable<WorkerProjectConfig["assets"]>, "directory">;
+};
+
 type UnknownRecord = Record<string, unknown>;
 type DesiredResource =
   WorkerProjectConfig["environments"]["preview"]["resources"][number];
@@ -1561,8 +1565,20 @@ function wranglerNativeMetadata(selected: UnknownRecord): Record<string, unknown
 export function readWranglerDeploymentSettings(
   project: LoadedWorkerProject,
   environment: "preview" | "production",
+  artifactMediaType: string | undefined,
+  options: { localAssets: false },
+): WranglerConfigurationSettings;
+export function readWranglerDeploymentSettings(
+  project: LoadedWorkerProject,
+  environment: "preview" | "production",
   artifactMediaType?: string,
-): WranglerDeploymentSettings {
+): WranglerDeploymentSettings;
+export function readWranglerDeploymentSettings(
+  project: LoadedWorkerProject,
+  environment: "preview" | "production",
+  artifactMediaType?: string,
+  options?: { localAssets: false },
+): WranglerDeploymentSettings | WranglerConfigurationSettings {
   const path = resolveWorkerProjectPath(
     project,
     project.config.wrangler,
@@ -1576,7 +1592,7 @@ export function readWranglerDeploymentSettings(
   // xapi.worker.json override them, including false and "none". Resolve each
   // directory relative to the file declaring it before merging.
   let generatedAssets: UnknownRecord | undefined;
-  if (rawAssets && rawAssets.directory === undefined && !project.config.assets?.directory) {
+  if (options?.localAssets !== false && rawAssets && rawAssets.directory === undefined && !project.config.assets?.directory) {
     const generated = findGeneratedWranglerConfig(project.rootDir);
     if (generated) {
       const generatedPath = resolveWorkerProjectPath(project, generated, "generated Wrangler configuration");
@@ -1594,7 +1610,13 @@ export function readWranglerDeploymentSettings(
         ...(generatedAssets ? { directory: generatedAssets.directory } : {}),
         ...project.config.assets }
     : undefined;
-  const parsedAssets = workerProjectConfigSchema.shape.assets.safeParse(assetCandidate);
+  // Pull/promotion reuse remote state or an immutable Artifact. Validate the
+  // declared routing and binding without reading a local build directory.
+  const parsedAssets = options?.localAssets === false
+    ? workerProjectConfigSchema.shape.assets.unwrap().omit({ directory: true }).optional().safeParse(
+        assetCandidate ? Object.fromEntries(Object.entries(assetCandidate).filter(([key]) => key !== "directory")) : undefined,
+      )
+    : workerProjectConfigSchema.shape.assets.safeParse(assetCandidate);
   if (!parsedAssets.success) throw new WorkerProjectConfigError(
     "wrangler_invalid_assets",
     `Invalid ${environment} assets configuration: ${parsedAssets.error.issues[0]?.message || "invalid configuration"}`,
