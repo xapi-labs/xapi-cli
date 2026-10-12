@@ -327,6 +327,7 @@ async function ensureWorker(
   initialConfigSha256: string,
   api: Pick<PushClient, "getWorker" | "createWorker" | "listWorkers">,
   options: WorkersClientOptions,
+  priorWorkerIds?: ReadonlySet<string> | null,
 ): Promise<{ worker: UnknownRecord; id: string; created: boolean }> {
   if (project.config.workerId) {
     const worker = record(
@@ -363,13 +364,14 @@ async function ensureWorker(
       "created Worker",
     );
   } catch (error) {
-    if (!shouldReconcileWrite(error)) throw error;
+    if (!shouldReconcileWrite(error) || priorWorkerIds === null) throw error;
     const matches = records(
       await api.listWorkers(options),
       "Workers list",
     ).filter(
       (item) =>
-        item.slug === desired.worker.slug && item.name === desired.worker.name,
+        item.slug === desired.worker.slug && item.name === desired.worker.name &&
+        (!priorWorkerIds || !priorWorkerIds.has(String(item.id))),
     );
     if (matches.length !== 1) throw error;
     created = matches[0];
@@ -388,7 +390,18 @@ export async function createLinkedWorkerProject(options: {
 }): Promise<UnknownRecord> {
   const project = loadWorkerProject(options.cwd, options.configPath);
   const configHash = sha256(readFileSync(project.configPath, "utf8"));
-  const result = await ensureWorker(project, configHash, options.client || workersClient, options.clientOptions);
+  const api = options.client || workersClient;
+  let priorWorkerIds: Set<string> | null = null;
+  if (!project.config.workerId) {
+    try {
+      priorWorkerIds = new Set(records(await api.listWorkers(options.clientOptions), "Workers list")
+        .map(worker => validateWorkerId(worker.id)));
+    } catch {
+      // Listing is not a prerequisite for a successful create. Without a
+      // baseline, an uncertain result must not adopt another existing Worker.
+    }
+  }
+  const result = await ensureWorker(project, configHash, api, options.clientOptions, priorWorkerIds);
   return {
     ...result.worker,
     project: { configPath: project.configPath, linked: true, created: result.created },

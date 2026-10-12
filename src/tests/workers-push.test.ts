@@ -44,6 +44,63 @@ test("create --config links a fresh Secret project without a build, resources, u
   expect(platform.calls).toMatchObject({ createWorker: 1, createResource: 0, uploadArtifact: 0, deploy: 0 });
 });
 
+test("config-only creation never adopts a Worker visible before a failed create", async () => {
+  const root = fixture({ secrets: ["MODEL_KEY"] });
+  const config = loadWorkerProject(root).config;
+  const failure = new HttpError(503, "creation result unavailable");
+  await expect(createLinkedWorkerProject({ cwd: root, configPath: "xapi.worker.json",
+    clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" }, client: {
+      getWorker: async () => { throw new Error("Unexpected read"); },
+      createWorker: async () => { throw failure; },
+      listWorkers: async () => [{ id: workerId, name: config.worker.name, slug: config.worker.slug }],
+    } })).rejects.toBe(failure);
+  expect(loadWorkerProject(root).config.workerId).toBeUndefined();
+});
+
+test("config-only creation reconciles the new record without adopting an older same-name Worker", async () => {
+  const root = fixture({ secrets: ["MODEL_KEY"] });
+  const config = loadWorkerProject(root).config;
+  const newId = "44444444-4444-4444-8444-444444444444";
+  let accepted = false;
+  const existing = { id: workerId, name: config.worker.name, slug: config.worker.slug };
+  const result = await createLinkedWorkerProject({ cwd: root, configPath: "xapi.worker.json",
+    clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" }, client: {
+      getWorker: async () => { throw new Error("Unexpected read"); },
+      createWorker: async () => { accepted = true; throw new HttpError(503, "lost creation response"); },
+      listWorkers: async () => accepted ? [existing, { ...existing, id: newId }] : [existing],
+    } });
+  expect(result.id).toBe(newId);
+  expect(loadWorkerProject(root).config.workerId).toBe(newId);
+});
+
+test("config-only creation still succeeds when its optional prior-list read fails", async () => {
+  const root = fixture();
+  let createCalls = 0;
+  const result = await createLinkedWorkerProject({ cwd: root, configPath: "xapi.worker.json",
+    clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" }, client: {
+      getWorker: async () => { throw new Error("Unexpected read"); },
+      createWorker: async () => { createCalls++; return { id: workerId }; },
+      listWorkers: async () => { throw new HttpError(503, "list unavailable"); },
+    } });
+  expect(createCalls).toBe(1);
+  expect(result.id).toBe(workerId);
+  expect(loadWorkerProject(root).config.workerId).toBe(workerId);
+});
+
+test("config-only creation leaves an uncertain result unlinked when the prior-list read failed", async () => {
+  const root = fixture();
+  const failure = new HttpError(503, "creation result unavailable");
+  let listCalls = 0;
+  await expect(createLinkedWorkerProject({ cwd: root, configPath: "xapi.worker.json",
+    clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" }, client: {
+      getWorker: async () => { throw new Error("Unexpected read"); },
+      createWorker: async () => { throw failure; },
+      listWorkers: async () => { listCalls++; throw new HttpError(503, "list unavailable"); },
+    } })).rejects.toBe(failure);
+  expect(listCalls).toBe(1);
+  expect(loadWorkerProject(root).config.workerId).toBeUndefined();
+});
+
 for (const type of ["kv_namespace", "d1_database", "r2_bucket", "durable_object", "queue", "workflow", "assets"]) {
   test(`required Secret collision with ${type} stops preview before any remote write`, async () => {
     const bindingName = "COLLISION";

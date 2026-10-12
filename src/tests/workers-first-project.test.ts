@@ -12,6 +12,7 @@ test("the actual create --config CLI links required Secrets without build or res
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     const path = new URL(request.url).pathname;
     requests.push(`${request.method} ${path}`);
+    if (request.method === "GET" && path === "/api/v1/workers") return Response.json(input ? [{ id, ...input }] : []);
     if (request.method === "POST" && path === "/api/v1/workers") {
       input = await request.json();
       return Response.json({ id, ...input });
@@ -39,7 +40,7 @@ test("the actual create --config CLI links required Secrets without build or res
     expect(input).toMatchObject({ name: "Pi Agent", slug: "pi-test", previewDailyBudgetUsd: null, productionDailyBudgetUsd: 0, defaultResourceLocation: "apac" });
     const second = await run();
     expect(second.project).toMatchObject({ linked: true, created: false });
-    expect(requests).toEqual(["POST /api/v1/workers", `GET /api/v1/workers/${id}`]);
+    expect(requests).toEqual(["GET /api/v1/workers", "POST /api/v1/workers", `GET /api/v1/workers/${id}`]);
     // Config-only creation must stay independent of Secret values and build
     // output, even when the environment declarations differ.
     for (const [preview, production] of [
@@ -58,6 +59,6 @@ test("the actual create --config CLI links required Secrets without build or res
       expect(linked.next).toContain(`Preview: xapi workers secrets apply ${id} --env preview --env-file .env.preview`);
       expect(linked.next).toContain(`Production: xapi workers secrets apply ${id} --env production --env-file .env.production`);
     }
-    expect(requests.slice(2)).toEqual(Array(4).fill(`GET /api/v1/workers/${id}`));
+    expect(requests.slice(3)).toEqual(Array(4).fill(`GET /api/v1/workers/${id}`));
   } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
 });
