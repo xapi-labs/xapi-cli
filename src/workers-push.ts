@@ -1090,7 +1090,6 @@ export async function pushWorkerProject(
   if (blockers.length || (options.nonInteractive && !initialPlan.canApply)) {
     const missing = initialPlan.actions.filter(action => action.kind === "secret" && action.operation === "BLOCKED").map(action => action.key);
     const firstSetup = !project.config.workerId && missing.length > 0 && blockers.length === 0;
-    const configArgument = `'${project.configPath.replace(/'/g, "'\\''")}'`;
     throw new WorkerPushError(
       firstSetup ? "New project requires Secret setup; no changes were applied" : "Preview plan requires reconciliation and no changes were applied",
       {
@@ -1108,8 +1107,8 @@ export async function pushWorkerProject(
         details: initialPlan.actions.filter(action => action.operation === "BLOCKED" || action.operation === "MANUAL").map(action => ({ kind: action.kind, key: action.key, message: action.message })),
         ...(firstSetup ? {
           missingSecrets: missing,
-          setupCommand: `xapi workers create --config ${configArgument}`,
-          next: "Run setupCommand to create and save workerId without provisioning resources, set the required Secrets with secrets apply/set, then rerun the original push command",
+          setup: { command: "xapi", args: ["workers", "create", "--config", project.configPath] },
+          next: "Run setup.command with setup.args to create and save workerId without provisioning resources, set the required Secrets with secrets apply/set, then rerun the original push command",
         } : { next: "Resolve BLOCKED and MANUAL resource items, then rerun xapi workers plan --env preview" }),
       },
     );

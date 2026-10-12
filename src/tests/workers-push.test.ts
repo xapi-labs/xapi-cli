@@ -710,7 +710,7 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
     } catch (error) { caught = error as WorkerPushError; }
     expect(caught?.message).toContain("requires Secret setup");
     expect(caught?.recovery.missingSecrets).toEqual(["MODEL_KEY"]);
-    expect(caught?.recovery.setupCommand).toBe(`xapi workers create --config '${join(root, "xapi.worker.json")}'`);
+    expect(caught?.recovery.setup).toEqual({command:"xapi",args:["workers","create","--config",join(root,"xapi.worker.json")]});
     expect(platform.calls.createWorker).toBe(0);
     expect(loadWorkerProject(root).config.workerId).toBeUndefined();
   });
