@@ -298,7 +298,17 @@ function sensitiveConfigPath(
   if (typeof value === "string") {
     // xapi- is a public project/path prefix, not a credential prefix.
     // Keep scanning commands for real embedded keys rather than exempting them.
-    return /\b(?:cfat[-_]|sk[-_]|xapi_)[A-Za-z0-9_+/=-]{12,}\b/i.test(value)
+    const field = path.join(".");
+    const filePath = ["wrangler", "build.output", "build.main", "assets.directory"].includes(field);
+    // Scan file components independently, while retaining the original key
+    // alphabet for values and command arguments (keys can contain '/').
+    const scan = filePath ? value.split(/[/\\]/).join(" ")
+      : field === "build.command" ? value.split(/\s+/).map(argument => {
+          const fileArgument = /[/\\]/.test(argument) && !argument.includes("=") &&
+            /\.(?:[cm]?[jt]sx?|jsonc?)["';]*$/.test(argument);
+          return fileArgument ? argument.split(/[/\\]/).join(" ") : argument;
+        }).join(" ") : value;
+    return /\b(?:cfat[-_]|sk[-_]|xapi_)[A-Za-z0-9_+/=-]{12,}\b/i.test(scan)
       ? path.join(".") || "<root>"
       : null;
   }

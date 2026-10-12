@@ -17,6 +17,7 @@ import {
   WorkerPushError,
   pushWorkerProject,
   ensureManagedResources,
+  createLinkedWorkerProject,
 } from "../workers-push.ts";
 import {
   WORKER_PROJECT_SCHEMA_URL,
@@ -29,6 +30,19 @@ afterAll(cleanupNativeWorkerUpload);
 const roots: string[] = [];
 const workerId = "22222222-2222-4222-8222-222222222222";
 const originalXapiKey = process.env.XAPI_KEY;
+
+test("create --config links a fresh Secret project without a build, resources, upload or deploy; replays reuse the ID", async () => {
+  const root = fixture({ secrets: ["MODEL_KEY"] });
+  const platform = fakePlatform();
+  const options = { cwd: root, configPath: "xapi.worker.json", clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" }, client: platform.client };
+  const result = await createLinkedWorkerProject(options);
+  expect(result.id).toBe(workerId);
+  expect(loadWorkerProject(root).config.workerId).toBe(workerId);
+  expect(result.project).toMatchObject({ linked: true, created: true });
+  const second = await createLinkedWorkerProject(options);
+  expect(second.project).toMatchObject({ linked: true, created: false });
+  expect(platform.calls).toMatchObject({ createWorker: 1, createResource: 0, uploadArtifact: 0, deploy: 0 });
+});
 
 for (const type of ["kv_namespace", "d1_database", "r2_bucket", "durable_object", "queue", "workflow", "assets"]) {
   test(`required Secret collision with ${type} stops preview before any remote write`, async () => {
@@ -677,8 +691,9 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
   test("non-interactive mode fails a missing-Secret plan before any mutation", async () => {
     const root = fixture({ secrets: ["MODEL_KEY"] });
     const platform = fakePlatform();
-    await expect(
-      pushWorkerProject({
+    let caught: WorkerPushError | undefined;
+    try {
+      await pushWorkerProject({
         cwd: root,
         environment: "preview",
         clientOptions: { apiHost: "localhost:3003", apiKey: "test-key" },
@@ -691,8 +706,11 @@ writeFileSync("observed-key.txt", process.env.XAPI_KEY || "");
             "export default {fetch(){return new Response('ok')}};",
           );
         },
-      }),
-    ).rejects.toThrow("requires reconciliation");
+      });
+    } catch (error) { caught = error as WorkerPushError; }
+    expect(caught?.message).toContain("requires Secret setup");
+    expect(caught?.recovery.missingSecrets).toEqual(["MODEL_KEY"]);
+    expect(caught?.recovery.setupCommand).toBe(`xapi workers create --config '${join(root, "xapi.worker.json")}'`);
     expect(platform.calls.createWorker).toBe(0);
     expect(loadWorkerProject(root).config.workerId).toBeUndefined();
   });

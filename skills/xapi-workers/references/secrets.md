@@ -34,14 +34,12 @@ When a named Wrangler environment exists, its vars do not inherit root vars. Rep
 For an existing linked project, use its saved Worker ID directly. For a new project with required Secrets, choose either supported path:
 
 - **Interactive:** run `workers plan --env preview`, review the missing Secret names, then `workers push --env preview`. After confirmation, push saves the Worker ID and may provision planned resources; it stops before Artifact upload/deploy if Secrets are still missing. Use the returned ID to set values, then rerun push. This first stop is incomplete setup, not a successful release. Do not delete the saved ID or create another Worker.
-- **Non-interactive/CI, or to configure Secrets before provisioning resources:** use `workers create` with the name, slug, template and both budgets from `xapi.worker.json` (and placement/location when configured). Save its returned ID as top-level `workerId` in that same file, set Secrets, then plan/push. `create` does not link the local config automatically. A non-interactive push with missing prerequisites intentionally makes no changes.
+- **Non-interactive/CI, or to configure Secrets before provisioning resources:** use `workers create --config xapi.worker.json`. It reads the project's name, slug, template, budgets and placement/location, creates the Worker record and saves its top-level `workerId`; an already linked project reuses its owned record. It does not build, provision declared resources, upload or publish. Set Secrets, then plan/push. A non-interactive push with missing prerequisites makes no changes and prints this setup command. The older `create --name ... --slug ...` primitive remains available but does not link a local config.
 
-Creation syntax (substitute the project's actual configuration):
+Creation syntax (use the returned `id` for Secret commands):
 
 ```sh
-xapi workers create --name "My service" --slug my-service --template worker \
-  --preview-budget 0.25 --production-budget 2
-# Save the returned id as xapi.worker.json's top-level workerId.
+xapi workers create --config xapi.worker.json
 xapi workers secrets apply <worker-id> --env preview --env-file .env.worker
 xapi workers plan --env preview
 xapi workers push --env preview --non-interactive

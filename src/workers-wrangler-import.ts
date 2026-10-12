@@ -369,9 +369,15 @@ function staticAssets(
   }
   const source = previewAssets || productionAssets!;
   const candidate = wranglerAssetCandidate(source, sourceDir, rootDir);
-  const parsed = workerProjectConfigSchema.shape.assets.safeParse(candidate);
+  const generatedDirectory = source.directory === undefined;
+  // Vite supplies the directory in its generated deployment configuration.
+  // Validate routing now, but keep it in Wrangler instead of guessing an output.
+  const parsed = workerProjectConfigSchema.shape.assets.safeParse(
+    generatedDirectory ? { ...candidate, directory: "." } : candidate,
+  );
   if (!parsed.success) {
-    compatibilityEntry(entries, "UNSUPPORTED", "assets", `Static assets are invalid: ${parsed.error.issues[0]?.message || "invalid configuration"}`);
+    const issue = parsed.error.issues[0];
+    compatibilityEntry(entries, "UNSUPPORTED", `assets.${issue?.path.join(".") || "configuration"}`, `Static assets are invalid: ${issue?.message || "invalid configuration"}`);
     return undefined;
   }
   for (const key of Object.keys(source)) {
@@ -379,8 +385,10 @@ function staticAssets(
       compatibilityEntry(entries, "UNSUPPORTED", `assets.${key}`, "This static asset setting is not supported by xAPI yet");
     }
   }
-  compatibilityEntry(entries, "SUPPORTED", "assets", "Static asset directory, binding, and routing settings will be preserved");
-  return parsed.data;
+  compatibilityEntry(entries, "SUPPORTED", "assets", generatedDirectory
+    ? "Asset routing remains in Wrangler; the native build supplies assets.directory through .wrangler/deploy/config.json before plan/push"
+    : "Static asset directory, binding, and routing settings will be preserved");
+  return generatedDirectory ? undefined : parsed.data;
 }
 
 function containerApplications(
@@ -1497,7 +1505,7 @@ export function importWranglerProject(
     config: parsed.data,
     nextSteps: [
       `Review ${WORKER_PROJECT_CONFIG_FILE}`,
-      "For required Secrets on a new project: interactive push saves workerId and stops before upload/deploy; then use secrets apply or set and rerun push. For CI, create the Worker, save workerId, and set Secrets before non-interactive push",
+      "For required Secrets on a new project: workers create --config xapi.worker.json creates and links the record without building, provisioning resources or publishing; set Secrets, then plan/push. Interactive push can also save workerId and stop before upload/deploy",
       "Review public Wrangler vars; sensitive values belong in explicitly declared Secrets",
       "xapi workers plan --env preview",
     ],
@@ -1567,8 +1575,23 @@ export function readWranglerDeploymentSettings(
   // Wrangler supplies defaults at build time. Fields explicitly present in
   // xapi.worker.json override them, including false and "none". Resolve each
   // directory relative to the file declaring it before merging.
+  let generatedAssets: UnknownRecord | undefined;
+  if (rawAssets && rawAssets.directory === undefined && !project.config.assets?.directory) {
+    const generated = findGeneratedWranglerConfig(project.rootDir);
+    if (generated) {
+      const generatedPath = resolveWorkerProjectPath(project, generated, "generated Wrangler configuration");
+      const nativeAssets = record(parseWrangler(generatedPath).config.assets);
+      if (nativeAssets) generatedAssets = wranglerAssetCandidate(nativeAssets, dirname(generatedPath), project.rootDir);
+    }
+    if (typeof generatedAssets?.directory !== "string") throw new WorkerProjectConfigError(
+      "wrangler_assets_build_required",
+      "assets.directory is supplied by the native build. Run build.command so .wrangler/deploy/config.json points to a generated Wrangler config containing assets.directory, or set the actual assets.directory in Wrangler",
+    );
+  }
   const assetCandidate = rawAssets || project.config.assets
-    ? { ...(rawAssets ? wranglerAssetCandidate(rawAssets, dirname(path), project.rootDir) : {}),
+    ? { ...generatedAssets,
+        ...(rawAssets ? wranglerAssetCandidate(rawAssets, dirname(path), project.rootDir) : {}),
+        ...(generatedAssets ? { directory: generatedAssets.directory } : {}),
         ...project.config.assets }
     : undefined;
   const parsedAssets = workerProjectConfigSchema.shape.assets.safeParse(assetCandidate);
