@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.0](https://github.com/xapi-labs/xapi-cli/compare/v0.2.1...v0.3.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **workers:** remove manual pause and preserve deployment transport ([#51](https://github.com/xapi-labs/xapi-cli/issues/51))
+
+### Features
+
+* **skill:** guide private D1 and R2 exports with CLI commands ([351a952](https://github.com/xapi-labs/xapi-cli/commit/351a9521d5e1e2aaef7f0b9477f8881eac9c65e5))
+
+
+### Bug Fixes
+
+* **cli:** correct Action discovery and bundled skill workflows ([#57](https://github.com/xapi-labs/xapi-cli/issues/57)) ([d257169](https://github.com/xapi-labs/xapi-cli/commit/d257169b5555bd2a0ebc94f004bda5dd7286262c))
+* **workers:** remove manual pause and preserve deployment transport ([#51](https://github.com/xapi-labs/xapi-cli/issues/51)) ([634ebc5](https://github.com/xapi-labs/xapi-cli/commit/634ebc5484422010f427b206798d42fb454d8674))
+* **workers:** support native assets import and initial Secret setup ([db7faf7](https://github.com/xapi-labs/xapi-cli/commit/db7faf7d0b88c7c017f0c98b27c9a67524e736b3))
+
 ## [0.2.1](https://github.com/xapi-labs/xapi-cli/compare/v0.2.0...v0.2.1) (2026-10-10)
 
 
