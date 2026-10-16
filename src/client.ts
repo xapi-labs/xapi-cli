@@ -762,12 +762,17 @@ export async function actionCategories(opts: ClientOptions, params: { source?: s
 }
 
 export async function actionGet(id: string, opts: ClientOptions) {
-  return request<unknown[]>(
-    `${baseUrl(opts)}/v1/actions/${encodeURIComponent(id)}`,
-    { method: 'GET', headers: headers(opts.apiKey) },
-    DEFAULT_TIMEOUT_MS,
-    IDEMPOTENT_RETRIES,
-  );
+  // Avoid fixed collection routes, including on backends without by-id lookup.
+  const result = await actionBatch([id], opts);
+  if (!result || !Array.isArray(result.actions) || !Array.isArray(result.missing_ids)
+    || !result.missing_ids.every((missingId) => typeof missingId === 'string')
+    || !result.actions.every((action) => action !== null && typeof action === 'object' && !Array.isArray(action))) {
+    throw new Error('Invalid Action batch response');
+  }
+  if (result.missing_ids.includes(id) || result.actions.length === 0) {
+    throw new HttpError(404, `Action not found: ${id}`);
+  }
+  return result.actions;
 }
 
 export async function actionBatch(ids: string[], opts: ClientOptions) {
