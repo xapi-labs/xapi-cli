@@ -7,6 +7,8 @@
 
 * **workers:** remove manual pause and preserve deployment transport ([#51](https://github.com/xapi-labs/xapi-cli/issues/51))
 
+  Migration: remove whole-project `workers retention pause` and `keep-paused` calls from scripts. System financial protection remains automatic; after funding, explicitly use `workers retention resume`. Schedule pause/resume and Queue consumer controls remain available outside financial retention. See the [lifecycle guide](skills/xapi-workers/references/lifecycle.md).
+
 ### Features
 
 * **skill:** guide private D1 and R2 exports with CLI commands ([351a952](https://github.com/xapi-labs/xapi-cli/commit/351a9521d5e1e2aaef7f0b9477f8881eac9c65e5))
@@ -15,6 +17,8 @@
 ### Bug Fixes
 
 * **cli:** correct Action discovery and bundled skill workflows ([#57](https://github.com/xapi-labs/xapi-cli/issues/57)) ([d257169](https://github.com/xapi-labs/xapi-cli/commit/d257169b5555bd2a0ebc94f004bda5dd7286262c))
+  - Single Action schema queries preserve bare root IDs and endpoint UUIDs, and use batch lookup to avoid collection-route collisions. Missing IDs return an error; literal `/root` remains a distinct Action.
+  - Bundled skills explain typed Decisions requests, model discovery and DYNAMIC settlement; HTTP/2 configuration and transport boundaries; and BlockPI/Aptos JSON and BCS workflows. These guides do not add gRPC support or native CLI BCS request uploads.
 * **workers:** remove manual pause and preserve deployment transport ([#51](https://github.com/xapi-labs/xapi-cli/issues/51)) ([634ebc5](https://github.com/xapi-labs/xapi-cli/commit/634ebc5484422010f427b206798d42fb454d8674))
 * **workers:** support native assets import and initial Secret setup ([db7faf7](https://github.com/xapi-labs/xapi-cli/commit/db7faf7d0b88c7c017f0c98b27c9a67524e736b3))
 
