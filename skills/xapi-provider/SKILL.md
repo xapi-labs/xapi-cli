@@ -44,8 +44,11 @@ scope. Do not try unrelated keys.
 - Fixed, token, resource, or zero-price billing: read
   [billing](reference/billing-modes.md) and
   [free access](reference/free-api-access.md).
-- AI models or token accounting: read
+- AI models, typed Decisions, token accounting or upstream-cost billing: read
   [AI services](reference/ai-spec-and-models.md).
+- HTTP/2 upstreams or transport metadata in OpenAPI contracts: read
+  [HTTP transport](reference/http-transport.md). CLI import/update already
+  passes the configuration; no HTTP/2 CLI flag is needed.
 - WebSocket endpoints: read
   [WebSocket endpoints](reference/websocket-endpoints.md).
 - OAuth user-context endpoints: read
@@ -67,7 +70,9 @@ npx xapi-to provider versions <service-id>
 ```
 
 Use the returned version ID for contract changes. PATCH merges supplied fields;
-`--replace` sends a full replacement:
+`--replace` sends a full replacement. Preserve each endpoint's `endpointKey`
+across working-revision clones and use the working endpoint ID for partial
+patches; see the lifecycle reference for exact matching rules:
 
 ```bash
 npx xapi-to provider version update \
@@ -76,7 +81,9 @@ npx xapi-to provider diff <service-id> <major>
 ```
 
 Submit only after inspecting the diff. Publishing can change live behavior and
-the CLI deliberately does not retry an ambiguous write:
+the CLI deliberately does not retry an ambiguous write. A passing review can
+automatically publish and switch the serving revision; submission is not a
+dry run:
 
 ```bash
 npx xapi-to provider publish \
@@ -119,9 +126,13 @@ npx xapi-to provider skill context <service-id>
 ```
 
 The scaffold command refuses to overwrite an existing file unless `--force` is
-explicit. Link only a Skill owned by the same provider. If `skill context`
+explicit. Check its public URL, HTTP method, body and media types against the
+serving contract before submitting; generated text can require correction.
+Link only a Skill owned by the same provider. If `skill context`
 reports contract drift, update and resubmit the Skill before recording a new
-fingerprint. Use `provider skill unlink <service-id>` to remove the association.
+fingerprint. `drift: false` does not prove schemas, media types or transport
+are unchanged; the current fingerprint tracks host, major and endpoint keys.
+Use `provider skill unlink <service-id>` to remove the association.
 
 ## Observe, recover, and earn
 

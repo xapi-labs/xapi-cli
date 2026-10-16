@@ -111,6 +111,22 @@ Ranking is global: the service sorts all matching results before applying `--pag
 
 `get-batch` accepts at most 100 action IDs per invocation.
 
+### Action identifiers and detail lookup
+
+For third-party APIs, `/` uses the bare service ID (`solana`); the literal
+`/root` uses `solana.root`. `.root` is not a root alias. Use the exact discovered
+ID for `get` and `call`, including endpoint UUIDs. UUID lookup identifies the
+endpoint only; it never falls back to a service with the same name. A service
+whose name is UUID-shaped exposes its root by endpoint UUID.
+
+UUIDs belong to a revision. After a replacement revision becomes serving, an
+old UUID can return 404: rediscover the endpoint and inspect its new schema
+before calling. Do not substitute `.root` or replay an uncertain write.
+For direct HTTP detail reads, use `GET /v1/actions/by-id/{id}` or
+`POST /v1/actions/batch` with `{"ids":["<action-id>"]}`; inspect `actions` and
+`missing_ids`. The legacy dynamic GET can collide with collection names such
+as `search`, `categories`, and `services`.
+
 ### Calling APIs
 
 ```bash
@@ -176,7 +192,7 @@ Use built-in `crypto.*` for normalized multi-provider market, token, wallet,
 DEX, CEX, and news data. Use a specialized service instead when the user asks
 for its provider-native behavior:
 
-- BlockPI network RPC or an arbitrary EVM JSON-RPC method → `guides/blockpi.md`.
+- BlockPI EVM, Solana, NEAR, Starknet, Bitcoin RPC or Aptos REST/BCS → `guides/blockpi.md`.
 - Binance-native chain IDs, address analytics, RWA, aggregation, transaction,
   wallet, or DeFi data → `guides/binance_web3.md`.
 
@@ -204,7 +220,9 @@ npx xapi-to task wait <task_id> --interval 2s --timeout 10m
 ```
 
 For application integrations, read `guides/ai_gateway.md` before configuring an
-Anthropic/OpenAI-compatible client. Read `guides/ws_gateway.md` before opening a
+Anthropic/OpenAI-compatible client or using the separate typed Decisions
+protocol (`state`/`questions`/`answers`, no SSE or chat translation). Read
+`guides/ws_gateway.md` before opening a
 persistent GPT Live, Realtime, ASR, TTS, interpretation, or podcast WebSocket
 session. GPT Live uses `/v1/live/sessions` and is not the Realtime protocol at
 `/v1/realtime`.
@@ -299,8 +317,8 @@ Beyond built-in capabilities, xapi proxies **dozens** of third-party API service
 - **Weibo** (`weibo-app`) — Weibo API (user profiles, feeds, search, trending)
 - **5SIM SMS** (`5sim-sms`) — SMS verification (virtual numbers, activation codes)
 - **Serper API** (`serper`) — 12 provider-native Google Search actions including web, images, news, maps, places, video, shopping, scholar, patents, autocomplete, Lens, and reviews. Eleven support mini-batch; Reviews does not. Read `guides/serper.md` before calling them
-- **OpenRouter API** (`openrouter`) — Multi-model AI gateway (chat, embeddings, audio transcription/speech, video)
-- **Web3 infrastructure** — BlockPI RPC (`rpc`, 13 actions) and Binance Web3 API (`binance-web3-api`, 58 actions); read `guides/blockpi.md` or `guides/binance_web3.md` before calling them
+- **OpenRouter API** (`openrouter`) — Multi-model AI gateway (chat, embeddings, Decisions, audio transcription/speech, video)
+- **Web3 infrastructure** — BlockPI EVM (`rpc`), dedicated non-EVM RPC and Aptos REST/BCS services, and Binance Web3 API (`binance-web3-api`); read `guides/blockpi.md` or `guides/binance_web3.md` before calling them
 
 The full catalog also spans many other categories — crypto/on-chain data, CEX market data, stocks & macro, social platforms, news, weather, and more. Discover them with `search` / `services`.
 
@@ -329,9 +347,9 @@ When the user's task involves these workflows, read the corresponding guide file
 - **`guides/google_search.md`** — Google Search: web, realtime, news, image, video, scholar, maps, places, shopping
 - **`guides/serper.md`** — direct Serper v7 API: 12 provider-native actions, object-or-array mini-batches, Reviews pagination and batch exception, Lens, dynamic per-credit billing, and the current Webpage service boundary
 - **`guides/crypto.md`** — Crypto (加密货币): on-chain token price/overview/holders/security/OHLCV, wallet analytics, DEX pairs, CEX spot prices by symbol, news — covers contract-address vs symbol addressing and multi-chain
-- **`guides/domains.md`**, **`guides/blockpi.md`**, **`guides/binance_web3.md`** — unverified domain search, batch availability checks, domain purchase and DNS writes; BlockPI EVM JSON-RPC; and the official Binance Web3 API catalog. Read the domain guide before using domain capabilities; read the other matching guide before any mutation, transaction build, signing, or broadcast
+- **`guides/domains.md`**, **`guides/blockpi.md`**, **`guides/binance_web3.md`** — unverified domain search, batch availability checks, domain purchase and DNS writes; BlockPI EVM/non-EVM RPC and Aptos JSON/BCS; and the official Binance Web3 API catalog. Read the domain guide before using domain capabilities; read the other matching guide before any mutation, transaction build, signing, or broadcast
 - **`guides/ai.md`** — AI (人工智能): synchronous or SSE-streamed text, embeddings, asynchronous image/video generation with `task wait`, text-to-speech, and speech-to-text
-- **`guides/ai_gateway.md`** — xAPI AI Gateway: Claude Code and Anthropic/OpenAI SDK setup, model discovery, routing strategies, streaming, fallback, routing/billing headers, direct media endpoints, and known limitations
+- **`guides/ai_gateway.md`** — xAPI AI Gateway: Claude Code and Anthropic/OpenAI SDK setup, typed Decisions, model discovery, routing strategies, streaming, fallback, routing/billing headers, direct media endpoints, and known limitations
 - **`guides/ws_gateway.md`** — xAPI WebSocket Gateway: GPT Live, OpenAI Realtime, streaming ASR/TTS, simultaneous interpretation, podcast generation, service/path routing, browser authentication, native protocols, limits, billing, close codes, and reconnects
 - **`guides/sandbox.md`** — managed Sandbox compute: AI tool selection, one-shot and multi-step lifecycles, provider pinning, files, Cloudflare Web previews, suspension, GPU jobs, parallel agents, cleanup recovery, audit/history, and billing verification
 - **`guides/workers.md`** — xAPI-hosted Cloudflare Workers: new-project and Wrangler import flows, plan/push/promote/rollback, no-Git and CI operation, Worker vs Sandbox selection, managed KV/D1/R2/DO/Queue/Workflow and Secrets, persistent schedules, managed DNS/TLS, Tail observability, usage settlement and hard budget/balance guards, Artifact deployment, API-key instance visibility, audit, and deletion

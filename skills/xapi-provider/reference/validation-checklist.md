@@ -20,12 +20,26 @@ before `provider version update --replace`, and again before publication.
 ## Endpoints
 
 - Every new endpoint has `name`, `method`, and `path`.
-- Existing endpoint patches include `id`; otherwise the backend treats the item
-  as new.
+- Existing endpoint patches use the ID from the working revision. The backend
+  can also match a stable method/path through its derived endpoint key; missing
+  `id` does not always mean new. Preserve the stored `endpointKey` across
+  revisions and use the working ID when changing a path; inspect the diff for
+  unintended additions or removals.
 - Path parameters use `:name` and have matching `pathParams` descriptions.
 - Billing fields match the chosen `billingType`; pre-charge estimates are
   realistic.
 - Streaming endpoints set both `supportsStreaming` and `streamFormat`.
+- AI billing and protocol are chosen independently: PER_TOKEN uses model keys
+  in `tokenPricing`; DYNAMIC/PER_CALL/PER_RESOURCE AI uses `servedModels`.
+  Confirm saved Canonical mappings and detection rather than claiming trust
+  with provider-supplied `aiSpecDetectedBy`.
+- Decisions retains `state` and named typed `questions`, sets
+  `supportsStreaming: false`, and preserves DYNAMIC rules and model variants.
+  `:free` must not route to a paid base; `:batch` is not synchronous Decisions.
+- HTTP/2 uses numeric `info.x-xapi-upstream-http-version: 2` in `openApiSpec`,
+  HTTPS default/named bases and a compatible deployed runtime. Review whole-spec
+  replacement/clear semantics and the independent xhub manifest string option
+  in [HTTP transport](http-transport.md).
 - WebSocket endpoints set `protocol: "WEBSOCKET"`, a supported adapter, a
   public `wsConfig.upstreamUrl`, and a valid `wsBilling` object.
 - OAuth user-context endpoints retain their approved `userOAuthProviderId`.

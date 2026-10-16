@@ -22,7 +22,31 @@ npx xapi-to provider diff <service-id> <major>
 ```
 
 Do not infer version IDs from version labels. Use the IDs returned by `create`,
-`versions`, or `revision start`.
+`versions`, or `revision start`. In `versions`, each `majors[]` entry has a
+`servingRevisionId`, an optional `working.id/state`, and published `history`.
+Read the working contract rather than editing the currently serving revision.
+For a currently serving published revision, verify `state: "PUBLISHED"` and
+`isServing: true`, with the service active and major not deprecated. A historical
+published revision is not necessarily serving. The legacy revision `status`
+field is not the routing truth.
+
+`revision start` may return an existing working revision, including one already
+in review. Only `DRAFT` and `SANDBOX` are editable; inspect state before writing.
+
+Use the major and working `revision` number from the overview to read its
+contract, for example v1.4 for major 1, revision 4:
+
+```bash
+npx xapi-to provider get <service-id> --version v1.4
+```
+
+Verify the returned revision ID equals the intended working ID before taking
+endpoint IDs from it. Do not blindly resubmit the redacted service response as
+a full configuration file.
+
+Provider CLI reads and writes use the service owner's scoped key. An owner
+preview does not validate a different administrator's visibility or permissions;
+verify each actual role separately when it is part of the requested acceptance.
 
 ## Create payload
 
@@ -124,9 +148,23 @@ npx xapi-to provider version update \
   <service-id> <version-id> --file ./contract.patch.json
 ```
 
-Include an endpoint `id` when updating an existing endpoint. Omitting it means
-new endpoint. Use `--replace` only with a complete version contract; it sends a
-PUT and replaces omitted contract data:
+Prefer the endpoint `id` from the target working revision for partial updates.
+Copy-on-write creates new endpoint UUIDs but preserves `endpointKey`. Preserve
+that key when carrying an endpoint across revisions. The current backend matches
+an endpoint by a current `id`, then by `endpointKey`; when no key is supplied,
+a complete `method` + `path` may match its derived key. A stale ID can therefore
+match a preserved endpointKey. Conflicting supplied IDs and keys are rejected.
+Do not assume that omitting `id` always creates an endpoint, or that an endpoint
+UUID remains stable across revisions.
+
+An unmatched explicit ID in PATCH is rejected rather than silently creating a
+row. To add an endpoint, omit its ID and supply its name, method and path; ensure
+it does not match an existing stable or derived key. Editing does not itself
+increment the revision label.
+
+PATCH keeps omitted endpoints. PUT with an `endpoints` list removes unmatched
+endpoints; include every endpoint to retain, with its identity and complete
+configuration. Use `--replace` only with a complete version contract:
 
 ```bash
 npx xapi-to provider version update \
@@ -140,6 +178,23 @@ major, or create a new major:
 npx xapi-to provider revision start <service-id> <major>
 npx xapi-to provider major create <service-id>
 ```
+
+Read the new revision and its endpoint IDs after cloning. The onboarding alias
+`provider update <service-id> --revision <id> --file ... --mode merge` has an
+additional CLI guard requiring endpoint IDs unless `--allow-new-endpoints` is
+explicitly supplied. That flag permits ID-less entries; it does not override
+backend identity matching. Use working IDs for routine patches rather than
+enabling it merely to bypass the guard.
+
+Transport metadata is part of `openApiSpec`, which is replaced as a whole when
+explicitly supplied, even in PATCH. See [HTTP transport](http-transport.md)
+before changing or clearing HTTP/2 configuration.
+
+Keep the editable endpoint rows and any operations in a stored
+`openApiSpec.paths` consistent. Updating `openApiSpec` does not re-import the
+endpoint list. Named-base selection remains part of the stored endpoint path:
+use `{{alpha}}/new` to select alpha, or `/new` for the default base. The selector
+is omitted only from the public Gateway path.
 
 ## Publish and review
 
@@ -157,6 +212,12 @@ npx xapi-to provider versions <service-id>
 The changelog is public provider-authored release information. Do not put
 credentials, internal logs, or review-worker output in it. If publish returns an
 ambiguous transport failure, read state before deciding whether to submit again.
+
+Submission can automatically publish after a passing review and switch live
+traffic to the new revision. Obtain authorization for that effect before
+submitting. Check `review`, then `versions` and `servingRevisionId` to verify the
+actual result; HTTP success or a `PUBLISHED` historical revision alone is not
+proof of current serving state.
 
 ## Rollback, major routing, and removal
 

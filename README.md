@@ -110,6 +110,24 @@ one request object or a mini-batch array; `serper.reviews` accepts only one
 object. See the bundled [Serper guide](skills/xapi/guides/serper.md) for the
 Action list, examples, and dynamic per-credit billing.
 
+For API Actions, `/` uses the bare service ID (`solana`), while literal `/root`
+uses `solana.root`; `.root` is not a root alias. Use exact discovered IDs and
+endpoint UUIDs without rewriting them. A replacement serving revision can
+invalidate old UUIDs, so rediscover and inspect the new schema on 404 rather
+than falling back to a service alias. Multiple HTTP methods still require
+`--method` when selecting an endpoint.
+
+Single-schema lookup uses `POST /v1/actions/batch` with one ID, retaining
+compatibility with backends without the dedicated `GET /v1/actions/by-id/{id}`
+route. The legacy dynamic GET can collide with collection names such as
+`search`, `categories` and `services`.
+
+For typed Decisions (`state/questions/answers`, no SSE or chat translation),
+use the [AI Gateway guide](skills/xapi/guides/ai_gateway.md). For dedicated
+non-EVM RPC or Aptos JSON/BCS, use the [BlockPI guide](skills/xapi/guides/blockpi.md).
+`call --output` saves a binary response; raw BCS request input currently needs
+the service HTTP Gateway, not JSON Action execution.
+
 Search uses `--sort default|relevance|price`. `default` is the recommended
 order: it considers keyword coverage and match quality first, then favors
 stable built-in capabilities when matches are otherwise comparable.
@@ -211,8 +229,9 @@ Saving that field alone does not re-import endpoint definitions; configure
 - `--mode merge` (default) sends PATCH and preserves omitted fields/endpoints.
   Existing endpoint edits require `id`, e.g.
   `{"endpoints":[{"id":"ENDPOINT_ID","costPerCall":"0.002"}]}`.
-- `--allow-new-endpoints` explicitly permits ID-less merge entries to create
-  endpoints. Repeating such a merge can create duplicates.
+- `--allow-new-endpoints` permits ID-less merge entries past the CLI guard;
+  backend matching by stable `endpointKey` or derived method/path still applies.
+  Prefer IDs from the target working revision for ordinary updates.
 - `--mode replace` sends PUT. If `endpoints` is provided, it replaces the
   endpoint list; include every endpoint you intend to keep. Omitted fields
   otherwise follow backend PUT semantics. Use full configuration for replacement.
@@ -222,6 +241,9 @@ configuration returned by the backend. Find endpoint IDs in
 `currentVersion.endpoints`; `provider versions` returns working revision IDs
 in `majors[].working.id`. For an already-published API, use the existing
 `provider revision start <service-id> <major>` command to create a working revision.
+Cloning creates new endpoint UUIDs and preserves `endpointKey`; re-read the
+working contract after cloning. Use `majors[].servingRevisionId` to identify
+the serving revision. A working revision in `IN_REVIEW` cannot be edited.
 `provider update` without `--revision` continues to update service metadata
 and rate limits. Existing `version update`, `publish`, and positional `review`
 commands remain available. The `submit` and `review --revision` forms are
@@ -234,7 +256,8 @@ rebuilds the derived authentication configuration. An empty map without an
 explicit `authConfig` clears those credentials. Omitting both fields preserves them.
 
 `submit` returns `{serviceId, revisionId, submission}`. A successful submission
-does not guarantee publication. `wait` checks the requested revision, succeeds
+does not guarantee publication, but a passing review can automatically publish
+and switch live traffic. `wait` checks the requested revision, succeeds
 only for `PUBLISHED`, and outputs the review report with `success` and `reason`.
 `--changelog` is limited to 2,000 characters by both the CLI and backend.
 Rejection, a draft/sandbox/suspended revision, or a legacy manual-review hold
@@ -250,6 +273,12 @@ configuration. After an ambiguous write failure, use `list`, `get`, or `review`
 to inspect the result before repeating the operation. No npm release is implied
 by a local source checkout; use `bun run src/index.ts provider ...` or build and
 run `node dist/index.js provider ...` while testing unreleased changes.
+
+Use the [AI provider reference](skills/xapi-provider/reference/ai-spec-and-models.md)
+for Decisions and DYNAMIC upstream-cost billing, and
+[HTTP transport](skills/xapi-provider/reference/http-transport.md) for HTTP/2
+OpenAPI metadata, HTTPS/ALPN and update/clear behavior. Import and version update
+already pass these fields; no HTTP/2 CLI client or flag is required.
 
 ### Sandbox Commands
 
