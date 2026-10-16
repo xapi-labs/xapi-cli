@@ -127,7 +127,7 @@ describe('bundled xAPI live-service guides', () => {
       'never ask for, expose, or forward', 'eth_sendRawTransaction',
       'keys or seed phrases', 'fails closed', 'public RPC endpoints',
     ]) expect(blockpi).toContain(required);
-    expectValidJsonExamples(blockpi, 3);
+    expectValidJsonExamples(blockpi, 4);
     expectBalancedFences(blockpi);
   });
 

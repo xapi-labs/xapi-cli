@@ -13,9 +13,9 @@ COMMANDS
     --private-headers-file <path>   Upstream credentials as a JSON object
   update <service-id> --revision <id> --file config.json
     --mode merge|replace           PATCH merge (default) or PUT replacement
-    --allow-new-endpoints          Allow merge entries without IDs to create endpoints
+    --allow-new-endpoints          Allow ID-less merge entries; backend key matching applies
   submit <service-id> --revision <id>
-    --changelog <text>             Submit for review; this alone is not publication
+    --changelog <text>             Submit for review; passing review may publish
   review <service-id> --revision <id>
                                    Read latest review and previous attempts
   wait <service-id> --revision <id>

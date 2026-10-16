@@ -1,6 +1,6 @@
 # AI Gateway Guide
 
-Use xAPI's public AI Gateway when a tool or application expects an Anthropic- or OpenAI-compatible HTTP API. For one-off agent calls from the terminal, prefer the `ai.*` CLI capabilities documented in `guides/ai.md`. For full-duplex OpenAI Realtime, streaming ASR/TTS, simultaneous interpretation, or other WebSocket sessions, read `guides/ws_gateway.md`.
+Use xAPI's public AI Gateway for Anthropic/OpenAI-compatible HTTP APIs and the separate Decisions protocol. For one-off calls supported by `ai.*` CLI capabilities, read `guides/ai.md`. Decisions uses native HTTP below. For full-duplex OpenAI Realtime, streaming ASR/TTS, simultaneous interpretation, or other WebSocket sessions, read `guides/ws_gateway.md`.
 
 ## Contents
 
@@ -10,6 +10,7 @@ Use xAPI's public AI Gateway when a tool or application expects an Anthropic- or
 - [OpenAI-compatible setup](#openai-compatible-setup)
 - [Select a model in the URL](#select-a-model-in-the-url)
 - [Supported endpoints](#supported-endpoints)
+- [Decisions](#decisions)
 - [Routing strategies](#routing-strategies)
 - [Provider affinity](#provider-affinity)
 - [Streaming and protocol translation](#streaming-and-protocol-translation)
@@ -34,7 +35,7 @@ Use the AI Gateway when:
 - the caller needs streaming SSE responses;
 - the caller should use model normalization, protocol translation, provider health checks, and fallback without selecting an upstream manually.
 
-The Gateway is a separate HTTP interface. Do not wrap Gateway request bodies in the xAPI action format (`action_id` / `input`). Send the native Anthropic or OpenAI request body directly.
+The Gateway is a separate HTTP interface. Do not wrap Gateway request bodies in the xAPI action format (`action_id` / `input`). Send the native request body directly. Decisions does not use the chat capabilities or translate to Chat Completions.
 
 ## Base URLs and authentication
 
@@ -145,8 +146,104 @@ This also works for Anthropic Messages, OpenAI Responses, and embeddings. Use it
 | Image generation | `POST /v1/images/generations` | No |
 | Video generation | `POST /v1/videos` | No |
 | Rerank | `POST /v1/rerank` | No |
+| Decisions | `POST /v1/decisions` | No |
 
 For strategy-aware endpoints, insert a strategy before `/v1`, for example `/cost/v1/responses`. Without a prefix, the Gateway uses `default`.
+
+## Decisions
+
+Discover current compatible Canonical models before choosing one:
+
+```bash
+curl 'https://ai.xapi.to/v1/models?interface=decisions&output=decisions'
+```
+
+This returns `{object:"list",data:[...]}` without pagination. Each entry includes
+`id`, `input_modalities`, `output_modalities`, `capabilities` and `provider_count`.
+Filters `interface`, `input` and `output` each accept a single value; add
+`input=file` only when file input is needed. Empty results are valid; a failed
+discovery request is not evidence that no models exist.
+
+Use the discovered ID in a native JSON request. This example uses `jev-1-14`;
+availability and actual cost depend on the current serving provider:
+
+```bash
+curl --include https://ai.xapi.to/v1/decisions \
+  -H 'XAPI-Key: <XAPI_KEY>' \
+  -H 'Content-Type: application/json' \
+  --data '{
+    "model":"jev-1-14",
+    "state":"I need a refund for a failed payment today.",
+    "questions":{
+      "refund":{"type":"noul","instructions":"Is a refund requested?"},
+      "team":{
+        "type":"choice","instructions":"Choose the support team.",
+        "criteria":{"billing":"Payments and refunds","technical":"Bugs and outages"}
+      },
+      "urgency":{
+        "type":"score","instructions":"Rate urgency.",
+        "criteria":["No time pressure","Soon","Today"]
+      }
+    }
+  }'
+```
+
+Example answer shape, with provider extensions and usage omitted for brevity:
+
+```json
+{
+  "answers": {
+    "refund": {"type": "noul", "noul": 0.99},
+    "team": {"type": "choice", "choice": "billing"},
+    "urgency": {"type": "score", "score": 1.99}
+  }
+}
+```
+
+- `state` accepts a string, object or array. `questions` is a non-empty named
+  object with `choice`, `noul` or `score` types. Every requested question needs
+  a matching answer of the same type.
+- Noul is a number from 0 to 1, not a boolean. Choice must belong to explicit
+  criteria; Score is non-negative and cannot exceed the last criteria index.
+  Fractional scores are valid. Choice/Score confidence/probabilities, when
+  present, must be in `[0,1]`; distributions must cover explicit criteria.
+- Send `stream` omitted or `false`. There is no SSE, batch request or `:batch`
+  model support. Do not add a strategy/model segment before `/v1/decisions`.
+- Text-only models reject top-level image/audio/video/file state inputs; use a
+  compatible model for those modalities. Provider-defined state content is
+  otherwise retained.
+- Raw mapped aliases such as `typesafe/jev-1.14` can also be used. Preserve
+  requested variants: `mercury-decide:free` or raw
+  `inception/mercury-decide:free` requires a free candidate and cannot fall back
+  to the paid base. A free candidate may be unavailable or rate limited.
+- Invalid upstream answers can trigger another eligible provider; already
+  incurred costs remain part of the aggregate. A failed request is not always
+  free. Local schema/model rejection before upstream execution is zero cost.
+
+### Public catalog and price display
+
+The marketplace catalog is a different API:
+
+```bash
+curl 'https://api.xapi.to/api/models/catalog?window=30d&limit=200&offset=0'
+```
+
+Its shape is `{total,limit,offset,window,items}`. `window` accepts `24h`, `7d`
+or `30d` (default); limit defaults to 50 and is capped at 200. Read all pages,
+advancing offset by the number of returned items until it reaches `total`.
+An empty page before total is incomplete data. This endpoint has no
+`interface/output` filter: filter the collected items by
+`modality.output.includes("decisions")`. Do not stop after the first 200 models
+or hard-code a model count.
+
+Catalog `bestInputPer1M`, `bestOutputPer1M`, provider rates and eligible endpoint
+`modelQuotes` are display prices in USD per million tokens. `pricingMode` can
+be `fixed`, `actual_cost` or `unknown`; dynamic quotes are estimates, not final
+charges. `null`/missing means unknown and should display `—`; `0` is an explicit
+zero rate. Canonical OpenRouter reference prices are comparison data.
+Complex cost rules, including caps/clamps, can leave provider prices unknown
+even when official reference prices exist. Do not remove billing limits or
+infer a free quote from a paid base rate. See [billing headers](#routing-and-billing-headers).
 
 ## Routing strategies
 
@@ -192,7 +289,14 @@ Successful routed responses can include:
 | `X-XAPI-Cost` | Aggregated USD cost for the request attempts. |
 | `X-XAPI-Cost-Unit` | Cost currency, currently `USD`. |
 | `X-XAPI-Billing` | Billing status. |
-| `X-XAPI-Billing-Type` | Billing mode, such as `PER_TOKEN` or `ASYNC`. |
+| `X-XAPI-Billing-Type` | Billing mode, such as `PER_TOKEN`, `DYNAMIC` or `ASYNC`. |
+| `X-XAPI-Cost-Estimated` / `X-XAPI-Cost-Reserved` | Estimate and hold amount when provided; not actual consumption. |
+
+`X-AI-Cost` is a compatibility cost header. Use `X-XAPI-Cost` for the aggregate
+across attempts; the final response's upstream `usage.cost` alone excludes any
+earlier charged attempts. Gateway responses currently do not expose a reliable
+xAPI receipt request ID. A provider response `id` is not a receipt ID, and an
+individual attempt receipt must not be described as the aggregate receipt.
 
 Do not use provider names as a stable application contract. Provider selection can change with availability, configuration, pricing, and routing policy.
 
@@ -257,7 +361,7 @@ Rerank currently routes directly through OpenRouter rather than the strategy-bas
 - **Model not found** → use `GET /v1/models` and select a currently routable model ID.
 - **No candidates / 503** → no active provider currently serves that model and protocol combination; retry later or choose another model.
 - **Unsupported modality** → choose a model that accepts the request's text, image, or other input type.
-- **All providers failed** → retry with backoff; changing strategy may reorder candidates but cannot make an unavailable model routable.
+- **All providers failed** → inspect the error and any reported aggregate cost before deciding on a retry; changing strategy cannot make an unavailable model routable. Do not blindly repeat charged or ambiguous requests.
 - **Async task failed or expired** → inspect the poll result and resubmit when appropriate.
 
 Never send the xAPI key to a domain outside `*.xapi.to`. Do not print, persist, or share the key, payment URLs, or authenticated polling URLs.
