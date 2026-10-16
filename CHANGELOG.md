@@ -1,5 +1,74 @@
 # Changelog
 
+## [0.4.0](https://github.com/xapi-labs/xapi-cli/compare/v0.3.0...v0.4.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **workers:** remove manual pause and preserve deployment transport ([#51](https://github.com/xapi-labs/xapi-cli/issues/51))
+* **workers:** workers push and workers promote no longer execute D1 SQL automatically. Run workers d1 migrations plan/apply --binding NAME --env ENV explicitly when schema changes are intended. Deployment nativeSteps now carries d1Migrations command guidance rather than SQL migration entries; imported D1 steps use EXPLICIT_COMMAND instead of BEFORE_CODE.
+
+### Features
+
+* **cli:** add streaming and batch action support ([57c3de6](https://github.com/xapi-labs/xapi-cli/commit/57c3de69a988d8ceb031e64f0c102fe2395854c0))
+* **earnings:** let agents reinvest provider revenue ([27b754b](https://github.com/xapi-labs/xapi-cli/commit/27b754bbeea3f2464683708d5d20c0471df55408))
+* **provider:** import API contracts and wait for publication ([#14](https://github.com/xapi-labs/xapi-cli/issues/14)) ([0b17d43](https://github.com/xapi-labs/xapi-cli/commit/0b17d43b5f24536f6a4b50d29de65a4045b81369))
+* **provider:** manage per-user service rate limits ([49c974b](https://github.com/xapi-labs/xapi-cli/commit/49c974b82d42decb6fb55c7034f8cd562b2c9d03))
+* **provider:** manage services and usage skills ([f3f1b4f](https://github.com/xapi-labs/xapi-cli/commit/f3f1b4f62ef6c1fce9e368a21379f7f3a5ddffae))
+* **sandbox:** add managed sandbox CLI workflows ([bb31e74](https://github.com/xapi-labs/xapi-cli/commit/bb31e74e11a231f50ba2fdd56c4ed67bfcf98f88))
+* **sandbox:** clarify provider lifecycle workflows ([5cce19a](https://github.com/xapi-labs/xapi-cli/commit/5cce19a52815f2cc6d00d35900d5be0d0cacf98a))
+* **search:** --all-versions 开关（搜索含非默认但在跑的大版本） ([d8b2e9b](https://github.com/xapi-labs/xapi-cli/commit/d8b2e9b0f23c220244466792288a0d4982c80cd3))
+* **search:** add action sort modes ([c9afd43](https://github.com/xapi-labs/xapi-cli/commit/c9afd4384a02d723fdfd482293d1c0470a4a39ac))
+* **skill:** add domain and Web3 service guides ([86de0d1](https://github.com/xapi-labs/xapi-cli/commit/86de0d11f89a4a9d52fa1d407541150d71addefe))
+* **skill:** add robust tweet video downloads ([77519f3](https://github.com/xapi-labs/xapi-cli/commit/77519f3c366c751926611d5c5adce943987cfbd4))
+* **skill:** add Serper v7 workflows and mini-batch guidance ([c066307](https://github.com/xapi-labs/xapi-cli/commit/c066307f2fb8a0b3a4746fcb25f67d3853b4374d))
+* **skill:** bundle CLI-native provider workflows ([#29](https://github.com/xapi-labs/xapi-cli/issues/29)) ([fe1551a](https://github.com/xapi-labs/xapi-cli/commit/fe1551a3b302cef584154b61f3c45da10267a353))
+* **skill:** document domains and GPT Live ([7466f4d](https://github.com/xapi-labs/xapi-cli/commit/7466f4db1ce8ea8172f85a4ce286e151aa0688c8))
+* **skill:** enable native Workers project deployment and setup ([#40](https://github.com/xapi-labs/xapi-cli/issues/40)) ([100024f](https://github.com/xapi-labs/xapi-cli/commit/100024f6cc76ca5a00bc6b9eccf0e87dfec3152b))
+* **skill:** guide private D1 and R2 exports with CLI commands ([351a952](https://github.com/xapi-labs/xapi-cli/commit/351a9521d5e1e2aaef7f0b9477f8881eac9c65e5))
+* **skill:** verify domain search suggestions before purchase ([#44](https://github.com/xapi-labs/xapi-cli/issues/44)) ([341d8dc](https://github.com/xapi-labs/xapi-cli/commit/341d8dcca2349ff501a0e2f0c9c3707265333bf6))
+* **usage:** query finalized request costs ([2bf0e06](https://github.com/xapi-labs/xapi-cli/commit/2bf0e06e613dc3dbb557fb2a3b27b36619116b4b))
+* **usage:** wait for finalized request receipts ([b35bd33](https://github.com/xapi-labs/xapi-cli/commit/b35bd330405e78db8b9a34df8f69f2b93668a62a))
+* **workers:** add managed project deployment workflows ([e002970](https://github.com/xapi-labs/xapi-cli/commit/e0029701152c9ad73277bef9e0750284e03c884d))
+* **workers:** add read-only environment inspection ([f5e7245](https://github.com/xapi-labs/xapi-cli/commit/f5e7245e7bc8b01f62a1a9c2669ea1dbf9c48c9d))
+* **workers:** add safe secret management workflows ([#32](https://github.com/xapi-labs/xapi-cli/issues/32)) ([0f0ec1b](https://github.com/xapi-labs/xapi-cli/commit/0f0ec1b498a012f35e6b5133fde2ec4c346c9ad6))
+* **workers:** make deployment plans exact ([45aeac2](https://github.com/xapi-labs/xapi-cli/commit/45aeac24d2081b1496bc882fa27a313ab9f21250))
+* **workers:** preserve native deployments and exact plans ([3b83be2](https://github.com/xapi-labs/xapi-cli/commit/3b83be2ac19061b53dbb1869a8a0061dbb5d9acf))
+
+
+### Bug Fixes
+
+* **cli:** correct Action discovery and bundled skill workflows ([#57](https://github.com/xapi-labs/xapi-cli/issues/57)) ([d257169](https://github.com/xapi-labs/xapi-cli/commit/d257169b5555bd2a0ebc94f004bda5dd7286262c))
+* **cli:** harden command safety and transfers ([83615d0](https://github.com/xapi-labs/xapi-cli/commit/83615d04a375ed0ae0826b02d43c9e47cb8bcd82))
+* **cli:** respect polling delays when timers wake early ([b5333eb](https://github.com/xapi-labs/xapi-cli/commit/b5333eb3a9822425283d84c023b3448d41cb0911))
+* **cli:** respect polling delays when timers wake early ([03a98ea](https://github.com/xapi-labs/xapi-cli/commit/03a98eac7e365759b243c40d503dab5429d4e344))
+* **oauth:** enforce hard polling deadlines ([86e6828](https://github.com/xapi-labs/xapi-cli/commit/86e6828c411df85acbb6ad471951d38b31693590))
+* **sandbox:** enforce hard wait deadlines during polling ([794ca16](https://github.com/xapi-labs/xapi-cli/commit/794ca16455e4bc6cbc1dccdec006652e5a16d437))
+* **sandbox:** enforce hard wait deadlines during polling ([be18c7e](https://github.com/xapi-labs/xapi-cli/commit/be18c7e498697306974b6b973cfa38430db7fff7))
+* **skill:** correct LinkedIn capability guidance ([442d20a](https://github.com/xapi-labs/xapi-cli/commit/442d20a55e6273c42b29332220119730935bb9b4))
+* **skill:** guide Workers DNS conflicts and domain switching ([#41](https://github.com/xapi-labs/xapi-cli/issues/41)) ([eb3fd39](https://github.com/xapi-labs/xapi-cli/commit/eb3fd39c78891eb175c57b180228f79672789173))
+* **skill:** harden live service guidance ([137e8ab](https://github.com/xapi-labs/xapi-cli/commit/137e8ab7b32febe176e2f619d6c472655bbcb244))
+* **workers:** clarify project deployment commands ([555dcb4](https://github.com/xapi-labs/xapi-cli/commit/555dcb4ff88d1633bf23d6709a56abb30f187104))
+* **workers:** continue pending R2 initialization before publishing ([36ddb9a](https://github.com/xapi-labs/xapi-cli/commit/36ddb9a004355fd18559e71c80976cc9a3893681))
+* **workers:** preserve native deployment flows and simplify client controls ([#47](https://github.com/xapi-labs/xapi-cli/issues/47)) ([da62e96](https://github.com/xapi-labs/xapi-cli/commit/da62e963b6c8d158a08cd944c2b44b8b57451d9c))
+* **workers:** preserve native deployment intent during import ([74148a4](https://github.com/xapi-labs/xapi-cli/commit/74148a48351772a54457fca143d0eaa87f73db7b))
+* **workers:** recover uploads and preserve production settings and usage totals ([#48](https://github.com/xapi-labs/xapi-cli/issues/48)) ([c81669c](https://github.com/xapi-labs/xapi-cli/commit/c81669c47133d8969a21cd64ce449df8b01d9503))
+* **workers:** remove manual pause and preserve deployment transport ([#51](https://github.com/xapi-labs/xapi-cli/issues/51)) ([634ebc5](https://github.com/xapi-labs/xapi-cli/commit/634ebc5484422010f427b206798d42fb454d8674))
+* **workers:** report successful pushes to owner-paused environments ([#49](https://github.com/xapi-labs/xapi-cli/issues/49)) ([df39e56](https://github.com/xapi-labs/xapi-cli/commit/df39e566d9d428f240e420cd3004cf93a229c28b))
+* **workers:** resume pending R2 initialization during push ([8aa96dc](https://github.com/xapi-labs/xapi-cli/commit/8aa96dc3c107db2bdb52f1d461ba82549d9963bd))
+* **workers:** retry R2 creation through the original push flow ([189874e](https://github.com/xapi-labs/xapi-cli/commit/189874efbf3b2336a70cf1fefa82b31b83b58b32))
+* **workers:** separate D1 migrations from code deployment ([86ed3ba](https://github.com/xapi-labs/xapi-cli/commit/86ed3ba28a30a47f01b3a420ff5a6735492d5bc3))
+* **workers:** support native assets import and initial Secret setup ([db7faf7](https://github.com/xapi-labs/xapi-cli/commit/db7faf7d0b88c7c017f0c98b27c9a67524e736b3))
+
+
+### Documentation
+
+* **skill:** correct capability guidance ([5d92829](https://github.com/xapi-labs/xapi-cli/commit/5d9282982e449d3f586cfc9aa8d1de6d1e59b2ee))
+* **skill:** document gateway and cli updates ([157c653](https://github.com/xapi-labs/xapi-cli/commit/157c6535a2ca61955542f44472225ecf7d292655))
+* **skill:** document Workers domain conflict recovery ([#36](https://github.com/xapi-labs/xapi-cli/issues/36)) ([ac26d51](https://github.com/xapi-labs/xapi-cli/commit/ac26d51de6ab9a9e187a668b5d45182508c62228))
+* **skill:** rename audio capability IDs ([1757fb6](https://github.com/xapi-labs/xapi-cli/commit/1757fb669442d5783ec9b84f0c2921756880ab61))
+* **skill:** sync capabilities and gateway guides ([e20d1b8](https://github.com/xapi-labs/xapi-cli/commit/e20d1b83a4f692e60c83fdddd054dc32697d956f))
+
 ## [0.3.0](https://github.com/xapi-labs/xapi-cli/compare/v0.2.1...v0.3.0) (2026-10-16)
 
 
