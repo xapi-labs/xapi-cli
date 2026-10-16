@@ -89,12 +89,15 @@ try {
     pull(controller) { emptyPulls++; controller.enqueue(new Uint8Array()); },
     cancel() { emptyCancelled = true; },
   }, { highWaterMark: 0 });
-  const emptyStart = Date.now();
+  const emptyStart = performance.now();
   await assert.rejects(uploadRequest(base + '/empty-upload', { method: 'POST', body: emptyBody }), RequestTimeoutError);
   assert.ok(emptyPulls > 64);
   assert.equal(emptyCancelled, true);
-  assert.ok(Date.now() - emptyStart >= budget);
-  assert.ok(Date.now() - emptyStart < budget * 5);
+  const emptyElapsed = performance.now() - emptyStart;
+  // Native timers can wake slightly early; allow 5ms of scheduler rounding,
+  // while still rejecting premature aborts and empty chunks resetting the timer.
+  assert.ok(emptyElapsed >= budget - 5, `empty upload timed out too early: ${emptyElapsed}ms`);
+  assert.ok(emptyElapsed < budget * 5, `empty upload did not time out promptly: ${emptyElapsed}ms`);
   assert.deepEqual(await uploadRequest(base + '/slow-response', { method: 'POST', body: 'once' }), { ok: true });
   await assert.rejects(uploadRequest(base + '/stalled-response', { method: 'POST', body: 'once' }), RequestTimeoutError);
 
