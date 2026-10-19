@@ -4,6 +4,7 @@ import { mkdir, open, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { apiKeyApiRequest, HttpError } from '../client.ts';
 import { providerOnboarding, PROVIDER_ONBOARDING_HELP } from './provider-onboarding.ts';
+import { uploadProviderLogo } from '../provider-logo.ts';
 import { redactProvider } from '../provider-client.ts';
 import {
   getConfig,
@@ -25,7 +26,7 @@ USAGE
   xapi-to provider wait <service-id> --revision <id> [--interval 2s] [--timeout 10m]
   xapi-to provider list
   xapi-to provider get <service-id> [--version <version>]
-  xapi-to provider create --file <service.json> [rate-limit flags]
+  xapi-to provider create --file <service.json> [--logo-file <path>] [rate-limit flags]
   xapi-to provider update <service-id> [metadata/rate-limit flags]
   xapi-to provider versions <service-id>
   xapi-to provider version update <service-id> <version-id> --file <contract.json> [--replace]
@@ -58,6 +59,10 @@ METADATA FLAGS
   --clear-website                  Clear website
   --logo-url <url>                 Service logo URL
   --category <category>            Marketplace category
+
+CREATE LOGO
+  --logo-file <path>              Upload a local JPG, PNG, GIF or WebP (up to 10 MB)
+                                  Requires service:create; conflicts with JSON logoUrl
 
 SERVICE RATE-LIMIT FLAGS
   --rate-limit-requests <count>          Allowed requests per period (1-1000000)
@@ -229,6 +234,9 @@ export async function provider(args: string[], flags: Record<string, string>) {
   }
   const onboardingCommand = ['spec-rules', 'import', 'submit', 'wait'].includes(args[0]);
   const revisionAlias = ['update', 'review'].includes(args[0]) && flags.revision !== undefined;
+  if (flags['logo-file'] !== undefined && args[0] !== 'create') {
+    err('--logo-file is only supported by provider create');
+  }
   if (onboardingCommand || revisionAlias) return providerOnboarding(args, flags);
   const cfg = getConfig();
   requireApiKey(cfg);
@@ -254,6 +262,13 @@ export async function provider(args: string[], flags: Record<string, string>) {
       case 'create': {
         const body = await readJsonObject(required(flags.file, 'xapi-to provider create --file <service.json>'));
         applyRateLimitFlags(body, flags);
+        if (flags['logo-file'] !== undefined) {
+          const logoFile = requiredFlag(flags['logo-file'], 'xapi-to provider create --file <service.json> --logo-file <path>');
+          if ((body.logoUrl !== undefined && body.logoUrl !== null && body.logoUrl !== '') || flags['logo-url'] !== undefined) {
+            err('--logo-file conflicts with logoUrl or --logo-url', 'Use either a local LOGO file or an existing URL.');
+          }
+          body.logoUrl = await uploadProviderLogo(XAPI_API_HOST, apiKey, logoFile);
+        }
         result = await apiKeyApiRequest(XAPI_API_HOST, apiKey, `${BASE}/services`, {
           method: 'POST',
           body,

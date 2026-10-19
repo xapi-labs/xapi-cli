@@ -58,6 +58,11 @@ scope. Do not try unrelated keys.
 - Before any create or publish: apply the
   [validation checklist](reference/validation-checklist.md).
 
+For a local service LOGO, use `provider create --file ./service.json --logo-file
+./logo.png` after checking command help. Read the local LOGO section in
+[lifecycle management](reference/lifecycle-management.md) for limits, scope,
+conflict rules and upload failure handling.
+
 ## Standard lifecycle
 
 Prepare `service.json`, then create and inspect the draft:
