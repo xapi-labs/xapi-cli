@@ -97,6 +97,36 @@ npx xapi-to provider create --file ./service.json
 The output contains the service and initial version/revision IDs. Keep those
 IDs for later commands.
 
+### Upload a local LOGO when creating
+
+```bash
+npx xapi-to provider create --file ./service.json --logo-file ./logo.png
+```
+
+`--logo-file` accepts JPG, PNG, GIF and WebP up to 10 MB. The CLI checks the
+local file, uploads it using the same API Key with `service:create`, then sends
+the returned remote URL as `logoUrl` in the create request. Storage credentials
+remain on the server. Existing JSON `logoUrl` and creation without a LOGO work
+as before. Remove a JSON `logoUrl` before passing `--logo-file`; supplying both
+is an error. This flag is supported only by `provider create`.
+
+File, authentication, permission, network and storage errors stop creation and
+return a nonzero exit code. Uploads are not automatically retried. Upload and
+service creation are separate writes: if creation fails after upload, the image
+may remain unused. Inspect `provider list` after an ambiguous create response
+before retrying; do not automatically replay the create write.
+
+The installed CLI help must list `--logo-file`, and the selected server must
+support provider LOGO uploads. A 404 requires a server update; 401 requires
+checking the configured API Key; 403 requires `service:create` and allowed
+source IPs. The server rechecks image content and enforces a 20/minute/IP limit.
+A repository change does not imply that the CLI package or backend has already
+been released.
+
+After successful creation, run `provider get <service-id>` and verify its
+`logoUrl` matches the returned image URL; verify the image in the web console
+when validating a deployed environment.
+
 ## Service metadata versus version contract
 
 `provider update` changes marketplace metadata, the linked Skill, or service
