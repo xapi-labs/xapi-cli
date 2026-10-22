@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.1](https://github.com/xapi-labs/xapi-cli/compare/v0.3.0...v0.3.1) (2026-10-22)
+
+
+### Features
+
+* **provider:** upload local LOGO images when creating services ([#59](https://github.com/xapi-labs/xapi-cli/issues/59)) ([8801acc](https://github.com/xapi-labs/xapi-cli/commit/8801acc80fa59468c946af7edf2110b0a19f6154))
+
+
+### Bug Fixes
+
+* **deps:** prevent undici EventSource memory exhaustion ([3f1d089](https://github.com/xapi-labs/xapi-cli/commit/3f1d08965fd474d07a00eb68e1d568b4ba4efd43))
+
 ## [0.3.0](https://github.com/xapi-labs/xapi-cli/compare/v0.2.1...v0.3.0) (2026-10-16)
 
 
