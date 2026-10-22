@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/xapi-labs/xapi-cli/compare/v0.3.1...v0.3.2) (2026-10-22)
+
+
+### Features
+
+* **skill:** guide Tripo async provider registration ([#61](https://github.com/xapi-labs/xapi-cli/issues/61)) ([550171c](https://github.com/xapi-labs/xapi-cli/commit/550171c4522d5d5a0d0ad0ce936d11e56d48dbef))
+
 ## [0.3.1](https://github.com/xapi-labs/xapi-cli/compare/v0.3.0...v0.3.1) (2026-10-22)
 
 
