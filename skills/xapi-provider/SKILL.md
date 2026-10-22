@@ -49,6 +49,9 @@ scope. Do not try unrelated keys.
 - HTTP/2 upstreams or transport metadata in OpenAPI contracts: read
   [HTTP transport](reference/http-transport.md). CLI import/update already
   passes the configuration; no HTTP/2 CLI flag is needed.
+- Tripo model generation, texture or conversion: read
+  [Tripo asynchronous tasks](reference/tripo-async.md). Verify the target backend
+  has the adapter and migration before registering a private draft.
 - WebSocket endpoints: read
   [WebSocket endpoints](reference/websocket-endpoints.md).
 - OAuth user-context endpoints: read
