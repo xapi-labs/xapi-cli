@@ -25,4 +25,9 @@ async function run(scenario:string) {
 for(const scenario of ['large','slow','queue','response-wait','response-moving','response-stall','body-stall','disconnect','reject','redirect','independent'])
   it(`Node object transport over real HTTP: ${scenario}`,async()=>{
     const result=await run(scenario);expect(result.scenario).toBe(scenario);
+    if(scenario==='slow'){
+      expect(result.pacedChunks).toBe(8);expect(result.bodyProgressEvents).toBeGreaterThanOrEqual(8);
+      expect(result.bodyProgressSpanMs).toBeGreaterThan(result.idleMs);
+      expect(result.checked).toBe(1);
+    }
   },20_000);
