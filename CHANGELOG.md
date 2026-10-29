@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.2](https://github.com/xapi-labs/xapi-cli/compare/v0.3.1...v0.3.2) (2026-10-29)
+
+
+### Features
+
+* **skill:** guide Tripo async provider registration ([#61](https://github.com/xapi-labs/xapi-cli/issues/61)) ([550171c](https://github.com/xapi-labs/xapi-cli/commit/550171c4522d5d5a0d0ad0ce936d11e56d48dbef))
+
+
+### Bug Fixes
+
+* **skill:** handle Binance candle boundaries and USD volume ([#63](https://github.com/xapi-labs/xapi-cli/issues/63)) ([889c15e](https://github.com/xapi-labs/xapi-cli/commit/889c15ee0747757c57d6a6179ae27210c8222fca))
+
 ## [0.3.1](https://github.com/xapi-labs/xapi-cli/compare/v0.3.0...v0.3.1) (2026-10-22)
 
 
