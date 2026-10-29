@@ -25,6 +25,14 @@ second per user**, shared across every API key and all 58 endpoints. Pace the
 combined workload, not each action independently. The current fixed listed
 price is `$0/call`; re-check `get` because limits and pricing can change.
 
+Use a single shared queue per xAPI user and service across workers, endpoints,
+and API keys. Separate endpoint-local limiters can exceed the combined quota.
+Cache market reads and coalesce identical in-flight requests before dispatch;
+cache keys must include the chain, exact token address, bar, and time bounds.
+Use short TTLs for the open candle and longer TTLs for closed historical data.
+On 429, honor `Retry-After` and the returned quota reset time instead of retrying
+immediately. Never cache an upstream business error as market data.
+
 GET actions take `{"method":"GET","params":{...}}` (plus `pathParams` when
 the schema requires them). Chain identifiers are Binance IDs such as `"1"`
 for Ethereum, `"56"` for BSC, and `"CT_501"` for Solana. They are not the
@@ -55,9 +63,37 @@ npx xapi-to call binance-web3-api.api_v1_dex_market_candles --input '{
 }'
 ```
 
-`candles.limit` is currently 1–300. `before` and `after` are exclusive Unix
-millisecond bounds. Read each endpoint's enum independently; for example,
-portfolio `timeFrame` values differ from leaderboard values.
+### Candle pagination and field mapping
+
+`candles.limit` is currently 1–300. `after` is the upper time bound for querying
+older candles; `before` is the lower bound for newer candles. Both use Unix
+milliseconds, not seconds. Although the official documentation calls them
+exclusive, live results may include the boundary candle for either parameter.
+
+For historical backfill, use `after = min(timestampMs) - 1` from the previous
+page. Filter each next page to timestamps strictly less than that previous
+minimum; deduplicate by `chain ID + token contract + bar + timestampMs`.
+Do not depend on response order or just remove the first/last row. Stop on an
+empty page or when the cursor does not move backwards; do not loop indefinitely
+on repeated boundary data. For newer-page queries, filter strictly above the
+previous bound as well.
+
+Binance returns each candle as
+`[open, high, low, close, volumeUsd, timestampMs, tradeCount]`.
+The official downloadable OpenAPI defines both OHLC prices and volume in USD.
+Map index 4 to USD turnover, not base-token quantity; do not synthesize token
+volume by dividing it by the close price. Convert index 5 from milliseconds to
+seconds only at a consumer boundary that explicitly requires seconds.
+
+For latest-page refreshes, let the newer response replace a candle with the
+same key: the current candle's OHLC, volume, and trade count can still change.
+Do not use historical duplicate filtering to discard updated open candles.
+Read each endpoint's enum independently; portfolio `timeFrame` values, for
+example, differ from leaderboard values.
+
+Sources: [official market reference](https://web3.binance.com/en/dev-docs/catalog/web3-wallet/api/rest-api/general-data#get-candles)
+and [downloadable OpenAPI](https://web3.binance.com/en/dev-docs/catalog/web3-wallet/api/rest-api/1.0.0/schema.json).
+The boundary caveat was reproduced with BSC USDT, `bar=1h`, `limit=3`.
 
 RWA search supports ticker, company name, or contract address:
 
@@ -110,6 +146,14 @@ needs request content, wait until `npx xapi-to get <action-id>` exposes it and
 report the service-schema gap instead. The query-only token basic-info action
 may be called exactly as its live `params` schema declares. Once fixed, the
 live xAPI schema—not this snapshot—is authoritative.
+
+For `price-info`, the official body is an array of up to 100 objects, each
+containing `binanceChainId` and `tokenContractAddress`. The latest xhub source
+spec already defines this correctly; repairing the serving contract requires
+an owner to update endpoint `bodySchema` in a new editable revision and publish
+it through review. A repository merge alone does not update the serving catalog.
+Use endpoint IDs read from that working revision, not copied serving UUIDs.
+Until live `get` exposes the array body, keep this action disabled in adapters.
 
 ## Provider errors
 

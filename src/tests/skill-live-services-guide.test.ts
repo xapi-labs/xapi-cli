@@ -140,6 +140,17 @@ describe('bundled xAPI live-service guides', () => {
     ]) expect(binance).toContain(heading);
   });
 
+  it('teaches defensive candle pagination, mutable candles, USD volume and quota sharing', () => {
+    for (const required of [
+      'after = min(timestampMs) - 1', 'before', 'may include the boundary',
+      '[open, high, low, close, volumeUsd, timestampMs, tradeCount]',
+      'chain ID + token contract + bar + timestampMs',
+      'newer response replace', 'single shared queue', 'coalesce',
+      '429', 'Retry-After', 'base-token',
+    ]) expect(binance).toContain(required);
+    expect(binance).not.toContain('are exclusive Unix');
+  });
+
   it('documents Binance safety, limits, serving-contract drift, and provider errors', () => {
     for (const required of [
       '10 requests per', 'shared across every API key and all 58 endpoints',
