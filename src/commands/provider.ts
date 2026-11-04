@@ -40,6 +40,7 @@ USAGE
   xapi-to provider diff <service-id> <major>
   xapi-to provider metrics [service-id] [--days 30]
   xapi-to provider events [--after <cursor>] [--limit 50]
+  xapi-to provider timeline <service-id> [--limit 50] [--before <at> --before-id <id>]
   xapi-to provider skill context <service-id>
   xapi-to provider skill scaffold <service-id> --output <SKILL.md> [--force]
   xapi-to provider skill link <service-id> <skill-id>
@@ -73,7 +74,7 @@ Set both numeric flags together. Limits apply only to PROXY services and use
 one shared quota for each user and service, including all API keys of that user.
 
 SCOPES
-  list/get/versions/review/diff/skill context: service:read
+  list/get/versions/review/diff/timeline/skill context: service:read
   create: service:create
   update/version update/skill link/fingerprint: service:update
   major/revision start: version:create
@@ -385,6 +386,22 @@ export async function provider(args: string[], flags: Record<string, string>) {
         const after = optionalFlag(flags.after, '--after');
         if (after !== undefined) path.searchParams.set('after', after);
         if (limit) path.searchParams.set('limit', String(limit));
+        result = await apiKeyApiRequest(XAPI_API_HOST, apiKey, `${path.pathname}${path.search}`, { retries: READ_RETRIES });
+        break;
+      }
+
+      case 'timeline': {
+        // Review attempts, platform actions and creation for one service, newest first. Page with the previous
+        // response's nextBefore + nextBeforeId, passed back unchanged: entries written in one transaction share a timestamp.
+        const id = required(rest[0], 'xapi-to provider timeline <service-id> [--limit 50] [--before <at> --before-id <id>]');
+        const limit = positiveInt(flags.limit, 'limit', 200);
+        const before = optionalFlag(flags.before, '--before');
+        const beforeId = optionalFlag(flags['before-id'], '--before-id');
+        if (beforeId !== undefined && before === undefined) err('--before-id requires --before', 'Pass both values from the previous page unchanged.');
+        const path = new URL(`https://placeholder${servicePath(id, '/lifecycle-events')}`);
+        if (limit) path.searchParams.set('limit', String(limit));
+        if (before !== undefined) path.searchParams.set('before', before);
+        if (beforeId !== undefined) path.searchParams.set('beforeId', beforeId);
         result = await apiKeyApiRequest(XAPI_API_HOST, apiKey, `${path.pathname}${path.search}`, { retries: READ_RETRIES });
         break;
       }

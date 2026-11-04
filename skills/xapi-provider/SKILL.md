@@ -152,8 +152,21 @@ npx xapi-to provider events --after '<opaque-next-cursor>' --limit 50
 npx xapi-to usage wait <request-id> --timeout 1m
 ```
 
-Pass event cursors back unchanged. Inspect the target before changing live
-routing:
+Pass event cursors back unchanged. To see what happened to one service — review
+submissions and outcomes, platform actions such as a pause or rollback, and its
+creation, newest first — read its timeline:
+
+```bash
+npx xapi-to provider timeline <service-id> --limit 50
+npx xapi-to provider timeline <service-id> \
+  --before '<nextBefore>' --before-id '<nextBeforeId>'
+```
+
+Page with both `nextBefore` and `nextBeforeId` from the previous response,
+unchanged: a review and its outcome can share one timestamp. Actors are reported
+only as `provider`, `platform` or `system`.
+
+Inspect the target before changing live routing:
 
 ```bash
 npx xapi-to provider rollback \
@@ -188,7 +201,7 @@ with the same idempotency key and amount.
 | CLI operation | Required scope |
 |---|---|
 | `provider create` | `service:create` |
-| `provider list/get/versions/review/diff`, `provider skill context/scaffold` | `service:read` |
+| `provider list/get/versions/review/diff/timeline`, `provider skill context/scaffold` | `service:read` |
 | `provider update`, `provider version update`, Skill link/unlink/fingerprint | `service:update` |
 | `provider major create`, `provider revision start` | `version:create` |
 | `provider publish` | `service:publish` |

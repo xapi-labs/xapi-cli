@@ -239,6 +239,11 @@ npx xapi-to provider events --after '<opaque-next-cursor>' --limit 50
 Pass event cursors back unchanged. Metrics and events are owner-scoped; usage
 events are also restricted to the current key where applicable.
 
+`provider timeline <service-id>` lists one service's review submissions and
+outcomes, platform actions and creation, newest first (`service:read`). Page
+with the previous response's `nextBefore` and `nextBeforeId` via `--before` and
+`--before-id`, unchanged.
+
 Verify the finalized cost of a canary or provider call with an xAPI receipt ID
 when the selected interface exposes it, such as the direct service Gateway's
 `X-XAPI-Request-Id` header or a documented `xapi.usage` SSE event. Ordinary CLI
