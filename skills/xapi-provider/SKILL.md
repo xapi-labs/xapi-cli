@@ -147,13 +147,15 @@ Use `provider skill unlink <service-id>` to remove the association.
 ```bash
 npx xapi-to provider metrics --days 30
 npx xapi-to provider metrics <service-id> --days 7
-npx xapi-to provider events --limit 50
-npx xapi-to provider events --after '<opaque-next-cursor>' --limit 50
 npx xapi-to usage wait <request-id> --timeout 1m
 ```
 
-Pass event cursors back unchanged. Inspect the target before changing live
-routing:
+`provider events` is deprecated: the platform no longer records new agent
+events, and previously recorded events expire after 90 days. Use
+`provider metrics` for service health and `usage wait` for a single call's
+finalized result.
+
+Inspect the target before changing live routing:
 
 ```bash
 npx xapi-to provider rollback \

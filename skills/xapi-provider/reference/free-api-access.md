@@ -29,7 +29,6 @@ receipt:
 ```bash
 npx xapi-to usage wait <request-id> --timeout 1m
 npx xapi-to provider metrics <service-id> --days 1
-npx xapi-to provider events --limit 20
 ```
 
 Do not describe a zero-price endpoint as anonymous. Keep normal endpoint,
