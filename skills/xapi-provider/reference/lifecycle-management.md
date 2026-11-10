@@ -57,7 +57,8 @@ required. A complete HTTP example is:
 {
   "name": "Weather API",
   "description": "Forecasts and current conditions",
-  "category": "Data-Analysis",
+  "category": "Weather-Environment",
+  "tags": ["Forecasts", "Air quality"],
   "host": "weather-provider",
   "baseUrl": "https://weather.example.com/v1",
   "authType": "HEADER",
@@ -140,7 +141,7 @@ npx xapi-to provider update <service-id> \
   --about-file ./ABOUT.md \
   --website https://example.com \
   --logo-url https://example.com/logo.png \
-  --category Data-Analysis
+  --category Weather-Environment
 ```
 
 Use `--clear-about` or `--clear-website` to clear those fields. For structured
@@ -156,6 +157,13 @@ npx xapi-to provider update <service-id> --file ./service-metadata.json
 
 The limit is shared by all keys owned by one user for this service. It applies
 only to `PROXY` services. Set `rateLimitConfig` to `null` to disable it.
+
+Set display tags the same way. `tags` replaces the whole list; `[]` or `null`
+clears it. The rules are in the [validation checklist](validation-checklist.md).
+
+```json
+{ "tags": ["Forecasts", "Air quality"] }
+```
 
 ## Version updates
 

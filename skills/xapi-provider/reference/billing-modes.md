@@ -3,6 +3,11 @@
 Set billing on each object in `endpoints`. The CLI sends these fields as part of
 `provider create --file` or `provider version update --file`.
 
+Every price (`costPerCall`, `costPerResource` and each `tokenPricing` rate) must
+be zero or positive. The server rejects a negative price on every contract
+write, including `provider create`, `provider version update` and OpenAPI
+import.
+
 ## Fixed price: `PER_CALL`
 
 ```json
@@ -57,6 +62,15 @@ platform; use `tokenJsonPaths` only for a non-standard request or response:
   }
 }
 ```
+
+Usage must stay readable. When the endpoint's protocol has no usage preset,
+`tokenJsonPaths` must name `inputTokens` or `outputTokens` (one is enough, for
+example a rerank endpoint billed on output). A `tokenJsonPaths` object whose
+input and output paths are both empty is rejected when a live service is saved
+and when a revision is submitted for review, because the gateway would settle
+every call at the pre-charge estimate. Omitting `tokenJsonPaths` entirely keeps
+the OpenAI-style default paths (`usage.prompt_tokens` /
+`usage.completion_tokens`).
 
 `estimatedMaxTokens` controls the pre-charge hold. Choose a realistic maximum;
 an excessive value can reject affordable calls, while a value below actual use
