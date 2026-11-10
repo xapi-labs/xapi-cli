@@ -251,6 +251,26 @@ describe('provider command', () => {
     expect(requestSpy.mock.calls[0]?.[3]).toEqual({ retries: 2 });
   });
 
+  it('reads the service timeline and passes both page cursors back unchanged', async () => {
+    await provider(['timeline', 'service 1'], { limit: '20', before: '2026-11-03T08:00:00.000Z', 'before-id': 'f1a2-event' });
+
+    const path = String(requestSpy.mock.calls[0]?.[2]);
+    const url = new URL(`https://api.xapi.to${path}`);
+    expect(url.pathname).toBe('/api/api-services/agent/services/service%201/lifecycle-events');
+    expect(url.searchParams.get('limit')).toBe('20');
+    expect(url.searchParams.get('before')).toBe('2026-11-03T08:00:00.000Z');
+    expect(url.searchParams.get('beforeId')).toBe('f1a2-event');
+    expect(requestSpy.mock.calls[0]?.[3]).toEqual({ retries: 2 });
+  });
+
+  it('rejects a timeline page id without its timestamp before any request', async () => {
+    await expect(provider(['timeline', 'service-1'], { 'before-id': 'f1a2-event' })).rejects.toThrow('err called');
+    expect(errSpy).toHaveBeenCalledWith('--before-id requires --before', expect.any(String));
+    await expect(provider(['timeline', 'service-1'], { limit: '201' })).rejects.toThrow('err called');
+    await expect(provider(['timeline'], {})).rejects.toThrow('err called');
+    expect(requestSpy).not.toHaveBeenCalled();
+  });
+
   it('writes a scaffold without silently overwriting an existing file', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'xapi-scaffold-test-'));
     temporary.push(dir);
@@ -274,6 +294,8 @@ describe('provider command', () => {
       [['get', 'service-1'], { version: 'true' }],
       [['rollback', 'service-1', '1'], { revision: 'true' }],
       [['events'], { after: 'true' }],
+      [['timeline', 'service-1'], { before: 'true' }],
+      [['timeline', 'service-1'], { before: '2026-11-03T08:00:00Z', 'before-id': 'true' }],
       [['skill', 'scaffold', 'service-1'], { output: 'true' }],
       [['skill', 'fingerprint', 'service-1'], { 'skill-version-id': 'true' }],
       [['delete', 'service-1'], { confirm: 'true' }],

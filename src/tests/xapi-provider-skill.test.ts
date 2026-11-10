@@ -33,6 +33,7 @@ describe('bundled xapi-provider skill', () => {
       'provider diff',
       'provider metrics',
       'provider events',
+      'provider timeline',
       'provider skill context',
       'provider skill scaffold',
       'provider skill link',
