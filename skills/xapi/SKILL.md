@@ -111,6 +111,14 @@ Ranking is global: the service sorts all matching results before applying `--pag
 
 `get-batch` accepts at most 100 action IDs per invocation.
 
+### Choosing a service and reading its cost
+
+Several services can do the same job. Prefer a built-in capability; otherwise
+compare `stats.upstream_success_rate`, then price, then `stats.p50_ms`
+(`search --format table` shows them side by side). A JSON call's `billing`
+gives its cost and the `request_ids` for `usage <request-id>` receipts. Read
+`guides/choosing.md` for the rules and what each field means.
+
 ### Action identifiers and detail lookup
 
 For third-party APIs, `/` uses the bare service ID (`solana`); the literal
@@ -352,6 +360,7 @@ The CLI retries idempotent metadata reads and `task poll` for transient timeouts
 
 When the user's task involves these workflows, read the corresponding guide file for detailed instructions:
 
+- **`guides/choosing.md`** — choosing between similar services (30-day stats, price cards, capability routes) and reading a call's cost and receipts.
 - **`guides/twitter.md`** — Twitter/X (推特): read and paginate tweets/replies/media, download the highest-quality MP4 from a video tweet, advanced search, read long-form X Articles directly from `tweet_detail`, post tweets, reply, quote, like, retweet, OAuth binding
 - **`guides/reddit.md`** — Reddit: user profiles, posts, comments, subreddit feeds, popular/news/games feeds, trending, search
 - **`guides/linkedin.md`** — LinkedIn (领英): person profiles with career history, company pages, posts & comments, job search & job detail — every endpoint but job search is addressed by an ordinary LinkedIn page URL, and post comments need a numeric `urn` alongside `url`. **Read this guide before summarizing anyone's background:** `get__user__profile` returns `experience: null` / `education: null` for ordinary (non-creator) profiles because it reads the logged-out page, and the guide gives the fallback that recovers the real career history

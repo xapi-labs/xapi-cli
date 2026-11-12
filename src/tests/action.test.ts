@@ -116,6 +116,7 @@ describe('action commands', () => {
           meta: { category: 'Social', pricing: { billing_type: 'PER_CALL', comparable: true, listed_price: 0.00008 } },
           stats: { scope: 'service', window_days: 30, calls: 124965, success_rate: 0.9167, upstream_success_rate: 0.9734, p50_ms: 366, p95_ms: 1411, latency_refreshed_at: null },
         }],
+        query: 'twitter',
         pagination: {},
       });
       await actionSearch(['twitter'], { format: 'table' });

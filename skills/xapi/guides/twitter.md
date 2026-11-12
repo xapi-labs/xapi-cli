@@ -14,6 +14,25 @@ Complete guide for Twitter operations via xAPI — reading data, downloading twe
 - [API reference](#api-reference)
 - [Error handling](#error-handling)
 
+## Other X/Twitter services in the marketplace
+
+The built-in `twitter.*` capabilities below cover most reads. The marketplace
+also has third-party X data services; compare them with
+`npx xapi-to search "<task>" --source api --format table` (price, 30-day
+upstream success, P50) before choosing one:
+
+- XRead API (`xreadapi.*`): very low per-call price, slower responses.
+- OpenTwitter (`opentwitter.*`): fast, built for frequent monitoring.
+- twitter x (fapi.uk) (`x.*`) and Twitter API (`twitter.graphql_*`): raw
+  GraphQL payloads. `twitter.graphql_*` belongs to the third-party Twitter API
+  service, not to the built-in `twitter.*` capabilities, and its `variables`
+  input is a JSON-encoded string.
+- X API v2 (`x-official.*`): the official API, needed for writes (see
+  Posting Tweets below).
+
+Response shapes differ between these services, so read each one's `get`
+output before parsing its result.
+
 ## Reading Twitter Data (no OAuth needed)
 
 ### Look up a user by @handle
