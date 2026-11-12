@@ -13,6 +13,12 @@ const mockActions = [
   { id: 'serper.search', source: 'api', uuid: 'abc-123', method: 'GET', version: '1', status: 'stable', displayName: 'GET /search', meta: { title: 'Google Search', category: 'Infrastructure', cost: 1 } },
 ];
 
+const blankStats = { price: '', pricing: '', p50_ms: '', success_30d: '', calls_30d: '' };
+const expectedTableRows = [
+  { id: 'twitter.tweet_detail', service: 'built-in', method: '', category: 'Social', ...blankStats },
+  { id: 'serper.search', service: '', method: 'GET', category: 'Infrastructure', ...blankStats },
+];
+
 describe('action commands', () => {
   let outputSpy: ReturnType<typeof spyOn>;
   let errSpy: ReturnType<typeof spyOn>;
@@ -74,13 +80,11 @@ describe('action commands', () => {
       spy.mockRestore();
     });
 
-    it('renders table format with method and displayName columns', async () => {
+    it('renders table format with service, price and 30-day columns', async () => {
       const spy = spyOn(client, 'actionList').mockResolvedValue({ actions: mockActions, pagination: {} });
       await actionList([], { format: 'table' });
       expect(outputSpy).toHaveBeenCalledWith(
-        mockActions.map((a: any) => ({
-          id: a.id, method: a.method ?? '', displayName: a.displayName ?? '', source: a.source, category: a.meta.category, status: a.status, cost: a.meta.cost,
-        })),
+        expectedTableRows,
         'table',
       );
       spy.mockRestore();
@@ -94,9 +98,7 @@ describe('action commands', () => {
       try {
         await actionList([], {});
         expect(outputSpy).toHaveBeenCalledWith(
-          mockActions.map((a: any) => ({
-            id: a.id, method: a.method ?? '', displayName: a.displayName ?? '', source: a.source, category: a.meta.category, status: a.status, cost: a.meta.cost,
-          })),
+          expectedTableRows,
           'table',
         );
       } finally {
@@ -104,6 +106,24 @@ describe('action commands', () => {
         else process.env.XAPI_OUTPUT = previous;
         spy.mockRestore();
       }
+    });
+
+    it('shows service name, list price and 30-day service stats in search tables', async () => {
+      const spy = spyOn(client, 'actionSearch').mockResolvedValue({
+        results: [{
+          id: 'opentwitter.open_twitter__user__info', source: 'api', method: 'POST',
+          service: { id: 's1', name: 'OpenTwitter', host: 'opentwitter' },
+          meta: { category: 'Social', pricing: { billing_type: 'PER_CALL', comparable: true, listed_price: 0.00008 } },
+          stats: { scope: 'service', window_days: 30, calls: 124965, success_rate: 0.9167, upstream_success_rate: 0.9734, p50_ms: 366, p95_ms: 1411, latency_refreshed_at: null },
+        }],
+        pagination: {},
+      });
+      await actionSearch(['twitter'], { format: 'table' });
+      expect(outputSpy).toHaveBeenCalledWith([{
+        id: 'opentwitter.open_twitter__user__info', service: 'OpenTwitter', method: 'POST', category: 'Social',
+        price: 0.00008, pricing: 'PER_CALL', p50_ms: 366, success_30d: '97.3%', calls_30d: 124965,
+      }], 'table');
+      spy.mockRestore();
     });
 
     it('calls err on failure', async () => {

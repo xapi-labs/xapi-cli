@@ -243,21 +243,32 @@ export async function actionList(args: string[], flags: Record<string, string>) 
     });
     const actions = (res.actions || []) as any[];
     if (fmt === 'table') {
-      output(actions.map((a: any) => ({
-        id: a.id,
-        method: a.method ?? '',
-        displayName: a.displayName ?? '',
-        source: a.source ?? '',
-        category: a.meta?.category ?? '',
-        status: a.status ?? '',
-        cost: a.meta?.cost ?? '',
-      })), 'table');
+      output(actions.map(actionTableRow), 'table');
     } else {
       output(res, flags.format as any);
     }
   } catch (e: any) {
     err('list failed', e.message);
   }
+}
+
+const percent = (rate: unknown) =>
+  typeof rate === 'number' ? `${(rate * 100).toFixed(1)}%` : '';
+
+/** One table row per action: what it is, what it costs, how its service has done. */
+function actionTableRow(a: any) {
+  return {
+    id: a.id,
+    service: a.service?.name ?? (a.source === 'capability' ? 'built-in' : ''),
+    method: a.method ?? '',
+    category: a.meta?.category ?? '',
+    price: a.meta?.pricing?.comparable ? a.meta.pricing.listed_price : '',
+    pricing: a.meta?.pricing?.billing_type ?? '',
+    // Service-level, last 30 days; empty means no data, not zero.
+    p50_ms: a.stats?.p50_ms ?? '',
+    success_30d: percent(a.stats?.upstream_success_rate),
+    calls_30d: a.stats?.calls ?? '',
+  };
 }
 
 export async function actionSearch(args: string[], flags: Record<string, string>) {
@@ -287,18 +298,7 @@ export async function actionSearch(args: string[], flags: Record<string, string>
     }
     const results = (res.results || []) as any[];
     if (fmt === 'table') {
-      output(results.map((a: any) => ({
-        id: a.id,
-        method: a.method ?? '',
-        displayName: a.displayName ?? '',
-        source: a.source ?? '',
-        category: a.meta?.category ?? '',
-        status: a.status ?? '',
-        price: a.meta?.pricing?.comparable
-          ? a.meta.pricing.listed_price
-          : '',
-        pricing: a.meta?.pricing?.billing_type ?? '',
-      })), 'table');
+      output(results.map(actionTableRow), 'table');
     } else {
       output(res, flags.format as any);
     }
