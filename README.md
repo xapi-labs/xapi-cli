@@ -82,7 +82,7 @@ Unified interface for capabilities (built-in) and APIs (third-party). Use `--sou
 ```bash
 xapi-to list                                            # list all actions
 xapi-to list --source capability                        # only built-in capabilities
-xapi-to list --source api --category DeFi               # filter by source and category
+xapi-to list --source api --category Crypto             # filter by source and category
 xapi-to list --page 2 --page-size 20                    # pagination
 xapi-to list --service-id <id>                          # filter by service
 

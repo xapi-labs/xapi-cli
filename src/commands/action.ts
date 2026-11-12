@@ -23,7 +23,7 @@ USAGE
 
 FLAGS
   --source capability|api   Filter by source type
-  --category <name>         Filter by category
+  --category <name>         Filter by category: id, alias or name, any case
   --service-id <id>         Filter by service
   --page N                  Page number (default: 1)
   --page-size N             Results per page
@@ -42,7 +42,7 @@ USAGE
 
 FLAGS
   --source capability|api   Filter by source type
-  --category <name>         Filter by category
+  --category <name>         Filter by category: id, alias or name, any case
   --page N                  Page number (default: 1)
   --page-size N             Results per page
   --sort default|relevance|price
@@ -56,7 +56,7 @@ EXAMPLES
   xapi-to search "tweet detail" --source api
   xapi-to search "tweet detail" --sort relevance
   xapi-to search weather --sort price
-  xapi-to search weather --category utility --format table
+  xapi-to search weather --category weather --format table
   xapi-to search twitter --include-all-versions
 `;
 
@@ -76,7 +76,7 @@ USAGE
   xapi-to services [flags]
 
 FLAGS
-  --category <name>         Filter by category
+  --category <name>         Filter by category: id, alias or name, any case
   --page N                  Page number
   --page-size N             Results per page
   --format json|pretty|table  Output format
