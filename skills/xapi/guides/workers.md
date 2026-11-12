@@ -92,6 +92,8 @@ new-project preview Worker budget defaults to $0.25/day (explicit values or
 `--preview-budget none` override it). Model usage is billed separately to
 MODEL_KEY. Read generated TEMPLATE.md and create/link the project, set runtime
 Secrets, then plan/push; the first push is not successful while Secrets are missing.
+Before you have a key or have created anything, `xapi workers plan --env preview --local`
+runs the local build and shows the plan without any remote read.
 
 ```bash
 xapi workers templates

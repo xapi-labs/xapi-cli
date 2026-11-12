@@ -31,6 +31,15 @@ describe("Agent/Chat generated setup requirements", () => {
       expect(project.nextSteps).toContain("node --version");
       expect(project.nextSteps).toContain("npx xapi-to workers create --config xapi.worker.json");
       expect(project.nextSteps).not.toContain("xapi workers plan --env preview");
+      // a key-free local plan first, then each Secret after create returns the Worker ID
+      const steps = project.nextSteps.join("\n");
+      expect(steps).toContain("workers plan --env preview --local");
+      expect(steps.indexOf("workers create")).toBeLessThan(steps.indexOf("secrets set <worker-id> APP_TOKEN"));
+      expect(steps).toContain("secrets set <worker-id> MODEL_KEY --env preview --from-env MODEL_KEY");
+      expect(project.budgets).toEqual({
+        preview: { dailyBudgetUsd: 0.25 },
+        production: { dailyBudgetUsd: null },
+      });
     });
   }
   test("ordinary templates keep their existing requirements and steps", () => {

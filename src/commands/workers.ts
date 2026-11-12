@@ -15,6 +15,7 @@ import { listWorkerTemplates } from "../workers-templates.ts";
 import { importWranglerProject } from "../workers-wrangler-import.ts";
 import {
   prepareWorkerPlan,
+  type PlanClient,
   type WorkerDeploymentPlan,
 } from "../workers-plan.ts";
 import {
@@ -68,7 +69,9 @@ NORMAL PROJECT WORKFLOW (recommended)
   templates
   init [directory] --template TEMPLATE
   create --config xapi.worker.json     Create/link only; set Secrets before first push
-  plan --env preview|production
+  plan --env preview|production [--local]
+                                       --local: build and plan a new, unlinked project
+                                       without an API key or any remote read
   push --env preview
   pull --env preview|production [--output deployment-snapshot.json]
   promote --to production [--artifact ARTIFACT_ID]
@@ -811,17 +814,30 @@ export async function workersCommand(
       return;
     }
     case "plan": {
-      assertFlags(flags, ["env", "config"]);
+      assertFlags(flags, ["env", "config", "local"]);
       if (rest.length) err("usage: xapi-to workers plan --env ENV");
       if (flags.config === "true" || flags.config === "") {
         err("--config requires a path");
+      }
+      if (flags.local !== undefined && flags.local !== "true") err("--local does not accept a value");
+      const local = flags.local === "true";
+      if (local && loadWorkerProject(process.cwd(), flags.config).config.workerId) {
+        err("--local plans a project that is not linked to a Worker yet; run plan without --local");
       }
       try {
         const prepared = await prepareWorkerPlan({
           environment: environment(flags.env) as "preview" | "production",
           configPath: flags.config,
-          clientOptions: options(),
+          ...(local
+            ? {
+                // An unlinked project only reads the Worker list (slug check);
+                // a local plan reads nothing remote and leaves that to create.
+                clientOptions: { apiHost: XAPI_API_HOST, apiKey: "" },
+                client: { listWorkers: async () => [] } as unknown as PlanClient,
+              }
+            : { clientOptions: options() }),
         });
+        if (local) console.error("Local plan: no remote state was read; workers create checks the slug.");
         printWorkerPlan(prepared.plan, flags.format);
       } catch (error) {
         if (error instanceof WorkerProjectBuildError) {

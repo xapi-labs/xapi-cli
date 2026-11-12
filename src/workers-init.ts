@@ -48,6 +48,11 @@ export interface InitWorkerProjectResult {
   configPath: string;
   template: WorkerStarterTemplate;
   files: string[];
+  /** daily Worker budgets written to xapi.worker.json (null = no limit) */
+  budgets?: {
+    preview: { dailyBudgetUsd: number | null };
+    production: { dailyBudgetUsd: number | null };
+  };
   nextSteps: string[];
   mode?: "new" | "existing";
   framework?: string;
@@ -349,12 +354,25 @@ export function initWorkerProject(
     configPath: join(rootDir, "xapi.worker.json"),
     template: template.id,
     files: managedFiles,
+    budgets: {
+      preview: { dailyBudgetUsd: previewDailyBudgetUsd },
+      production: { dailyBudgetUsd: productionDailyBudgetUsd },
+    },
     nextSteps: [
       `cd ${relative(cwd, rootDir) || "."}`,
       ...(template.id === "agent" || template.id === "chat" ? ["node --version"] : []),
       "npm install",
       ...(template.id === "agent" || template.id === "chat"
-        ? ["cat TEMPLATE.md", "npx xapi-to workers create --config xapi.worker.json"]
+        ? [
+            "cat TEMPLATE.md",
+            "npx xapi-to workers plan --env preview --local   # builds locally, no key needed",
+            "npx xapi-to workers create --config xapi.worker.json",
+            // Secrets need the Worker ID that create returns.
+            ...template.defaultSecrets.map(
+              (secret) =>
+                `npx xapi-to workers secrets set <worker-id> ${secret} --env preview --from-env ${secret}`,
+            ),
+          ]
         : ["npm run dev"]),
       `${template.id === "agent" || template.id === "chat" ? "npx xapi-to" : "xapi"} workers plan --env preview`,
       `${template.id === "agent" || template.id === "chat" ? "npx xapi-to" : "xapi"} workers push --env preview`,
