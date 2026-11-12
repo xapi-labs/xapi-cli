@@ -6,9 +6,10 @@
   "description": "OpenAI-compatible DeepSeek chat endpoint backed by ai.xapi.to.",
   "productTemplate": "agent",
   "defaultResources": [],
-  "defaultSecrets": ["MODEL_KEY"],
+  "defaultSecrets": ["APP_TOKEN", "MODEL_KEY"],
   "packageScripts": {},
   "files": [
-    { "source": "src/index.ts", "target": "src/index.ts" }
+    { "source": "src/index.ts", "target": "src/index.ts" },
+    { "source": "TEMPLATE.md", "target": "TEMPLATE.md", "render": false }
   ]
 }

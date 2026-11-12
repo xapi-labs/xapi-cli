@@ -148,6 +148,14 @@ export class RequestTimeoutError extends Error {
   }
 }
 
+/** Preserve the Action envelope even when legacy auth handling supplies a hint. */
+export class BusinessResponseError extends Error {
+  constructor(message: string, public readonly responseBody: unknown) {
+    super(message);
+    this.name = 'BusinessResponseError';
+  }
+}
+
 /**
  * Retryable HTTP statuses. Deliberately conservative: 429 (rate limited — the
  * request was rejected, not processed) and 502/503/504 (gateway/availability
@@ -202,6 +210,21 @@ function parseRetryAfterMs(res: Response): number | undefined {
   if (Number.isFinite(seconds)) return seconds * 1000;
   const at = Date.parse(header);
   return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
+}
+
+function parseErrorResponseBody(text: string): unknown {
+  try { return JSON.parse(text); } catch { return undefined; }
+}
+
+/** Headers establish an HTTP failure even if its error body is interrupted. */
+async function readActionHttpError(res: Response): Promise<HttpError> {
+  const retryAfterMs = isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined;
+  try {
+    const text = await res.text();
+    return new HttpError(res.status, text.slice(0, 300), retryAfterMs, parseErrorResponseBody(text));
+  } catch (cause) {
+    return new HttpError(res.status, 'could not read error response', retryAfterMs, undefined, { cause });
+  }
 }
 
 function abortError(signal?: AbortSignal | null): Error {
@@ -421,15 +444,17 @@ export async function request<T>(
         if (body && typeof body === 'object' && 'success' in body && (body as any).success === false) {
           const data = (body as any).data;
           if (data?.statusCode === 401 || data?.error === 'Unauthorized') {
-            throw new Error(
+            throw new BusinessResponseError(
               'Authentication failed: ' + (data.message || 'Invalid or missing API key')
               + '. Run "npx xapi-to config set apiKey=<key>" to update your key.',
+              body,
             );
           }
           if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && data?.message?.includes('OAuth'))) {
-            throw new Error(
+            throw new BusinessResponseError(
               (data.message || 'OAuth authorization required')
               + '. Run "xapi-to oauth bind" to connect your account.',
+              body,
             );
           }
         }
@@ -864,12 +889,7 @@ export async function actionStream(
       );
     }
     if (!res.ok) {
-      const text = await res.text();
-      throw new HttpError(
-        res.status,
-        text.slice(0, 300),
-        isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined,
-      );
+      throw await readActionHttpError(res);
     }
 
     const contentType = res.headers.get('content-type') || '';
@@ -889,7 +909,7 @@ export async function actionStream(
       if (!process.stdout.write(chunk)) await once(process.stdout, 'drain');
     }
   } catch (error) {
-    if (timedOut) throw new RequestTimeoutError(activeTimeoutMs);
+    if (timedOut && !(error instanceof HttpError)) throw new RequestTimeoutError(activeTimeoutMs);
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
@@ -966,12 +986,7 @@ export async function actionDownload(
       );
     }
     if (!res.ok) {
-      const text = await res.text();
-      throw new HttpError(
-        res.status,
-        text.slice(0, 300),
-        isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined,
-      );
+      throw await readActionHttpError(res);
     }
 
     let bytes = 0;
@@ -1003,7 +1018,7 @@ export async function actionDownload(
       status: res.status,
     };
   } catch (error) {
-    if (timedOut) throw new RequestTimeoutError(activeTimeoutMs);
+    if (timedOut && !(error instanceof HttpError)) throw new RequestTimeoutError(activeTimeoutMs);
     throw error;
   } finally {
     if (timer) clearTimeout(timer);

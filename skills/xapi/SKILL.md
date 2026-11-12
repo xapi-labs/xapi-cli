@@ -326,6 +326,21 @@ The full catalog also spans many other categories — crypto/on-chain data, CEX 
 
 ## Error Handling
 
+For ordinary JSON `call`, a top-level Action `success: false` preserves the
+redacted envelope on stdout and exits nonzero. Read stderr's JSON `detail` for
+`status` (when HTTP failed), `code`, `message`, validation `details`,
+`retry_after_ms` (when provided), and `outcome`. An `unknown` outcome means the
+upstream may already have acted; inspect the result before retrying a write.
+Nested `data.success: false` does not by itself make the outer Action fail.
+An accepted async task still requires its documented terminal-state check.
+`--stream` forwards SSE frames unchanged; inspect the stream's own error and
+completion events. HTTP failures before the SSE stream use structured stderr.
+
+When `get` includes `responseContract`, its variants describe provider-declared
+status codes, media types, schemas and examples, with their source. A false
+`outputSchemaAvailable` means the compatibility `output` object is not a known
+success schema. Examples are documentation, not a guaranteed exhaustive schema.
+
 - **Authentication error** → Run `npx xapi-to register` or `config set apiKey=<key>`
 - **OAuth Required error** → Run `npx xapi-to oauth bind --provider twitter`
 - **Insufficient balance** → Run `npx xapi-to topup --method stripe --amount 10`

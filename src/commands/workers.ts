@@ -173,7 +173,7 @@ INIT FLAGS
   --build-main PATH                     Entrypoint inside a build-output directory
   --name NAME                           Worker display name
   --slug SLUG                           Stable lowercase Worker slug
-  --preview-budget USD|none            Default: none
+  --preview-budget USD|none            New agent/chat: 0.25; other templates/imports: none
   --production-budget USD|none         Default: none
   --data-location REGION                Default for newly created D1/R2 resources
   --placement off|smart                 Cloudflare Worker placement metadata
@@ -791,7 +791,7 @@ export async function workersCommand(
             slug: flags.slug === "true" ? undefined : flags.slug,
             previewDailyBudgetUsd: flags["preview-budget"]
               ? budget(flags["preview-budget"], "--preview-budget")
-              : null,
+              : undefined,
             productionDailyBudgetUsd: flags["production-budget"]
               ? budget(flags["production-budget"], "--production-budget")
               : null,

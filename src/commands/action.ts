@@ -6,8 +6,9 @@
 
 import { getConfig, requireApiKey } from '../config.ts';
 import * as client from '../client.ts';
-import { output, err, getFormat } from '../format.ts';
+import { output, err, errAfterFlush, getFormat } from '../format.ts';
 import { generateCode, buildDefaultInput, resolveTarget } from '../codegen.ts';
+import { actionErrorDetail, isActionFailure, redactActionFailure } from '../action-error.ts';
 
 const VALID_SOURCES = ['capability', 'api'];
 const VALID_SEARCH_SORTS = ['default', 'relevance', 'price'] as const;
@@ -435,6 +436,7 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
   }
 
   requireApiKey(cfg);
+  let res: unknown;
   try {
     if (stream) {
       await client.actionStream(id, cleanInput, cfg, method);
@@ -461,9 +463,11 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
       );
       return;
     }
-    const res = await client.actionCall(id, cleanInput, cfg, method);
-    output(res, flags.format as any);
+    res = await client.actionCall(id, cleanInput, cfg, method);
   } catch (e: any) {
-    err('call failed', e.message);
+    if (e instanceof client.BusinessResponseError) output(redactActionFailure(e.responseBody, cfg.apiKey), flags.format as any);
+    await errAfterFlush('call failed', actionErrorDetail(e, cfg.apiKey));
   }
+  output(isActionFailure(res) ? redactActionFailure(res, cfg.apiKey) : res, flags.format as any);
+  if (isActionFailure(res)) await errAfterFlush('call failed', actionErrorDetail(undefined, cfg.apiKey, res));
 }

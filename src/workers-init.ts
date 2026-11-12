@@ -137,6 +137,7 @@ function projectFiles(
   defaultResourceLocation?: "wnam" | "enam" | "weur" | "eeur" | "apac" | "oc",
   placementMode?: "off" | "smart",
 ): Record<string, string> {
+  const simpleAgent = template.id === "agent" || template.id === "chat";
   const config: WorkerProjectConfig = {
     $schema: WORKER_PROJECT_SCHEMA_URL,
     version: 1,
@@ -169,13 +170,16 @@ function projectFiles(
   };
   return {
     ".gitignore": "node_modules\ndist\n.dev.vars\n.env*\n!.env.example\n",
-    "README.md": `# ${name}\n\nCreated from xAPI Worker template \`${template.id}@${template.version}\`.\n\n${template.description}\n\n\`\`\`bash\nnpm install\nnpm run dev\nnpm run build\nxapi workers plan --env preview\nxapi workers push --env preview\n\`\`\`\n\nDeclared resources are provisioned and bound by xAPI during plan/push. Set runtime secrets with \`xapi workers secrets set\`; never commit secret values to this project.\n`,
+    "README.md": simpleAgent
+      ? `# ${name}\n\nCreated from xAPI Worker template \`${template.id}@${template.version}\`.\n\n${template.description}\n\n## Requirements and local use\n\nUse Node.js 22.12.0 or newer for this template's Wrangler toolchain. The xAPI CLI's own Node minimum is not sufficient for this generated project.\n\nRead TEMPLATE.md before starting. For local development, put APP_TOKEN and MODEL_KEY in the ignored .dev.vars file; never commit their values.\n\n\`\`\`bash\nnode --version\nnpm install\nnpm run dev\n# In another terminal:\nnpm run build\n\`\`\`\n\nFollow TEMPLATE.md for create/link, Secret setup and cloud deployment. Published CLI examples use \`npx xapi-to\`, so a global xapi executable is not required. If this project came from an unreleased checkout, use that checkout's built CLI instead; a local package version does not prove the template is published on npm.\n`
+      : `# ${name}\n\nCreated from xAPI Worker template \`${template.id}@${template.version}\`.\n\n${template.description}\n\n\`\`\`bash\nnpm install\nnpm run dev\nnpm run build\nxapi workers plan --env preview\nxapi workers push --env preview\n\`\`\`\n\nDeclared resources are provisioned and bound by xAPI during plan/push. Set runtime secrets with \`xapi workers secrets set\`; never commit secret values to this project.\n`,
     "package.json": `${JSON.stringify(
       {
         name: slug,
         version: "0.1.0",
         private: true,
         type: "module",
+        ...(simpleAgent ? { engines: { node: ">=22.12.0" } } : {}),
         scripts: {
           build:
             "esbuild src/index.ts --bundle --format=esm --platform=neutral --target=es2022 --outfile=dist/worker.mjs",
@@ -252,7 +256,9 @@ export function initWorkerProject(
       "compatibilityDate must use YYYY-MM-DD",
     );
   }
-  const previewDailyBudgetUsd = options.previewDailyBudgetUsd ?? null;
+  const previewDailyBudgetUsd = options.previewDailyBudgetUsd !== undefined
+    ? options.previewDailyBudgetUsd
+    : (template.id === "agent" || template.id === "chat") ? 0.25 : null;
   const productionDailyBudgetUsd = options.productionDailyBudgetUsd ?? null;
   for (const [environment, amount] of [
     ["preview", previewDailyBudgetUsd],
@@ -345,10 +351,13 @@ export function initWorkerProject(
     files: managedFiles,
     nextSteps: [
       `cd ${relative(cwd, rootDir) || "."}`,
+      ...(template.id === "agent" || template.id === "chat" ? ["node --version"] : []),
       "npm install",
-      "npm run dev",
-      "xapi workers plan --env preview",
-      "xapi workers push --env preview",
+      ...(template.id === "agent" || template.id === "chat"
+        ? ["cat TEMPLATE.md", "npx xapi-to workers create --config xapi.worker.json"]
+        : ["npm run dev"]),
+      `${template.id === "agent" || template.id === "chat" ? "npx xapi-to" : "xapi"} workers plan --env preview`,
+      `${template.id === "agent" || template.id === "chat" ? "npx xapi-to" : "xapi"} workers push --env preview`,
     ],
     mode: "new",
   };
