@@ -127,7 +127,23 @@ Read these output fields first:
 - `result.exitCode`, `result.stdout`, `result.stderr`: remote result;
 - `cleanup.operationStatus`, `cleanup.state`: teardown result;
 - `finalState`: should be `TERMINATED` (or provider-terminal `FAILED`);
-- `totalCost`: service-calculated cost, not a client estimate.
+- `totalCost`: service-calculated cost, not a client estimate;
+- `limits`: the server-side limits the instance ran under.
+
+`offering` is just the offering's name; add `--verbose` for the full offering
+(resources and rate card).
+
+The server also terminates the instance on its own, so a killed CLI or a lost
+network cannot leave it billing:
+
+- `--max-lifetime 10m`: terminate after this long. `sandbox run` sets one by
+  default (twice the wait and command timeouts, plus 10 minutes).
+- `--max-total-usd 0.05`: terminate before the total cost would pass this. It
+  must cover the first billing window plus the shutdown reserve; when it does
+  not, create fails with the minimum.
+
+`sandbox create` takes the same two flags. Without them, a created instance
+runs until it is terminated or the balance runs out.
 
 A remote non-zero exit code becomes the local CLI exit code after cleanup, so
 shells and AI runners can detect failure without parsing stdout.

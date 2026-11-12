@@ -340,7 +340,40 @@ describe('sandbox commands', () => {
     expect(outputSpy).toHaveBeenCalledWith(expect.objectContaining({
       instanceId: 'box-1', finalState: 'TERMINATED', totalCost: '0.001',
       result: { exitCode: 0, stdout: '42\n' },
+      // the offering's name only, and the server-side lifetime it ran under
+      offering: 'Cloudflare Sandbox',
+      limits: { maxLifetimeSeconds: 2 * (300 + 60) + 600 },
     }), undefined);
+    expect(mocked.createSpy).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        policy: { resumeOnAccess: false, maxLifetimeSeconds: 1320 },
+      }),
+    );
+  });
+
+  it('run passes explicit limits and shows the full offering with --verbose', async () => {
+    const mocked = mockSuccessfulRun();
+    await sandboxRun([], {
+      command: 'echo ok', 'max-lifetime': '10m', 'max-total-usd': '0.05', verbose: 'true',
+    });
+    expect(mocked.createSpy).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        policy: { resumeOnAccess: false, maxLifetimeSeconds: 600, maxTotalUsd: '0.05000000' },
+      }),
+    );
+    expect(outputSpy).toHaveBeenCalledWith(expect.objectContaining({
+      offering: { name: 'Cloudflare Sandbox' },
+      limits: { maxLifetimeSeconds: 600, maxTotalUsd: '0.05000000' },
+    }), undefined);
+  });
+
+  it('rejects a lifetime under a minute before any billable request', async () => {
+    const mocked = mockSuccessfulRun();
+    await expect(sandboxRun([], { command: 'echo ok', 'max-lifetime': '30s' })).rejects.toThrow('err called');
+    expect(errSpy).toHaveBeenCalledWith('--max-lifetime must be at least 60s');
+    expect(mocked.quoteSpy).not.toHaveBeenCalled();
   });
 
   it('run cleans up when command execution fails', async () => {
@@ -388,6 +421,11 @@ describe('sandbox commands', () => {
     spies.push(quoteSpy, createSpy, waitSpy, execSpy, getSpy, stateSpy);
     await sandboxRun([], { command: 'echo ok', keep: 'true' });
     expect(stateSpy).not.toHaveBeenCalled();
+    // a kept instance gets no server-side lifetime unless asked for
+    expect(createSpy).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ policy: { resumeOnAccess: false } }),
+    );
     expect(outputSpy).toHaveBeenCalledWith(expect.objectContaining({
       finalState: 'RUNNING',
       cleanup: expect.objectContaining({ kept: true }),
