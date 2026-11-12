@@ -9,8 +9,17 @@ before `provider version update --replace`, and again before publication.
   `QUERY`.
 - `host`, if supplied, normalizes to a lowercase DNS label and is not a reserved
   platform name.
-- `category` uses a platform category such as `Public-Utils`, `AI-Models`,
-  `Social`, `Data-Analysis`, or `Crypto`.
+- `category` is one ID from the official catalogue: `AI-Models`, `Sandbox`,
+  `Search`, `Web-Scraping`, `Social`, `Communication`, `Finance`, `Crypto`,
+  `Commerce`, `Business-Data`, `News`, `Media`, `Maps-Location`,
+  `Weather-Environment`, `Data-Analysis`, `Dev-Tools`, `Security`,
+  `Entertainment-Sports`, `Public-Utils` or `Other`. Administrators can change
+  the catalogue, and the server rejects an ID that is not in its current
+  catalogue; ask the user instead of guessing a near match.
+- `tags`, if supplied, is an array of at most 8 labels, 1–24 characters each,
+  without commas or control characters. The server trims them, collapses
+  spaces and drops case-insensitive duplicates. Tags are display labels next to
+  the category; they do not affect search.
 - `accessMode` is `PROXY` or `DIRECT`. Use `PROXY` for gateway billing,
   observability, or service rate limiting.
 - `baseUrl` and named `baseUrls` are public HTTP(S) URLs. A pure WebSocket
@@ -27,7 +36,12 @@ before `provider version update --replace`, and again before publication.
   unintended additions or removals.
 - Path parameters use `:name` and have matching `pathParams` descriptions.
 - Billing fields match the chosen `billingType`; pre-charge estimates are
-  realistic.
+  realistic. No price is negative.
+- A `PER_TOKEN` HTTP endpoint keeps usage readable: its protocol supplies usage
+  paths, `tokenJsonPaths` names `inputTokens` or `outputTokens`, or
+  `tokenJsonPaths` is omitted (OpenAI-style defaults). Both paths empty is
+  rejected on a live-service save and on review submission; see
+  [billing](billing-modes.md).
 - Streaming endpoints set both `supportsStreaming` and `streamFormat`.
 - AI billing and protocol are chosen independently: PER_TOKEN uses model keys
   in `tokenPricing`; DYNAMIC/PER_CALL/PER_RESOURCE AI uses `servedModels`.
@@ -43,6 +57,14 @@ before `provider version update --replace`, and again before publication.
 - WebSocket endpoints set `protocol: "WEBSOCKET"`, a supported adapter, a
   public `wsConfig.upstreamUrl`, and a valid `wsBilling` object.
 - OAuth user-context endpoints retain their approved `userOAuthProviderId`.
+
+## OpenAPI import
+
+`provider import` accepts OpenAPI 3.x and Swagger 2.0 documents. Swagger 2.0 is
+converted on the server (host and base path, security schemes, body and form
+parameters, responses). Path-level parameters apply to every operation of the
+path; an operation-level parameter with the same name and location replaces
+it. Check the imported draft with `provider get` before publishing.
 
 ## Before create or update
 

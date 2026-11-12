@@ -237,9 +237,14 @@ npx xapi-to provider metrics <service-id> --days 7
 Metrics are owner-scoped.
 
 `provider events` is deprecated: the platform no longer records new agent
-events, and previously recorded events expire after 90 days. Use
+events, and previously recorded events are being removed. Use
 `provider metrics` for service health and `usage wait` for a single call's
 finalized result.
+
+`provider timeline <service-id>` lists one service's review submissions and
+outcomes, platform actions and creation, newest first (`service:read`). Page
+with the previous response's `nextBefore` and `nextBeforeId` via `--before` and
+`--before-id`, unchanged.
 
 Verify the finalized cost of a canary or provider call with an xAPI receipt ID
 when the selected interface exposes it, such as the direct service Gateway's

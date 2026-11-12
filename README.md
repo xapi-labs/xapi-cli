@@ -896,6 +896,7 @@ xapi-to provider version update <service-id> <version-id> --file ./contract.json
 xapi-to provider diff <service-id> 1
 xapi-to provider publish <service-id> <revision-id> --changelog-file ./CHANGELOG.md
 xapi-to provider metrics <service-id> --days 7
+xapi-to provider timeline <service-id> --limit 50
 ```
 
 Service rate limits are optional and supported only for proxied services. Both
