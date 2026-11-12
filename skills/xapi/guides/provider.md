@@ -232,12 +232,14 @@ the contract changes even if endpoint keys remain identical.
 ```bash
 npx xapi-to provider metrics --days 30
 npx xapi-to provider metrics <service-id> --days 7
-npx xapi-to provider events --limit 50
-npx xapi-to provider events --after '<opaque-next-cursor>' --limit 50
 ```
 
-Pass event cursors back unchanged. Metrics and events are owner-scoped; usage
-events are also restricted to the current key where applicable.
+Metrics are owner-scoped.
+
+`provider events` is deprecated: the platform no longer records new agent
+events, and previously recorded events are being removed. Use
+`provider metrics` for service health and `usage wait` for a single call's
+finalized result.
 
 `provider timeline <service-id>` lists one service's review submissions and
 outcomes, platform actions and creation, newest first (`service:read`). Page

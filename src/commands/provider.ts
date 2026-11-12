@@ -39,7 +39,7 @@ USAGE
   xapi-to provider review <service-id> <revision-id>
   xapi-to provider diff <service-id> <major>
   xapi-to provider metrics [service-id] [--days 30]
-  xapi-to provider events [--after <cursor>] [--limit 50]
+  xapi-to provider events [--after <cursor>] [--limit 50]   (deprecated; no new events are recorded)
   xapi-to provider timeline <service-id> [--limit 50] [--before <at> --before-id <id>]
   xapi-to provider skill context <service-id>
   xapi-to provider skill scaffold <service-id> --output <SKILL.md> [--force]
