@@ -2,7 +2,7 @@
 
 Complete guide for Twitter operations via xAPI — reading data, downloading tweet videos, posting tweets, replying, and OAuth setup.
 
-> **Upstream provider:** All `twitter.*` capabilities accept an optional `provider` — `"x"` (fapi.uk, the default) or `"twitter"` (legacy upstream). The response is normalized to an identical structure regardless of provider, so you normally omit it. Pass `"provider":"twitter"` only to force the legacy upstream, e.g. `--input '{"screen_name":"elonmusk","provider":"twitter"}'`.
+> **Upstream provider:** The built-in normalized Twitter read capabilities below accept an optional `provider` — `"x"` (fapi.uk, the default) or `"twitter"` (legacy upstream). Normally omit it to allow transient failover where supported; filtered or paginated searches keep their selected upstream. This option does not apply to marketplace `twitter.graphql_*` or `x-official.*` endpoints; inspect their current `get` schema.
 
 ## Contents
 
@@ -21,8 +21,9 @@ also has third-party X data services; compare them with
 `npx xapi-to search "<task>" --source api --format table` (price, 30-day
 upstream success, P50) before choosing one:
 
-- XRead API (`xreadapi.*`): very low per-call price, slower responses.
-- OpenTwitter (`opentwitter.*`): fast, built for frequent monitoring.
+- XRead API (`xreadapi.*`) and OpenTwitter (`opentwitter.*`): alternative read
+  services. Use current discovery results to compare prices, freshness,
+  reliability and latency; this guide does not establish a live ranking.
 - twitter x (fapi.uk) (`x.*`) and Twitter API (`twitter.graphql_*`): raw
   GraphQL payloads. `twitter.graphql_*` belongs to the third-party Twitter API
   service, not to the built-in `twitter.*` capabilities, and its `variables`
@@ -155,6 +156,18 @@ npx xapi-to call twitter.search --input '{
 
 Supported structured filters: `from`, `to`, `mentioning`, `phrase`, `any`, `none`, `tag`, `since`, `until`, `min_replies`, `min_likes`, `min_retweets`, and `count`. `sort_by` accepts `Top`, `Latest` (default), `People`, `Photos`, or `Videos`; the default `x` provider maps both media-specific values to its combined Media search. Dates use `YYYY-MM-DD`; `until` is exclusive. Paginate with `cursor` from `data.cursor_bottom`.
 
+Structured filters, including an explicit `count`, are supported only by the
+`x` upstream. Explicit `"provider":"twitter"` with these fields returns
+`UNSUPPORTED_FILTERS` before transport. Omitting `provider` with filters keeps
+the request on `x`; an upstream failure is returned rather than retrying
+against a provider with different filter semantics. To allow transient
+fallback on an initial plain search, omit structured filters, including
+`count`.
+
+For search pagination, keep the returned `data.provider` as the explicit
+`provider` alongside `data.cursor_bottom` in the next request. A request with
+a cursor never falls back to another upstream; cursors are provider-specific.
+
 ### Get user's media posts
 
 ```bash
@@ -178,7 +191,19 @@ npx xapi-to call twitter.retweeters --input '{"tweet_id":"1234567890"}'
 
 ## Posting Tweets (OAuth required)
 
-Posting, replying, quoting, liking, retweeting, and deleting require OAuth. A saved binding provides technical authorization, not standing user consent: confirm the current content and target before a write, and obtain explicit confirmation before destructive or bulk actions.
+The official X write endpoints use the user's OAuth account. A saved binding provides technical authorization, not standing user consent: confirm the current content and target before a write, and obtain explicit confirmation before destructive or bulk actions.
+
+First discover the current endpoint and inspect its contract:
+
+```bash
+npx xapi-to search "X official post tweet" --source api --format table
+npx xapi-to get <actionId>
+```
+
+Use the returned `actionId`, method, input schema and OAuth requirement. The
+`x-official.*` commands below are examples; verify each ID with `get` before
+calling it. Built-in normalized `twitter.*` reads do not need a personal OAuth
+binding. Marketplace read services can have different authentication.
 
 ### Step 1: Bind Twitter OAuth
 
@@ -289,7 +314,17 @@ Omit `cursor` for the first page. Stop when the relevant bottom cursor is absent
 
 ## Error Handling
 
-- **OAuth Required** → Run `npx xapi-to oauth bind --provider twitter`
-- **403 Forbidden** → Twitter account may have restrictions; check account status
+- **OAuth Required on an OAuth endpoint** → Inspect `get <actionId>` and
+  `npx xapi-to oauth status`, then bind the required provider/account/scopes.
+  For official X endpoints, use `npx xapi-to oauth bind --provider twitter`.
+  Check the previous outcome before retrying a write; a binding does not prove
+  that the previous post failed.
+- **OAuth error on a built-in normalized read** → Verify the selected action ID
+  and read its structured error. Do not bind a personal account just to repair
+  an upstream read service failure; report the error or choose another read
+  service through discovery.
+- **403 Forbidden** → Check the structured error and endpoint requirements:
+  key permissions, provider availability, OAuth account/scopes or account
+  restrictions. A generic 403 alone does not establish an OAuth problem.
 - **Tweet too long** → Shorten to 280 chars (140 CJK)
 - **User not found** → Check the screen_name spelling

@@ -453,7 +453,7 @@ export async function request<T>(
           if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && data?.message?.includes('OAuth'))) {
             throw new BusinessResponseError(
               (data.message || 'OAuth authorization required')
-              + '. Run "xapi-to oauth bind" to connect your account.',
+              + '. Inspect "xapi-to get <actionId>" and "xapi-to oauth status"; use "xapi-to oauth bind --provider <provider>" only if the endpoint requires your OAuth account.',
               body,
             );
           }
