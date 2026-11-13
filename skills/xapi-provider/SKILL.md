@@ -58,6 +58,12 @@ scope. Do not try unrelated keys.
   [OAuth user context](reference/oauth-user-context.md).
 - Relay or aggregator onboarding: read
   [relay onboarding](reference/onboarding-openai-relay.md).
+- Importing raw OpenAPI JSON/YAML: read the OpenAPI import section of the
+  [validation checklist](reference/validation-checklist.md) for explicit missing
+  price choices, including `--default-price 0` for intentionally free calls.
+- Public endpoint hints for consuming agents: use operation-level
+  `x-xapi-agent-notes`; see
+  [lifecycle management](reference/lifecycle-management.md#provider-authored-agent-notes).
 - Before any create or publish: apply the
   [validation checklist](reference/validation-checklist.md).
 
