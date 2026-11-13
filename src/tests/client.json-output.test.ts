@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
-import { mkdtemp, open, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, open, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { actionSaveJson, HttpError, type ActionReview, type ActionRateLimitState } from '../client.ts';
@@ -12,7 +12,7 @@ const envelope = {
   request_id: 'request-file-test',
   meta: { provider: 'synthetic', review: {
     status: 'approved', method: 'automated', automated_verdict: 'PASS',
-    revision_id: 'synthetic-revision', reviewed_at: '2026-11-13T00:00:00.000Z',
+    revision_id: 'synthetic-revision', record_updated_at: '2026-11-13T00:00:00.000Z',
   } satisfies ActionReview },
   rate_limit: { limit: 10, remaining: 0, reset_at: 1794528000, retry_after_seconds: 42 } satisfies ActionRateLimitState,
 };
@@ -73,6 +73,7 @@ describe('actionSaveJson', () => {
     { message: 'Business failure' },
     { statusCode: 401, error: 'Unauthorized', message: 'Invalid key' },
     { statusCode: 403, error: 'OAuth Required', message: 'OAuth required' },
+    { statusCode: 403, error: 'Forbidden', message: { reason: 'policy' } },
   ])('saves HTTP 200 business errors before rejecting', async data => {
     const failure = { ...envelope, success: false, data };
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(reply(failure));
@@ -99,6 +100,38 @@ describe('actionSaveJson', () => {
     const target = join(dir, 'network.json');
     await expect(actionSaveJson('test.action', {}, opts, target)).rejects.toThrow('fetch failed');
     await expect(stat(target)).rejects.toThrow();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['file', 'symlink'] as const)('preserves a replacement %s during failed-execution cleanup', async replacement => {
+    const target = join(dir, 'result.json');
+    const moved = join(dir, 'moved.json');
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () => {
+      await rename(target, moved);
+      if (replacement === 'symlink') await symlink(moved, target);
+      else await writeFile(target, 'replacement');
+      throw new TypeError('fetch failed');
+    }) as unknown as typeof fetch);
+    await expect(actionSaveJson('test.action', {}, opts, target)).rejects.toThrow('fetch failed');
+    expect((await lstat(target)).isSymbolicLink()).toBe(replacement === 'symlink');
+    expect(await readFile(target, 'utf8')).toBe(replacement === 'symlink' ? '' : 'replacement');
+    expect(await readFile(moved, 'utf8')).toBe('');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['file', 'symlink'] as const)('rejects a success receipt for a replacement %s without deleting it', async replacement => {
+    const target = join(dir, 'result.json');
+    const moved = join(dir, 'moved.json');
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (_url, _init) => {
+      await rename(target, moved);
+      if (replacement === 'symlink') await symlink(moved, target);
+      else await writeFile(target, 'replacement');
+      return reply(envelope);
+    }) as typeof fetch);
+    await expect(actionSaveJson('test.action', {}, opts, target)).rejects.toThrow('Output path changed');
+    expect((await lstat(target)).isSymbolicLink()).toBe(replacement === 'symlink');
+    expect(JSON.parse(await readFile(moved, 'utf8'))).toEqual(envelope);
+    if (replacement === 'file') expect(await readFile(target, 'utf8')).toBe('replacement');
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -142,8 +175,8 @@ describe('call --output-json process exit and stdout', () => {
     server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => { calls++; return new Response(rawBody ?? JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }); } });
   });
   afterEach(async () => { server.stop(true); await rm(dir, { recursive: true, force: true }); });
-  async function run(flags: string[]) {
-    const proc = Bun.spawn([process.execPath, '--no-env-file', resolve(import.meta.dir, '../index.ts'), 'call', 'test.action', '--input', '{}', ...flags], {
+  async function run(flags: string[], command = ['call', 'test.action', '--input', '{}']) {
+    const proc = Bun.spawn([process.execPath, '--no-env-file', resolve(import.meta.dir, '../index.ts'), ...command, ...flags], {
       cwd: dir,
       env: { PATH: process.env.PATH!, HOME: dir, XAPI_KEY: 'sk-local-test', XAPI_ACTION_HOST: `127.0.0.1:${server.port}` },
       stdout: 'pipe', stderr: 'pipe',
@@ -162,12 +195,33 @@ describe('call --output-json process exit and stdout', () => {
     expect(saved.stdout).not.toContain(envelope.request_id); expect(calls).toBe(2);
   });
 
+  it.each([undefined, 1, 2])('passes through default discovery JSON and optional review metadata with ranking version %s', async rankingVersion => {
+    body = {
+      results: [{ id: 'test.action', source: 'api', meta: envelope.meta }],
+      query: 'test', sort: 'default',
+      ...(rankingVersion === undefined ? {} : { ranking_version: rankingVersion }),
+    };
+    const result = await run([], ['search', 'test']);
+    expect(result.code).toBe(0); expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual(body);
+    expect(calls).toBe(1);
+  });
+
   it.each([200, 503])('exits nonzero after preserving a full %i failure envelope exactly once', async httpStatus => {
     status = httpStatus; body = { ...envelope, success: false, data: { message: 'operation failed' } };
     const result = await run(['--output-json', 'error.json']);
     expect(result.code).toBe(1); expect(result.stdout).toBe('');
     expect(result.stderr).toContain('call failed');
     expect(JSON.parse(await readFile(join(dir, 'error.json'), 'utf8'))).toEqual(body);
+    expect(calls).toBe(1);
+  });
+
+  it('saves a complete HTTP 200 Forbidden envelope with an object message and exits nonzero', async () => {
+    body = { ...envelope, success: false, data: { statusCode: 403, error: 'Forbidden', message: { reason: 'policy' } } };
+    const result = await run(['--output-json', 'forbidden.json']);
+    expect(result.code).toBe(1); expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('success: false');
+    expect(JSON.parse(await readFile(join(dir, 'forbidden.json'), 'utf8'))).toEqual(body);
     expect(calls).toBe(1);
   });
 

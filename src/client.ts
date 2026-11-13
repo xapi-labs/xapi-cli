@@ -4,8 +4,8 @@
 
 import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici/index.js';
 import { scheme, assertAllowedHost } from './config.ts';
-import { open, rm } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { lstat, open, rm } from 'node:fs/promises';
+import { readFileSync, type Stats } from 'node:fs';
 import { once } from 'node:events';
 import { resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
@@ -127,7 +127,8 @@ export interface ActionReview {
   method: 'unknown' | 'automated' | 'human' | 'whitelist' | 'skipped';
   automated_verdict: 'PASS' | 'PASS_WITH_REVIEW' | 'FAIL' | 'UNCERTAIN' | null;
   revision_id?: string;
-  reviewed_at: string | null;
+  /** ApiReview record update time, not a test-call or human-decision timestamp. */
+  record_updated_at: string | null;
 }
 
 /** Execution envelope rate_limit; retry hints never authorize replaying a call. */
@@ -450,7 +451,7 @@ export async function request<T>(
               body,
             );
           }
-          if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && data?.message?.includes('OAuth'))) {
+          if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && typeof data?.message === 'string' && data.message.includes('OAuth'))) {
             throw new BusinessResponseError(
               (data.message || 'OAuth authorization required')
               + '. Run "xapi-to oauth bind" to connect your account.',
@@ -850,7 +851,16 @@ export async function actionSaveJson(
 ): Promise<{ output: string; bytes: number }> {
   const target = resolve(outputPath);
   let file: Awaited<ReturnType<typeof open>> | undefined;
+  let identity: Stats | undefined;
   let complete = false;
+  const ownsTarget = async () => {
+    if (!identity) return false;
+    const current = await lstat(target).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+      return undefined;
+    });
+    return current?.isFile() === true && current.dev === identity.dev && current.ino === identity.ino;
+  };
   try {
     try {
       file = await open(target, 'wx', 0o600);
@@ -858,6 +868,7 @@ export async function actionSaveJson(
       if (error?.code === 'EEXIST') throw new Error(`Output file already exists: ${target}`);
       throw error;
     }
+    identity = await file.stat();
     let response: unknown;
     let responseError: unknown;
     try {
@@ -877,6 +888,7 @@ export async function actionSaveJson(
     await file.writeFile(json, 'utf8');
     await file.close();
     complete = true;
+    if (!await ownsTarget()) throw new Error(`Output path changed during execution: ${target}; the saved file may have been moved. The request was not retried.`);
     if (responseError) throw responseError;
     if (response && typeof response === 'object' && 'success' in response && response.success === false) {
       throw new Error(`Action returned success: false; full JSON saved to ${target}`);
@@ -885,7 +897,9 @@ export async function actionSaveJson(
   } finally {
     if (file && !complete) {
       await file.close().catch(() => undefined);
-      await rm(target, { force: true });
+      // ponytail: identity check and unlink are separate; use a stable output directory,
+      // not an adversarial shared directory requiring atomic filesystem publication.
+      if (await ownsTarget()) await rm(target, { force: true });
     }
   }
 }

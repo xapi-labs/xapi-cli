@@ -42,13 +42,16 @@ execution metadata. Its fields are:
 | `method` | `unknown`, `automated`, `human`, `whitelist`, `skipped` |
 | `automated_verdict` | `PASS`, `PASS_WITH_REVIEW`, `FAIL`, `UNCERTAIN`, or `null` |
 | `revision_id` | Optional revision ID tying the evidence to a contract |
-| `reviewed_at` | Review timestamp or `null` |
+| `record_updated_at` | Review record's last update timestamp or `null`; not a test-call or human-decision timestamp |
 
 The automated verdict is evidence from the automated checks; a later validator,
 human decision or override can produce a different final status. For example,
 `PASS` does not turn `approved_pending_review` into `approved`. `whitelist` and
 `skipped` do not prove tests ran. An approved revision can still be unsuitable
 for the task or have poor observed upstream reliability.
+
+Execution review metadata describes the selected revision; it is not an upstream
+execution receipt or proof that this particular call was tested.
 
 Do not infer review approval from `source: capability`, `source: api`, a service
 name, a legacy `stable` status or missing fields. Treat `unknown`/missing review
@@ -57,12 +60,19 @@ review status matters to the user's choice.
 
 ## Rate-limit feedback and retry decisions
 
-Execution envelopes may include `rate_limit` with `limit`, `remaining`,
-`reset_at` and optional `retry_after_seconds`. A supporting HTTP response can
-also expose the wait hint through `Retry-After`. Inspect that feedback instead
-of immediately repeating a request. A `user_service` policy is shared across
-the user's API keys and the service's endpoints; rotating keys or selecting a
-different endpoint does not create a fresh quota.
+Action execution envelopes may include `rate_limit` with `limit`, `remaining`,
+`reset_at` and optional `retry_after_seconds`. Service quota errors carry
+`error.retry_after_seconds`; a quota rejection for free API sandbox calls uses
+flat `retry_after_seconds` plus `rate_limit_buckets` (`creator_minute`,
+`creator_daily`, `api_key_daily`). Inspect the actual error body, including any
+outer Action envelope, instead of assuming one field location for all routes.
+
+Supporting HTTP Gateway routes expose a matching `Retry-After` header. Other
+transports do not promise that header; use returned JSON where available.
+Inspect that feedback instead of immediately repeating a request. A
+`user_service` policy is shared across the user's API keys and the service's
+endpoints; rotating keys or selecting a different endpoint does not create a
+fresh quota.
 
 A retry hint supplies timing, not permission to replay a call. Arbitrary Action
 execution is sent once, even when the selected Action method is GET. A timeout,

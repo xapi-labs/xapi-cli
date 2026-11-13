@@ -141,8 +141,10 @@ new private file before one execution, saves the complete response envelope
 bytes}`. It never overwrites or retries execution. Read the file locally;
 do not call again just to recover data omitted from the receipt. JSON HTTP or
 business errors are saved but exit nonzero; incomplete/non-JSON saves are
-removed. A save failure does not prove the action failed. This flag conflicts
-with `--output`, `--stream` and `--code`; default JSON stdout stays unchanged.
+removed only while the path still identifies this command's file. Replacements
+are preserved; changed paths fail. Keep the output directory stable. A save
+failure does not prove the action failed. This flag conflicts with `--output`,
+`--stream` and `--code`; default JSON stdout stays unchanged.
 
 For a database-registered third-party API that returns binary data, save the untouched response to a new file with `--output`. The CLI refuses to overwrite an existing path, and `--output` cannot be combined with `--code`:
 

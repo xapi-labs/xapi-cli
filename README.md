@@ -143,9 +143,14 @@ Without this flag, JSON stdout is unchanged. Treat saved files as private data.
 
 HTTP errors with a JSON body and HTTP 200 `success: false` responses are saved
 in full and still exit nonzero. Network failures, non-JSON/empty responses and
-file-write failures remove the incomplete file and exit nonzero. A failed save
-does not mean execution failed: inspect the request outcome before any manual
-retry. No automatic execution retry or second download occurs.
+file-write failures remove the incomplete file only if its path still points
+to the file this command created, and exit nonzero. A replacement file or
+symlink is preserved. If the output path changes during execution, the command
+refuses a success receipt; the original file may have been moved. Keep the
+output directory stable: identity checks and deletion are separate filesystem
+operations, so this is not atomic publication in an adversarial shared directory.
+A failed save does not mean execution failed: inspect the request outcome before
+any manual retry. No automatic execution retry or second download occurs.
 
 Search uses `--sort default|relevance|price`. `default` is the recommended
 order: it considers keyword coverage and match quality first, then favors
