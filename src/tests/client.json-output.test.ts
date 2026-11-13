@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { mkdtemp, open, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { actionSaveJson, HttpError } from '../client.ts';
+import { actionSaveJson, HttpError, type ActionReview, type ActionRateLimitState } from '../client.ts';
 
 const opts = { actionHost: 'action.xapi.to', apiKey: 'sk-local-test' };
 const envelope = {
@@ -10,7 +10,11 @@ const envelope = {
   data: { text: '完整结果', nested: { values: [1, 2, 3] } },
   billing: { cost_usd: '0.00000042', cost_status: 'charged', upstream_calls: [{ cost_usd: '0.00000042' }] },
   request_id: 'request-file-test',
-  meta: { provider: 'synthetic' },
+  meta: { provider: 'synthetic', review: {
+    status: 'approved', method: 'automated', automated_verdict: 'PASS',
+    revision_id: 'synthetic-revision', reviewed_at: '2026-11-13T00:00:00.000Z',
+  } satisfies ActionReview },
+  rate_limit: { limit: 10, remaining: 0, reset_at: 1794528000, retry_after_seconds: 42 } satisfies ActionRateLimitState,
 };
 
 describe('actionSaveJson', () => {
@@ -85,7 +89,7 @@ describe('actionSaveJson', () => {
   ])('cleans up when there is no complete JSON response', async response => {
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(response);
     const target = join(dir, 'invalid.json');
-    await expect(actionSaveJson('test.action', {}, opts, target)).rejects.toThrow();
+    await expect(actionSaveJson('test.action', {}, opts, target)).rejects.toThrow('Execution may have completed');
     await expect(stat(target)).rejects.toThrow();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
@@ -131,10 +135,11 @@ describe('call --output-json process exit and stdout', () => {
   let calls: number;
   let body: unknown;
   let status: number;
+  let rawBody: string | undefined;
   beforeEach(async () => {
     dir = await realpath(await mkdtemp(join(tmpdir(), 'xapi-json-cli-')));
-    calls = 0; body = envelope; status = 200;
-    server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => { calls++; return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }); } });
+    calls = 0; body = envelope; status = 200; rawBody = undefined;
+    server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => { calls++; return new Response(rawBody ?? JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }); } });
   });
   afterEach(async () => { server.stop(true); await rm(dir, { recursive: true, force: true }); });
   async function run(flags: string[]) {
@@ -164,6 +169,16 @@ describe('call --output-json process exit and stdout', () => {
     expect(result.stderr).toContain('call failed');
     expect(JSON.parse(await readFile(join(dir, 'error.json'), 'utf8'))).toEqual(body);
     expect(calls).toBe(1);
+  });
+
+  it.each([200, 503])('reports uncertain execution for a non-JSON HTTP %i response without replay', async httpStatus => {
+    status = httpStatus; rawBody = 'not a JSON response';
+    const result = await run(['--output-json', 'incomplete.json']);
+    expect(result.code).toBe(1); expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('Execution may have completed');
+    expect(result.stderr).toContain('not retried');
+    expect(calls).toBe(1);
+    await expect(stat(join(dir, 'incomplete.json'))).rejects.toThrow();
   });
 
   it('rejects conflicting or missing output options before any execution', async () => {

@@ -121,6 +121,23 @@ export interface ClientOptions {
   apiKey?: string;
 }
 
+/** Optional Action metadata from supporting backends; source is not review evidence. */
+export interface ActionReview {
+  status: 'unknown' | 'pending' | 'approved' | 'approved_pending_review' | 'rejected';
+  method: 'unknown' | 'automated' | 'human' | 'whitelist' | 'skipped';
+  automated_verdict: 'PASS' | 'PASS_WITH_REVIEW' | 'FAIL' | 'UNCERTAIN' | null;
+  revision_id?: string;
+  reviewed_at: string | null;
+}
+
+/** Execution envelope rate_limit; retry hints never authorize replaying a call. */
+export interface ActionRateLimitState {
+  limit: number;
+  remaining: number;
+  reset_at: number;
+  retry_after_seconds?: number;
+}
+
 export interface ApiKeyApiRequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
@@ -846,11 +863,16 @@ export async function actionSaveJson(
     try {
       response = await actionCall(actionId, input, opts, httpMethod, 0);
     } catch (error) {
-      if (!(error instanceof HttpError || error instanceof BusinessResponseError) || error.responseBody === undefined) throw error;
+      if (!(error instanceof HttpError || error instanceof BusinessResponseError) || error.responseBody === undefined) {
+        if (error instanceof SyntaxError || error instanceof RequestTimeoutError || error instanceof HttpError || isRetryableNetworkError(error)) {
+          throw new Error(`${error instanceof Error ? error.message : String(error)}; no complete JSON was saved. Execution may have completed; the request was not retried.`, { cause: error });
+        }
+        throw error;
+      }
       response = error.responseBody;
       responseError = error;
     }
-    if (response === undefined) throw new Error('Expected a JSON response; output file removed');
+    if (response === undefined) throw new Error('Expected a JSON response; output file removed. Execution may have completed; the request was not retried.');
     const json = JSON.stringify(response) + '\n';
     await file.writeFile(json, 'utf8');
     await file.close();

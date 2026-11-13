@@ -109,7 +109,7 @@ Search supports `--sort default|relevance|price`:
 
 Ranking is global: the service sorts all matching results before applying `--page` and `--page-size`. When `--sort` is explicitly provided, the CLI verifies that the backend applied it and reports a deployment-order error instead of silently accepting an older backend.
 
-`get-batch` accepts at most 100 action IDs per invocation.
+Read `guides/choosing.md` when comparing candidates or interpreting review evidence, quality ranking and `retry_after_seconds`. These fields require a supporting backend; source changes do not prove deployment. `get-batch` accepts at most 100 action IDs per invocation.
 
 ### Action identifiers and detail lookup
 
