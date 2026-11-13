@@ -141,6 +141,12 @@ export class HttpError extends Error {
   }
 }
 
+export class BusinessResponseError extends Error {
+  constructor(message: string, public readonly responseBody: unknown) {
+    super(message);
+  }
+}
+
 export class RequestTimeoutError extends Error {
   constructor(public readonly timeoutMs: number) {
     super(`request timed out after ${timeoutMs}ms`);
@@ -421,15 +427,17 @@ export async function request<T>(
         if (body && typeof body === 'object' && 'success' in body && (body as any).success === false) {
           const data = (body as any).data;
           if (data?.statusCode === 401 || data?.error === 'Unauthorized') {
-            throw new Error(
+            throw new BusinessResponseError(
               'Authentication failed: ' + (data.message || 'Invalid or missing API key')
               + '. Run "npx xapi-to config set apiKey=<key>" to update your key.',
+              body,
             );
           }
           if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && data?.message?.includes('OAuth'))) {
-            throw new Error(
+            throw new BusinessResponseError(
               (data.message || 'OAuth authorization required')
               + '. Run "xapi-to oauth bind" to connect your account.',
+              body,
             );
           }
         }
@@ -813,6 +821,51 @@ export async function actionCall(
     Math.min(timeoutMs, EXECUTE_TIMEOUT_MS),
     retries,
   );
+}
+
+/** Save a complete JSON response before reporting action failures; never replay execution. */
+export async function actionSaveJson(
+  actionId: string,
+  input: Record<string, unknown>,
+  opts: ClientOptions,
+  outputPath: string,
+  httpMethod?: string,
+): Promise<{ output: string; bytes: number }> {
+  const target = resolve(outputPath);
+  let file: Awaited<ReturnType<typeof open>> | undefined;
+  let complete = false;
+  try {
+    try {
+      file = await open(target, 'wx', 0o600);
+    } catch (error: any) {
+      if (error?.code === 'EEXIST') throw new Error(`Output file already exists: ${target}`);
+      throw error;
+    }
+    let response: unknown;
+    let responseError: unknown;
+    try {
+      response = await actionCall(actionId, input, opts, httpMethod, 0);
+    } catch (error) {
+      if (!(error instanceof HttpError || error instanceof BusinessResponseError) || error.responseBody === undefined) throw error;
+      response = error.responseBody;
+      responseError = error;
+    }
+    if (response === undefined) throw new Error('Expected a JSON response; output file removed');
+    const json = JSON.stringify(response) + '\n';
+    await file.writeFile(json, 'utf8');
+    await file.close();
+    complete = true;
+    if (responseError) throw responseError;
+    if (response && typeof response === 'object' && 'success' in response && response.success === false) {
+      throw new Error(`Action returned success: false; full JSON saved to ${target}`);
+    }
+    return { output: target, bytes: Buffer.byteLength(json) };
+  } finally {
+    if (file && !complete) {
+      await file.close().catch(() => undefined);
+      await rm(target, { force: true });
+    }
+  }
 }
 
 /** Execute an action through the SSE interface and forward frames unchanged. */

@@ -136,6 +136,7 @@ FLAGS
   --input <json>            Input payload as JSON (required for execution)
   --method GET|POST|...     Override HTTP method
   --output <path>           Save a raw binary response to a new file
+  --output-json <path>      Save the full JSON response to a new private file
   --stream                  Forward the action's HTTP SSE response unchanged
   --code <target>           Generate code snippet instead of executing
   --format json|pretty|table  Output format
@@ -405,12 +406,19 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
   if (!id) err('usage: xapi-to call <id> --input \'{"key":"val"}\'');
   if (flags.code) validateCodeFlag(flags);
   if (flags.output === 'true') err('--output requires a file path');
+  const jsonPath = flags['output-json'];
+  if (jsonPath !== undefined && (!jsonPath.trim() || jsonPath === 'true' || jsonPath === '-')) {
+    err('--output-json requires a file path, not stdout');
+  }
   const stream = flags.stream === 'true' || flags.stream === '1' || flags.stream === 'yes';
   if (flags.code && flags.output) {
     err('--output cannot be combined with --code');
   }
   if (stream && flags.output) err('--stream cannot be combined with --output');
   if (stream && flags.code) err('--stream cannot be combined with --code');
+  if (jsonPath !== undefined && (flags.output !== undefined || stream || flags.code !== undefined)) {
+    err('--output-json cannot be combined with --output, --stream or --code');
+  }
   const cfg = getConfig();
   let input: Record<string, unknown> = {};
   if (flags.input) {
@@ -436,6 +444,11 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
 
   requireApiKey(cfg);
   try {
+    if (jsonPath !== undefined) {
+      const saved = await client.actionSaveJson(id, cleanInput, cfg, jsonPath, method);
+      output({ success: true, ...saved }, flags.format as any);
+      return;
+    }
     if (stream) {
       await client.actionStream(id, cleanInput, cfg, method);
       return;

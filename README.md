@@ -128,6 +128,25 @@ non-EVM RPC or Aptos JSON/BCS, use the [BlockPI guide](skills/xapi/guides/blockp
 `call --output` saves a binary response; raw BCS request input currently needs
 the service HTTP Gateway, not JSON Action execution.
 
+For large JSON results, save the complete response envelope locally:
+
+```bash
+xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}' --output-json result.json
+```
+
+`--output-json` creates a new private file before executing once, then prints
+only `{success, output, bytes}`. The file retains all returned fields, including
+`data`, billing and request IDs; it does not fetch media URLs or execute again.
+Existing files are never overwritten. The flag cannot be combined with raw
+`--output`, `--stream` or `--code`; `--format` affects only the receipt.
+Without this flag, JSON stdout is unchanged. Treat saved files as private data.
+
+HTTP errors with a JSON body and HTTP 200 `success: false` responses are saved
+in full and still exit nonzero. Network failures, non-JSON/empty responses and
+file-write failures remove the incomplete file and exit nonzero. A failed save
+does not mean execution failed: inspect the request outcome before any manual
+retry. No automatic execution retry or second download occurs.
+
 Search uses `--sort default|relevance|price`. `default` is the recommended
 order: it considers keyword coverage and match quality first, then favors
 stable built-in capabilities when matches are otherwise comparable.
