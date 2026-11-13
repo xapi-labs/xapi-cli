@@ -284,6 +284,7 @@ export function sandboxTableRows(view: SandboxTableView, data: any): Record<stri
       offering: item.offering?.name || item.offering,
       exitCode: item.result?.exitCode,
       finalState: item.finalState,
+      terminationReason: item.terminationReason,
       cleanup: item.cleanup?.state || (item.cleanup?.kept ? 'KEPT' : ''),
       totalCost: item.totalCost,
     }));
@@ -292,6 +293,7 @@ export function sandboxTableRows(view: SandboxTableView, data: any): Record<stri
     id: item.id || item.instanceId,
     state: item.observedState || item.state || item.finalState,
     desiredState: item.desiredState,
+    terminationReason: item.terminationReason,
     offering: item.offering?.name || item.offeringName || item.offeringId,
     provider: item.provider?.name || item.providerName || item.provider,
     createdAt: item.createdAt,
@@ -949,6 +951,7 @@ export async function sandboxRun(args: string[], flags: Record<string, string>) 
       ? { kept: true, warning: 'billing continues until terminated' }
       : cleanupSummary(cleanup),
     finalState: finalDetail?.observedState || (cleanup as any)?.sandbox?.observedState,
+    terminationReason: finalDetail?.terminationReason ?? (cleanup as any)?.sandbox?.terminationReason,
     totalCost: finalDetail?.totalCost || (cleanup as any)?.sandbox?.totalCost,
     ...(Object.keys(limits).length ? { limits } : {}),
     ...(finalReadError ? { finalReadError } : {}),

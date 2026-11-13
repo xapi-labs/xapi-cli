@@ -34,6 +34,7 @@ export interface SandboxDetail {
   id: string;
   observedState?: string;
   desiredState?: string | null;
+  terminationReason?: string | null;
   totalCost?: string | number;
   offeringId?: string;
   providerInstanceId?: string;
@@ -286,7 +287,8 @@ export async function sandboxWait(
       const state = String(last.observedState || '');
       if (wanted.includes(state)) return last;
       if (['FAILED', 'TERMINATED'].includes(state) && !wanted.includes(state)) {
-        throw new Error(`sandbox ${id} entered ${state} while waiting for ${wanted.join(' or ')}`);
+        throw new Error(`sandbox ${id} entered ${state} while waiting for ${wanted.join(' or ')}` +
+          (last.terminationReason ? ` (termination reason: ${last.terminationReason})` : ''));
       }
       await new Promise<void>((resolve) => {
         const done = () => {

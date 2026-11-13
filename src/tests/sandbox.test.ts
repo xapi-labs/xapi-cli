@@ -289,6 +289,16 @@ describe('sandbox commands', () => {
     }]);
   });
 
+  it('shows the backend termination reason in instance and run table output', () => {
+    for (const view of ['instances', 'detail', 'run'] as const) {
+      expect(sandboxTableRows(view, { id: 'box-1', instanceId: 'box-1', observedState: 'TERMINATED',
+        finalState: 'TERMINATED', terminationReason: 'MAX_TOTAL_USD_EXCEEDED' })[0]).toMatchObject({
+        terminationReason: 'MAX_TOTAL_USD_EXCEEDED',
+      });
+    }
+    expect(sandboxTableRows('detail', { id: 'legacy', observedState: 'TERMINATED' })[0]?.terminationReason).toBeUndefined();
+  });
+
   function mockSuccessfulRun() {
     const quoteSpy = spyOn(sandboxClient, 'sandboxQuote').mockResolvedValue({
       quoteId: 'quote-1', offering: { name: 'Cloudflare Sandbox' },
