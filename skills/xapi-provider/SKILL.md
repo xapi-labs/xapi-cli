@@ -199,6 +199,11 @@ npx xapi-to earnings transfer 1 --idempotency-key <stable-operation-key>
 Transfer is one-way. Confirm the amount and settled balance first. Retry only
 with the same idempotency key and amount.
 
+Before submitting, or after a `REVIEW_INTERRUPTED` notification, read
+[submission readiness and review recovery](reference/submission-readiness-and-review-recovery.md).
+The readiness HTTP route needs `service:read` plus ownership; it does not submit
+or prove upstream health. Dedicated CLI readiness support is still pending.
+
 ## Scope map
 
 | CLI operation | Required scope |
