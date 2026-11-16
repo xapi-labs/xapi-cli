@@ -61,10 +61,13 @@ category's id, alias or name in either language, in any case
 
 A JSON call's envelope carries `billing`:
 
-- `cost_usd`: the total for this call, across every upstream request it made
-  (a capability that failed over to its second route made two).
+- `cost_usd`: the sum across upstream requests when one cost state is known;
+  `null` when states are mixed or the cost is unknown.
 - `cost_status`: `charged` (final), `reserved` (held until async or streamed
-  work settles), `estimated` or `simulated`.
+  work settles), `estimated`, `simulated`, `mixed` or `unknown`.
+- Mixed responses include `cost_breakdown_usd` with each known state and amount.
+  States can overlap for one upstream request: do not add reservations, estimates
+  or simulations to settled charges. Inspect the individual receipts instead.
 - `upstream_calls` and `request_ids`: pass a request ID to
   `npx xapi-to usage <request-id>` (or `usage wait`) for its receipt.
 
