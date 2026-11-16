@@ -71,6 +71,7 @@ A JSON call's envelope carries `billing`:
 - `upstream_calls` and `request_ids`: pass a request ID to
   `npx xapi-to usage <request-id>` (or `usage wait`) for its receipt.
 
-A call rejected before reaching any upstream has no `billing`. Raw and
-streamed calls report the same in the `X-XAPI-Cost` and
-`X-XAPI-Request-Ids` headers and the final `xapi.usage` SSE event.
+A call rejected before reaching any upstream has no `billing`. Raw and streamed
+calls expose known states through `X-XAPI-Cost`, `X-XAPI-Cost-Reserved`,
+`X-XAPI-Cost-Estimated` and `X-XAPI-Cost-Simulated`, plus receipt IDs through
+`X-XAPI-Request-Ids` and usage metadata in the final `xapi.usage` SSE event.
