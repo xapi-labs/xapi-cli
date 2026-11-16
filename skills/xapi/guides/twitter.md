@@ -2,7 +2,7 @@
 
 Complete guide for Twitter operations via xAPI — reading data, downloading tweet videos, posting tweets, replying, and OAuth setup.
 
-> **Upstream provider:** The built-in normalized Twitter read capabilities below accept an optional `provider` — `"x"` (fapi.uk, the default) or `"twitter"` (legacy upstream). Normally omit it to allow transient failover where supported; filtered or paginated searches keep their selected upstream. This option does not apply to marketplace `twitter.graphql_*` or `x-official.*` endpoints; inspect their current `get` schema.
+> **Upstream provider:** The built-in normalized Twitter read capabilities below accept an optional `provider` — `"x"` (fapi.uk, the default) or `"twitter"` (legacy upstream). Normally omit it to allow transient failover; check `data.provider` to see which upstream answered. This option does not apply to marketplace `twitter.graphql_*` or `x-official.*` endpoints; inspect their current `get` schema.
 
 ## Contents
 
@@ -156,17 +156,14 @@ npx xapi-to call twitter.search --input '{
 
 Supported structured filters: `from`, `to`, `mentioning`, `phrase`, `any`, `none`, `tag`, `since`, `until`, `min_replies`, `min_likes`, `min_retweets`, and `count`. `sort_by` accepts `Top`, `Latest` (default), `People`, `Photos`, or `Videos`; the default `x` provider maps both media-specific values to its combined Media search. Dates use `YYYY-MM-DD`; `until` is exclusive. Paginate with `cursor` from `data.cursor_bottom`.
 
-Structured filters, including an explicit `count`, are supported only by the
-`x` upstream. Explicit `"provider":"twitter"` with these fields returns
-`UNSUPPORTED_FILTERS` before transport. Omitting `provider` with filters keeps
-the request on `x`; an upstream failure is returned rather than retrying
-against a provider with different filter semantics. To allow transient
-fallback on an initial plain search, omit structured filters, including
-`count`.
+Structured filters, including `count`, are applied only by the `x` upstream.
+The legacy `twitter` upstream receives only `raw_query`, `sort_by` and
+`cursor`. Without `provider`, a transient `x` failure can fall back to
+`twitter`; if `data.provider` is `twitter`, the filters were not applied. When
+the filters must hold, pass `"provider":"x"` (no fallback).
 
-For search pagination, keep the returned `data.provider` as the explicit
-`provider` alongside `data.cursor_bottom` in the next request. A request with
-a cursor never falls back to another upstream; cursors are provider-specific.
+Cursors are provider-specific. When paginating, pass the returned
+`data.provider` as `provider` together with `data.cursor_bottom`.
 
 ### Get user's media posts
 
