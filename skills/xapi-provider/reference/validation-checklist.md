@@ -22,11 +22,8 @@ before `provider version update --replace`, and again before publication.
   the category. Discovery can match these provider labels, but they do not earn
   platform classifications. On updated backends, `meta.provider_tags` carries
   authored labels, `meta.platform_tags` carries platform-derived classifications,
-  and legacy `meta.tags` merges both. New writes reject the reserved labels
-  `stable`, `fast`, `popular`, `low-sample`, `free`, `per-token`, `streaming`
-  and `async`, ignoring case and surrounding whitespace. Ordinary labels such as
-  `stablecoin` or `free tier` are allowed. Older stored reserved labels remain
-  readable as provider labels and do not earn the corresponding platform claim.
+  and legacy `meta.tags` merges both. The same word can appear as an authored
+  label. An authored label such as `fast` or `free` is only a provider claim.
 - `accessMode` is `PROXY` or `DIRECT`. Use `PROXY` for gateway billing,
   observability, or service rate limiting.
 - `baseUrl` and named `baseUrls` are public HTTP(S) URLs. A pure WebSocket

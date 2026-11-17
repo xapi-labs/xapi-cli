@@ -37,10 +37,9 @@ see the [Twitter guide](twitter.md#search-tweets).
 
 On updated backends, `meta.provider_tags` contains provider-authored labels
 and `meta.platform_tags` contains platform-derived tags. The legacy `meta.tags`
-merges both for compatibility. Older provider labels such as `stable`, `fast`
-or `free` can remain visible without earning that platform classification;
-new provider writes reject all eight platform tag names listed below. Use
-`platform_tags` and the underlying pricing/stats when evaluating those claims.
+merges both for compatibility. A provider label such as `stable`, `fast` or
+`free` carries no platform classification. Use `platform_tags` and the
+underlying pricing/stats when evaluating those claims.
 If the separate fields are absent on an older backend, use pricing and stats
 rather than treating merged tags as evidence.
 
@@ -49,11 +48,10 @@ Platform tags include `free`, `per-token`, `streaming`, `async`, and from the
 `popular` or `low-sample` (under 100 calls, too few to judge).
 `meta.category_label` gives the category's English and Chinese names.
 
-Search matches provider labels and category names too. Standalone reserved
-terms `stable`, `fast`, `popular`, `low-sample`, `free`, `per-token`, `streaming`
-and `async` require every requested term to appear in `meta.platform_tags`.
-For example, `search "twitter stable"` excludes a service whose provider merely
-claims `stable`. `search 社交` matches a category alias. `--category` accepts a
+Search matches provider labels and category names too. Terms such as `fast`
+or `free` can match text as well as computed tags. Check `meta.platform_tags`
+and pricing before treating a search result as fast or free. `search 社交`
+matches a category alias. `--category` accepts a
 category's id, alias or name in either language, in any case
 (`--category social`, `--category 天气`).
 
