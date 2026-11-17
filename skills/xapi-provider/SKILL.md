@@ -148,6 +148,8 @@ schema block is not a ready-to-send payload. Non-JSON and WebSocket endpoints
 use their documented direct-proxy or WebSocket instructions. If get exposes
 responseContract, distinguish supplied examples from a declared success schema;
 older servers may omit this optional metadata.
+Response schemas may preserve `$ref`; details and exports include the required
+definitions. Multiple examples share their response schema rather than copying it.
 Link only a Skill owned by the same provider. If `skill context`
 reports contract drift, update and resubmit the Skill before recording a new
 fingerprint. `drift: false` does not prove schemas, media types or transport
