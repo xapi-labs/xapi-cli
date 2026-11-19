@@ -143,9 +143,7 @@ npx xapi-to get twitter.tweet_detail
 npx xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
 ```
 
-For large JSON results, use `call --output-json result.json` once and read the complete envelope locally. See [large JSON results](guides/choosing.md#large-json-results) for privacy, error handling and incompatible flags.
-
-For a database-registered third-party API that returns binary data, save the untouched response to a new file with `--output`. The CLI refuses to overwrite an existing path, and `--output` cannot be combined with `--code`:
+For large JSON results, see [saving the complete JSON envelope](guides/choosing.md#large-json-results). For a database-registered third-party API that returns binary data, save the untouched response to a new file with `--output`. The CLI refuses to overwrite an existing path, and `--output` cannot be combined with `--code`:
 
 ```bash
 npx xapi-to call openrouter.audio_speech \
