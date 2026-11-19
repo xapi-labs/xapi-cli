@@ -4,8 +4,8 @@
 
 import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici/index.js';
 import { scheme, assertAllowedHost } from './config.ts';
-import { open, rm } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { lstat, open, rm } from 'node:fs/promises';
+import { readFileSync, type Stats } from 'node:fs';
 import { once } from 'node:events';
 import { resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
@@ -119,6 +119,24 @@ const RETRY_MAX_DELAY_MS = 8_000;
 export interface ClientOptions {
   actionHost: string;
   apiKey?: string;
+}
+
+/** Optional Action metadata from supporting backends; source is not review evidence. */
+export interface ActionReview {
+  status: 'unknown' | 'pending' | 'approved' | 'approved_pending_review' | 'rejected';
+  method: 'unknown' | 'automated' | 'human' | 'whitelist' | 'skipped';
+  automated_verdict: 'PASS' | 'PASS_WITH_REVIEW' | 'FAIL' | 'UNCERTAIN' | null;
+  revision_id?: string;
+  /** ApiReview record update time, not a test-call or human-decision timestamp. */
+  record_updated_at: string | null;
+}
+
+/** Execution envelope rate_limit; retry hints never authorize replaying a call. */
+export interface ActionRateLimitState {
+  limit: number;
+  remaining: number;
+  reset_at: number;
+  retry_after_seconds?: number;
 }
 
 export interface ApiKeyApiRequestOptions {
@@ -450,7 +468,7 @@ export async function request<T>(
               body,
             );
           }
-          if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && data?.message?.includes('OAuth'))) {
+          if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && typeof data?.message === 'string' && data.message.includes('OAuth'))) {
             throw new BusinessResponseError(
               (data.message || 'OAuth authorization required')
               + '. Inspect "xapi-to get <actionId>" and "xapi-to oauth status"; use "xapi-to oauth bind --provider <provider>" only if the endpoint requires your OAuth account.',
@@ -838,6 +856,69 @@ export async function actionCall(
     Math.min(timeoutMs, EXECUTE_TIMEOUT_MS),
     retries,
   );
+}
+
+/** Save a complete JSON response before reporting action failures; never replay execution. */
+export async function actionSaveJson(
+  actionId: string,
+  input: Record<string, unknown>,
+  opts: ClientOptions,
+  outputPath: string,
+  httpMethod?: string,
+): Promise<{ output: string; bytes: number }> {
+  const target = resolve(outputPath);
+  let file: Awaited<ReturnType<typeof open>> | undefined;
+  let identity: Stats | undefined;
+  let complete = false;
+  const ownsTarget = async () => {
+    if (!identity) return false;
+    const current = await lstat(target).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+      return undefined;
+    });
+    return current?.isFile() === true && current.dev === identity.dev && current.ino === identity.ino;
+  };
+  try {
+    try {
+      file = await open(target, 'wx', 0o600);
+    } catch (error: any) {
+      if (error?.code === 'EEXIST') throw new Error(`Output file already exists: ${target}`);
+      throw error;
+    }
+    identity = await file.stat();
+    let response: unknown;
+    let responseError: unknown;
+    try {
+      response = await actionCall(actionId, input, opts, httpMethod, 0);
+    } catch (error) {
+      if (!(error instanceof HttpError || error instanceof BusinessResponseError) || error.responseBody === undefined) {
+        if (error instanceof SyntaxError || error instanceof RequestTimeoutError || error instanceof HttpError || isRetryableNetworkError(error)) {
+          throw new Error(`${error instanceof Error ? error.message : String(error)}; no complete JSON was saved. Execution may have completed; the request was not retried.`, { cause: error });
+        }
+        throw error;
+      }
+      response = error.responseBody;
+      responseError = error;
+    }
+    if (response === undefined) throw new Error('Expected a JSON response; output file removed. Execution may have completed; the request was not retried.');
+    const json = JSON.stringify(response) + '\n';
+    await file.writeFile(json, 'utf8');
+    await file.close();
+    complete = true;
+    if (!await ownsTarget()) throw new Error(`Output path changed during execution: ${target}; the saved file may have been moved. The request was not retried.`);
+    if (responseError) throw responseError;
+    if (response && typeof response === 'object' && 'success' in response && response.success === false) {
+      throw new Error(`Action returned success: false; full JSON saved to ${target}`);
+    }
+    return { output: target, bytes: Buffer.byteLength(json) };
+  } finally {
+    if (file && !complete) {
+      await file.close().catch(() => undefined);
+      // ponytail: identity check and unlink are separate; use a stable output directory,
+      // not an adversarial shared directory requiring atomic filesystem publication.
+      if (await ownsTarget()) await rm(target, { force: true });
+    }
+  }
 }
 
 /** Execute an action through the SSE interface and forward frames unchanged. */

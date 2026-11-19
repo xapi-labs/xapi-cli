@@ -109,7 +109,7 @@ Search supports `--sort default|relevance|price`:
 
 Ranking is global: the service sorts all matching results before applying `--page` and `--page-size`. When `--sort` is explicitly provided, the CLI verifies that the backend applied it and reports a deployment-order error instead of silently accepting an older backend.
 
-`get-batch` accepts at most 100 action IDs per invocation.
+Read `guides/choosing.md` when comparing candidates or interpreting review evidence, quality ranking and `retry_after_seconds`. These fields require a supporting backend; source changes do not prove deployment. `get-batch` accepts at most 100 action IDs per invocation.
 
 ### Choosing a service and reading its cost
 
@@ -142,6 +142,8 @@ as `search`, `categories`, and `services`.
 npx xapi-to get twitter.tweet_detail
 npx xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}'
 ```
+
+For large JSON results, use `call --output-json result.json` once and read the complete envelope locally. See [large JSON results](guides/choosing.md#large-json-results) for privacy, error handling and incompatible flags.
 
 For a database-registered third-party API that returns binary data, save the untouched response to a new file with `--output`. The CLI refuses to overwrite an existing path, and `--output` cannot be combined with `--code`:
 
