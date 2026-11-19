@@ -4,8 +4,8 @@
 
 import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici/index.js';
 import { scheme, assertAllowedHost } from './config.ts';
-import { open, rm } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { lstat, open, rm } from 'node:fs/promises';
+import { readFileSync, type Stats } from 'node:fs';
 import { once } from 'node:events';
 import { resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
@@ -121,6 +121,24 @@ export interface ClientOptions {
   apiKey?: string;
 }
 
+/** Optional Action metadata from supporting backends; source is not review evidence. */
+export interface ActionReview {
+  status: 'unknown' | 'pending' | 'approved' | 'approved_pending_review' | 'rejected';
+  method: 'unknown' | 'automated' | 'human' | 'whitelist' | 'skipped';
+  automated_verdict: 'PASS' | 'PASS_WITH_REVIEW' | 'FAIL' | 'UNCERTAIN' | null;
+  revision_id?: string;
+  /** ApiReview record update time, not a test-call or human-decision timestamp. */
+  record_updated_at: string | null;
+}
+
+/** Execution envelope rate_limit; retry hints never authorize replaying a call. */
+export interface ActionRateLimitState {
+  limit: number;
+  remaining: number;
+  reset_at: number;
+  retry_after_seconds?: number;
+}
+
 export interface ApiKeyApiRequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
@@ -145,6 +163,14 @@ export class RequestTimeoutError extends Error {
   constructor(public readonly timeoutMs: number) {
     super(`request timed out after ${timeoutMs}ms`);
     this.name = 'RequestTimeoutError';
+  }
+}
+
+/** Preserve the Action envelope even when legacy auth handling supplies a hint. */
+export class BusinessResponseError extends Error {
+  constructor(message: string, public readonly responseBody: unknown) {
+    super(message);
+    this.name = 'BusinessResponseError';
   }
 }
 
@@ -202,6 +228,21 @@ function parseRetryAfterMs(res: Response): number | undefined {
   if (Number.isFinite(seconds)) return seconds * 1000;
   const at = Date.parse(header);
   return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
+}
+
+function parseErrorResponseBody(text: string): unknown {
+  try { return JSON.parse(text); } catch { return undefined; }
+}
+
+/** Headers establish an HTTP failure even if its error body is interrupted. */
+async function readActionHttpError(res: Response): Promise<HttpError> {
+  const retryAfterMs = isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined;
+  try {
+    const text = await res.text();
+    return new HttpError(res.status, text.slice(0, 300), retryAfterMs, parseErrorResponseBody(text));
+  } catch (cause) {
+    return new HttpError(res.status, 'could not read error response', retryAfterMs, undefined, { cause });
+  }
 }
 
 function abortError(signal?: AbortSignal | null): Error {
@@ -421,15 +462,17 @@ export async function request<T>(
         if (body && typeof body === 'object' && 'success' in body && (body as any).success === false) {
           const data = (body as any).data;
           if (data?.statusCode === 401 || data?.error === 'Unauthorized') {
-            throw new Error(
+            throw new BusinessResponseError(
               'Authentication failed: ' + (data.message || 'Invalid or missing API key')
               + '. Run "npx xapi-to config set apiKey=<key>" to update your key.',
+              body,
             );
           }
-          if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && data?.message?.includes('OAuth'))) {
-            throw new Error(
+          if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && typeof data?.message === 'string' && data.message.includes('OAuth'))) {
+            throw new BusinessResponseError(
               (data.message || 'OAuth authorization required')
-              + '. Run "xapi-to oauth bind" to connect your account.',
+              + '. Inspect "xapi-to get <actionId>" and "xapi-to oauth status"; use "xapi-to oauth bind --provider <provider>" only if the endpoint requires your OAuth account.',
+              body,
             );
           }
         }
@@ -815,6 +858,69 @@ export async function actionCall(
   );
 }
 
+/** Save a complete JSON response before reporting action failures; never replay execution. */
+export async function actionSaveJson(
+  actionId: string,
+  input: Record<string, unknown>,
+  opts: ClientOptions,
+  outputPath: string,
+  httpMethod?: string,
+): Promise<{ output: string; bytes: number }> {
+  const target = resolve(outputPath);
+  let file: Awaited<ReturnType<typeof open>> | undefined;
+  let identity: Stats | undefined;
+  let complete = false;
+  const ownsTarget = async () => {
+    if (!identity) return false;
+    const current = await lstat(target).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+      return undefined;
+    });
+    return current?.isFile() === true && current.dev === identity.dev && current.ino === identity.ino;
+  };
+  try {
+    try {
+      file = await open(target, 'wx', 0o600);
+    } catch (error: any) {
+      if (error?.code === 'EEXIST') throw new Error(`Output file already exists: ${target}`);
+      throw error;
+    }
+    identity = await file.stat();
+    let response: unknown;
+    let responseError: unknown;
+    try {
+      response = await actionCall(actionId, input, opts, httpMethod, 0);
+    } catch (error) {
+      if (!(error instanceof HttpError || error instanceof BusinessResponseError) || error.responseBody === undefined) {
+        if (error instanceof SyntaxError || error instanceof RequestTimeoutError || error instanceof HttpError || isRetryableNetworkError(error)) {
+          throw new Error(`${error instanceof Error ? error.message : String(error)}; no complete JSON was saved. Execution may have completed; the request was not retried.`, { cause: error });
+        }
+        throw error;
+      }
+      response = error.responseBody;
+      responseError = error;
+    }
+    if (response === undefined) throw new Error('Expected a JSON response; output file removed. Execution may have completed; the request was not retried.');
+    const json = JSON.stringify(response) + '\n';
+    await file.writeFile(json, 'utf8');
+    await file.close();
+    complete = true;
+    if (!await ownsTarget()) throw new Error(`Output path changed during execution: ${target}; the saved file may have been moved. The request was not retried.`);
+    if (responseError) throw responseError;
+    if (response && typeof response === 'object' && 'success' in response && response.success === false) {
+      throw new Error(`Action returned success: false; full JSON saved to ${target}`);
+    }
+    return { output: target, bytes: Buffer.byteLength(json) };
+  } finally {
+    if (file && !complete) {
+      await file.close().catch(() => undefined);
+      // ponytail: identity check and unlink are separate; use a stable output directory,
+      // not an adversarial shared directory requiring atomic filesystem publication.
+      if (await ownsTarget()) await rm(target, { force: true });
+    }
+  }
+}
+
 /** Execute an action through the SSE interface and forward frames unchanged. */
 export async function actionStream(
   actionId: string,
@@ -864,12 +970,7 @@ export async function actionStream(
       );
     }
     if (!res.ok) {
-      const text = await res.text();
-      throw new HttpError(
-        res.status,
-        text.slice(0, 300),
-        isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined,
-      );
+      throw await readActionHttpError(res);
     }
 
     const contentType = res.headers.get('content-type') || '';
@@ -889,7 +990,7 @@ export async function actionStream(
       if (!process.stdout.write(chunk)) await once(process.stdout, 'drain');
     }
   } catch (error) {
-    if (timedOut) throw new RequestTimeoutError(activeTimeoutMs);
+    if (timedOut && !(error instanceof HttpError)) throw new RequestTimeoutError(activeTimeoutMs);
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
@@ -966,12 +1067,7 @@ export async function actionDownload(
       );
     }
     if (!res.ok) {
-      const text = await res.text();
-      throw new HttpError(
-        res.status,
-        text.slice(0, 300),
-        isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined,
-      );
+      throw await readActionHttpError(res);
     }
 
     let bytes = 0;
@@ -1003,7 +1099,7 @@ export async function actionDownload(
       status: res.status,
     };
   } catch (error) {
-    if (timedOut) throw new RequestTimeoutError(activeTimeoutMs);
+    if (timedOut && !(error instanceof HttpError)) throw new RequestTimeoutError(activeTimeoutMs);
     throw error;
   } finally {
     if (timer) clearTimeout(timer);

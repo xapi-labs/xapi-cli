@@ -82,7 +82,7 @@ Unified interface for capabilities (built-in) and APIs (third-party). Use `--sou
 ```bash
 xapi-to list                                            # list all actions
 xapi-to list --source capability                        # only built-in capabilities
-xapi-to list --source api --category DeFi               # filter by source and category
+xapi-to list --source api --category Crypto             # filter by source and category
 xapi-to list --page 2 --page-size 20                    # pagination
 xapi-to list --service-id <id>                          # filter by service
 
@@ -127,6 +127,30 @@ use the [AI Gateway guide](skills/xapi/guides/ai_gateway.md). For dedicated
 non-EVM RPC or Aptos JSON/BCS, use the [BlockPI guide](skills/xapi/guides/blockpi.md).
 `call --output` saves a binary response; raw BCS request input currently needs
 the service HTTP Gateway, not JSON Action execution.
+
+For large JSON results, save the complete response envelope locally:
+
+```bash
+xapi-to call twitter.tweet_detail --input '{"tweet_id":"1234567890"}' --output-json result.json
+```
+
+`--output-json` creates a new private file before executing once, then prints
+only `{success, output, bytes}`. The file retains all returned fields, including
+`data`, billing and request IDs; it does not fetch media URLs or execute again.
+Existing files are never overwritten. The flag cannot be combined with raw
+`--output`, `--stream` or `--code`; `--format` affects only the receipt.
+Without this flag, JSON stdout is unchanged. Treat saved files as private data.
+
+HTTP errors with a JSON body and HTTP 200 `success: false` responses are saved
+in full and still exit nonzero. Network failures, non-JSON/empty responses and
+file-write failures remove the incomplete file only if its path still points
+to the file this command created, and exit nonzero. A replacement file or
+symlink is preserved. If the output path changes during execution, the command
+refuses a success receipt; the original file may have been moved. Keep the
+output directory stable: identity checks and deletion are separate filesystem
+operations, so this is not atomic publication in an adversarial shared directory.
+A failed save does not mean execution failed: inspect the request outcome before
+any manual retry. No automatic execution retry or second download occurs.
 
 Search uses `--sort default|relevance|price`. `default` is the recommended
 order: it considers keyword coverage and match quality first, then favors
@@ -177,18 +201,17 @@ replace its upstream URL, service details, and endpoint contract, then run:
 # Inspect current rules; no API key required
 xapi-to provider spec-rules --format pretty
 
-# Import a raw OpenAPI 3.0.3 JSON object (not a {openApiSpec: ...} envelope)
+# Import a raw OpenAPI JSON or YAML object (not a {openApiSpec: ...} envelope)
+# Explicit prices in this example are preserved.
 xapi-to provider import --file openapi.json > imported.json
 
 # Use the serviceId and revisionId from imported.json (jq is optional)
 PROVIDER_SERVICE_ID=$(jq -er '.serviceId' imported.json)
 PROVIDER_REVISION_ID=$(jq -er '.revisionId' imported.json)
 
-# Save version configuration to move the draft revision to SANDBOX.
-# config.json can be {"description":"Initial release"} when the imported
-# endpoints, authentication, and pricing are already complete.
-xapi-to provider update "$PROVIDER_SERVICE_ID" \
-  --revision "$PROVIDER_REVISION_ID" --file config.json
+# Imports with endpoints start in SANDBOX on updated backends.
+# Inspect configuration and prices before submission.
+xapi-to provider get "$PROVIDER_SERVICE_ID" --format pretty
 
 # Submit the specified revision, then wait for the actual publication result
 xapi-to provider submit "$PROVIDER_SERVICE_ID" \
@@ -208,14 +231,27 @@ Import returns the backend validation/preview plus `serviceId`, `revisionId`,
 and `state`. An HTTP 201 with `success: false` is a validation failure and exits
 nonzero; its structured validation errors are preserved. Registration creates
 a new service each time. If a response is lost, inspect `provider list` before
-retrying to avoid duplicate services.
+retrying to avoid duplicate services. An older deployed backend may still return
+`DRAFT` for an import with endpoints; only then save its configuration once with
+`provider update --revision <id> --file config.json` to enter `SANDBOX`.
 
 For an authenticated upstream, store credentials in a local JSON object such
 as `{"Authorization":"Bearer YOUR_UPSTREAM_KEY"}` and pass
 `--private-headers-file private-headers.json` to `provider import`. Keep this
 file out of version control. `--file -` and `--private-headers-file -` accept
-stdin, but only one input can consume stdin per command. Files must be JSON;
-YAML and URL imports are not supported in this command group.
+stdin, but only one input can consume stdin per command. Raw imports accept
+JSON or single-document YAML; configuration and credentials remain JSON-only.
+The CLI does not fetch URLs or external references. Swagger 2.0 conversion and
+OpenAPI version/feature validation happen on the server; inspect `spec-rules`
+and structured validation errors rather than changing a version label.
+
+Missing per-call prices stop import before a write. Choose an explicit default
+with `--default-price 0.001`, or use `--default-price 0` when free access is
+intended. The default fills only missing `PER_CALL` prices (including hidden
+operations) and preserves authored prices and billing types. Resource, token
+and dynamic operations need their own pricing configuration in the spec; a
+per-call default cannot fill those. Hidden endpoints remain callable, so they
+also need an explicit pricing choice.
 
 `provider update --revision <id>` reads a version configuration object, using the backend
 fields `description`, `baseUrl`, `baseUrls`, `authType`, `privateHeaders`,

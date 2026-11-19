@@ -1,6 +1,16 @@
 interface Env {
   XAPI_AI_BASE_URL?: string;
+  APP_TOKEN?: string;
   MODEL_KEY?: string;
+}
+
+function authorized(request: Request, token: string): boolean {
+  const actual = request.headers.get("authorization") || "";
+  const expected = "Bearer " + token;
+  if (actual.length !== expected.length) return false;
+  let different = 0;
+  for (let i = 0; i < expected.length; i++) different |= actual.charCodeAt(i) ^ expected.charCodeAt(i);
+  return different === 0;
 }
 
 export default {
@@ -11,6 +21,12 @@ export default {
     }
     if (url.pathname !== "/chat" || request.method !== "POST") {
       return Response.json({ error: "not_found" }, { status: 404 });
+    }
+    if (!env.APP_TOKEN) {
+      return Response.json({ error: "APP_TOKEN_not_configured" }, { status: 503 });
+    }
+    if (!authorized(request, env.APP_TOKEN)) {
+      return Response.json({ error: "unauthorized" }, { status: 401 });
     }
     if (!env.MODEL_KEY) {
       return Response.json({ error: "MODEL_KEY_not_configured" }, { status: 503 });

@@ -114,6 +114,17 @@ function loadFileConfig(): { apiKey?: string } {
   }
 }
 
+/** Cached login session for JWT-only account routes; lives beside config.json. */
+export function sessionFile(): string {
+  return join(CONFIG_DIR, 'session.json');
+}
+
+/** True only for the key literally stored in config.json, never an env override. */
+export function isStoredApiKey(apiKey: string): boolean {
+  if (process.env.XAPI_KEY || process.env.XAPI_API_KEY) return false;
+  return loadFileConfig().apiKey === apiKey;
+}
+
 export function getApiKeySource(): ApiKeySource {
   if (process.env.XAPI_KEY) return 'XAPI_KEY';
   if (process.env.XAPI_API_KEY) return 'XAPI_API_KEY';

@@ -31,6 +31,20 @@ When a named Wrangler environment exists, its vars do not inherit root vars. Rep
 
 ## First project setup
 
+New `agent` and `chat` templates require both APP_TOKEN (application caller
+authentication) and MODEL_KEY (server-side model credential). Health is public;
+POST /chat fails before calling the model if APP_TOKEN is absent or invalid.
+Read the generated TEMPLATE.md for create/link, Secret setup, and preview tests.
+The generated Agent/Chat Wrangler toolchain requires Node.js 22.12.0 or newer,
+even when the CLI itself supports an older Node version. Use `npx xapi-to` for
+published builds or the same built local CLI that initialized the project;
+do not assume unreleased template changes are present in npm latest.
+New projects from these two templates default to a $0.25 preview daily Worker
+budget; explicit `--preview-budget USD|none` takes precedence. Model API charges
+are separate from that Worker budget. Use an independently limited runtime Key;
+do not describe it as AI-only unless a separate service/model policy enforces it.
+Existing projects and other templates keep their configured budgets.
+
 For an existing linked project, use its saved Worker ID directly. For a new project with required Secrets, choose either supported path:
 
 - **Interactive:** run `workers plan --env preview`, review the missing Secret names, then `workers push --env preview`. After confirmation, push saves the Worker ID and may provision planned resources; it stops before Artifact upload/deploy if Secrets are still missing. Use the returned ID to set values, then rerun push. This first stop is incomplete setup, not a successful release. Do not delete the saved ID or create another Worker.
