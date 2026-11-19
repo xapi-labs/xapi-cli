@@ -19,7 +19,11 @@ before `provider version update --replace`, and again before publication.
 - `tags`, if supplied, is an array of at most 8 labels, 1–24 characters each,
   without commas or control characters. The server trims them, collapses
   spaces and drops case-insensitive duplicates. Tags are display labels next to
-  the category; they do not affect search.
+  the category. Discovery can match these provider labels, but they do not earn
+  platform classifications. On updated backends, `meta.provider_tags` carries
+  authored labels, `meta.platform_tags` carries platform-derived classifications,
+  and legacy `meta.tags` merges both. The same word can appear as an authored
+  label. An authored label such as `fast` or `free` is only a provider claim.
 - `accessMode` is `PROXY` or `DIRECT`. Use `PROXY` for gateway billing,
   observability, or service rate limiting.
 - `baseUrl` and named `baseUrls` are public HTTP(S) URLs. A pure WebSocket
@@ -60,11 +64,38 @@ before `provider version update --replace`, and again before publication.
 
 ## OpenAPI import
 
-`provider import` accepts OpenAPI 3.x and Swagger 2.0 documents. Swagger 2.0 is
-converted on the server (host and base path, security schemes, body and form
-parameters, responses). Path-level parameters apply to every operation of the
-path; an operation-level parameter with the same name and location replaces
-it. Check the imported draft with `provider get` before publishing.
+`provider import` accepts a raw JSON or single-document YAML object, including
+`--file -` for stdin. YAML is parsed locally; the resulting document follows the
+same server registration and validation path as JSON. Configuration files for
+`create`/`update` and `--private-headers-file` remain JSON-only. URL fetching,
+external-reference fetching and local Swagger conversion are not provided.
+The server supports OpenAPI 3.x and converts Swagger 2.0 (host and base path,
+security schemes, body and form parameters, responses); its `spec-rules` and
+structured validation determine accepted versions and unsupported features.
+Do not rewrite a version label to bypass validation.
+
+Every imported operation needs an explicit price or billing configuration.
+For missing `PER_CALL` prices (including operations with no billing extension),
+choose the price with the user and pass `--default-price <USD>`, or add
+`x-xapi-billing.costPerCall` to the spec. `--default-price 0` explicitly chooses
+free access. The default fills only missing per-call prices, including hidden
+operations; it preserves explicit prices, including zero, and never changes a
+billing type. Hidden operations remain callable and still need pricing.
+`PER_RESOURCE` needs `costPerResource`, `PER_TOKEN` needs non-empty
+`tokenPricing` with a rate for each listed model, and `DYNAMIC` needs
+`dynamicRules`; configure those in the spec rather than using the per-call
+default. A default is a deliberate price choice, not a suggested market rate.
+
+```bash
+npx xapi-to provider import --file ./openapi.yaml --default-price 0.001
+# Only when zero-price access is intended:
+npx xapi-to provider import --file ./openapi.yaml --default-price 0
+```
+
+Path-level parameters apply to every operation of the path; an operation-level
+parameter with the same name and location replaces it. Check the imported
+contract, auth, prices and returned revision state with `provider get` before
+publishing.
 
 ## Before create or update
 

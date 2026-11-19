@@ -83,6 +83,18 @@ Choose the `init` form from the project you actually have:
 
 For a new service:
 
+The simple `agent`/`chat` templates now declare APP_TOKEN and MODEL_KEY separately:
+their generated Wrangler development toolchain requires Node.js 22.12.0 or newer.
+Use `npx xapi-to` for a published CLI build; for an unreleased checkout, use the
+same built local CLI used to initialize it. A local version is not release proof.
+POST /chat requires the application token, while /health remains public. Their
+new-project preview Worker budget defaults to $0.25/day (explicit values or
+`--preview-budget none` override it). Model usage is billed separately to
+MODEL_KEY. Read generated TEMPLATE.md and create/link the project, set runtime
+Secrets, then plan/push; the first push is not successful while Secrets are missing.
+Before you have a key or have created anything, `xapi workers plan --env preview --local`
+runs the local build and shows the plan without any remote read.
+
 ```bash
 xapi workers templates
 xapi workers init my-agent --template persistent-agent

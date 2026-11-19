@@ -58,6 +58,12 @@ scope. Do not try unrelated keys.
   [OAuth user context](reference/oauth-user-context.md).
 - Relay or aggregator onboarding: read
   [relay onboarding](reference/onboarding-openai-relay.md).
+- Importing raw OpenAPI JSON/YAML: read the OpenAPI import section of the
+  [validation checklist](reference/validation-checklist.md) for explicit missing
+  price choices, including `--default-price 0` for intentionally free calls.
+- Public endpoint hints for consuming agents: use operation-level
+  `x-xapi-agent-notes`; see
+  [lifecycle management](reference/lifecycle-management.md#provider-authored-agent-notes).
 - Before any create or publish: apply the
   [validation checklist](reference/validation-checklist.md).
 
@@ -136,6 +142,14 @@ npx xapi-to provider skill context <service-id>
 The scaffold command refuses to overwrite an existing file unless `--force` is
 explicit. Check its public URL, HTTP method, body and media types against the
 serving contract before submitting; generated text can require correction.
+On updated backends, scaffolds include discovery/get commands and bounded input
+schemas. Fill and validate input.json before executing a generated call; the
+schema block is not a ready-to-send payload. Non-JSON and WebSocket endpoints
+use their documented direct-proxy or WebSocket instructions. If get exposes
+responseContract, distinguish supplied examples from a declared success schema;
+older servers may omit this optional metadata.
+Response schemas may preserve `$ref`; details and exports include the required
+definitions. Multiple examples share their response schema rather than copying it.
 Link only a Skill owned by the same provider. If `skill context`
 reports contract drift, update and resubmit the Skill before recording a new
 fingerprint. `drift: false` does not prove schemas, media types or transport

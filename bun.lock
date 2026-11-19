@@ -8,6 +8,7 @@
         "@openai/agents": "0.15.0",
         "acorn": "^8.18.0",
         "busboy": "1.6.0",
+        "confbox": "0.1.8",
         "jsonc-parser": "^3.3.1",
         "smol-toml": "^1.8.0",
         "undici": "6.29.1",

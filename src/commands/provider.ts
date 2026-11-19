@@ -20,7 +20,7 @@ export const PROVIDER_HELP = `xapi-to provider - Manage provider services and th
 
 USAGE
   xapi-to provider spec-rules
-  xapi-to provider import --file <openapi.json> [--private-headers-file <path>]
+  xapi-to provider import --file <openapi.json|yaml> [--default-price <USD>] [--private-headers-file <path>]
   xapi-to provider update <service-id> --revision <id> --file <contract.json>
   xapi-to provider submit <service-id> --revision <id> [--changelog <text>]
   xapi-to provider wait <service-id> --revision <id> [--interval 2s] [--timeout 10m]

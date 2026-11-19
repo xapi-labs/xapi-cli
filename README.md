@@ -82,7 +82,7 @@ Unified interface for capabilities (built-in) and APIs (third-party). Use `--sou
 ```bash
 xapi-to list                                            # list all actions
 xapi-to list --source capability                        # only built-in capabilities
-xapi-to list --source api --category DeFi               # filter by source and category
+xapi-to list --source api --category Crypto             # filter by source and category
 xapi-to list --page 2 --page-size 20                    # pagination
 xapi-to list --service-id <id>                          # filter by service
 
@@ -177,18 +177,17 @@ replace its upstream URL, service details, and endpoint contract, then run:
 # Inspect current rules; no API key required
 xapi-to provider spec-rules --format pretty
 
-# Import a raw OpenAPI 3.0.3 JSON object (not a {openApiSpec: ...} envelope)
+# Import a raw OpenAPI JSON or YAML object (not a {openApiSpec: ...} envelope)
+# Explicit prices in this example are preserved.
 xapi-to provider import --file openapi.json > imported.json
 
 # Use the serviceId and revisionId from imported.json (jq is optional)
 PROVIDER_SERVICE_ID=$(jq -er '.serviceId' imported.json)
 PROVIDER_REVISION_ID=$(jq -er '.revisionId' imported.json)
 
-# Save version configuration to move the draft revision to SANDBOX.
-# config.json can be {"description":"Initial release"} when the imported
-# endpoints, authentication, and pricing are already complete.
-xapi-to provider update "$PROVIDER_SERVICE_ID" \
-  --revision "$PROVIDER_REVISION_ID" --file config.json
+# Imports with endpoints start in SANDBOX on updated backends.
+# Inspect configuration and prices before submission.
+xapi-to provider get "$PROVIDER_SERVICE_ID" --format pretty
 
 # Submit the specified revision, then wait for the actual publication result
 xapi-to provider submit "$PROVIDER_SERVICE_ID" \
@@ -208,14 +207,27 @@ Import returns the backend validation/preview plus `serviceId`, `revisionId`,
 and `state`. An HTTP 201 with `success: false` is a validation failure and exits
 nonzero; its structured validation errors are preserved. Registration creates
 a new service each time. If a response is lost, inspect `provider list` before
-retrying to avoid duplicate services.
+retrying to avoid duplicate services. An older deployed backend may still return
+`DRAFT` for an import with endpoints; only then save its configuration once with
+`provider update --revision <id> --file config.json` to enter `SANDBOX`.
 
 For an authenticated upstream, store credentials in a local JSON object such
 as `{"Authorization":"Bearer YOUR_UPSTREAM_KEY"}` and pass
 `--private-headers-file private-headers.json` to `provider import`. Keep this
 file out of version control. `--file -` and `--private-headers-file -` accept
-stdin, but only one input can consume stdin per command. Files must be JSON;
-YAML and URL imports are not supported in this command group.
+stdin, but only one input can consume stdin per command. Raw imports accept
+JSON or single-document YAML; configuration and credentials remain JSON-only.
+The CLI does not fetch URLs or external references. Swagger 2.0 conversion and
+OpenAPI version/feature validation happen on the server; inspect `spec-rules`
+and structured validation errors rather than changing a version label.
+
+Missing per-call prices stop import before a write. Choose an explicit default
+with `--default-price 0.001`, or use `--default-price 0` when free access is
+intended. The default fills only missing `PER_CALL` prices (including hidden
+operations) and preserves authored prices and billing types. Resource, token
+and dynamic operations need their own pricing configuration in the spec; a
+per-call default cannot fill those. Hidden endpoints remain callable, so they
+also need an explicit pricing choice.
 
 `provider update --revision <id>` reads a version configuration object, using the backend
 fields `description`, `baseUrl`, `baseUrls`, `authType`, `privateHeaders`,

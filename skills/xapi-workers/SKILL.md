@@ -7,6 +7,21 @@ description: Deploy, operate, and verify applications on xAPI-managed Cloudflare
 
 Use the `xapi` CLI (`xapi-to` is the same executable). Verify `xapi workers --help` before using it; an older published installation may lack these commands even when the repository already contains them. Stop and report the version mismatch instead of silently replacing managed deployment with Wrangler direct deployment. Wrangler `deploy --dry-run --outfile` is allowed only as a local framework packaging step; the resulting Artifact must still be published with xAPI.
 
+## Shortest path for a new project
+
+Each step ends with the signal to check before the next one:
+
+1. `xapi workers templates`: pick a template id (`worker`, `webhook`, `agent`, `chat` or `persistent-agent`).
+2. `xapi workers init my-app --template agent`: the output lists `files`, `budgets` (agent/chat preview defaults to $0.25 a day) and `nextSteps`. Follow `nextSteps` in order.
+3. `npm install`, then `xapi workers plan --env preview --local`: the local build succeeds, and no key is needed. Secrets show as `BLOCKED` until step 5.
+4. `xapi workers create --config xapi.worker.json`: returns the Worker ID and writes it into `xapi.worker.json`.
+5. `xapi workers secrets set <worker-id> <NAME> --env preview --from-env <NAME>` for each Secret the plan named (agent/chat need `APP_TOKEN` and `MODEL_KEY`): `workers secrets status` lists them as set. For `MODEL_KEY`, use a separate key with a spending limit set in the xAPI Console. Never use the deployment key.
+6. `xapi workers plan --env preview` shows `canApply: true`. Then `xapi workers push --env preview`: the deployment is `ACTIVE` and the health check passes.
+7. `xapi workers logs <worker-id> --env preview --since 10m`: your test requests appear.
+8. Before production, choose a production budget and set the production Secrets. Then run `xapi workers promote --to production`.
+
+Everything below covers existing projects, resources, billing and recovery.
+
 ## Start with scope
 
 - Identify the control-plane host, Worker ID, and **preview or production** from the project and `workers get`. Test control plane and preview environment are separate choices.
