@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.3.2](https://github.com/xapi-labs/xapi-cli/compare/v0.3.1...v0.3.2) (2026-11-19)
+
+
+### Features
+
+* **call:** save complete JSON responses to private files ([a009785](https://github.com/xapi-labs/xapi-cli/commit/a009785e5944d1b63ae461e6b2e35a8eb96b190b))
+* **cli:** improve service discovery and execution workflows ([#73](https://github.com/xapi-labs/xapi-cli/issues/73)) ([7b08dc0](https://github.com/xapi-labs/xapi-cli/commit/7b08dc0f6c8bbe9bfbde77cda438031c98e2100f))
+* **cli:** improve service discovery, call output, and provider onboarding ([7b08dc0](https://github.com/xapi-labs/xapi-cli/commit/7b08dc0f6c8bbe9bfbde77cda438031c98e2100f))
+* **cli:** promote execution envelopes to staging ([a265814](https://github.com/xapi-labs/xapi-cli/commit/a265814bf7d60145833675f3d0f8a72703abb76a))
+* **cli:** show service, price and 30-day stats in action tables ([786041b](https://github.com/xapi-labs/xapi-cli/commit/786041bfc4dfaf778cc5aac18a6bc935799d1700))
+* **cli:** validate discovery and provider onboarding in staging ([7bf9d2f](https://github.com/xapi-labs/xapi-cli/commit/7bf9d2faf0cc3b1850cb9145a3bfde5315adaf65))
+* **provider:** import YAML with explicit default pricing ([194601d](https://github.com/xapi-labs/xapi-cli/commit/194601de767d44fdb4db926393e892da432b66d9))
+* **provider:** show a service's review and lifecycle timeline ([810f89a](https://github.com/xapi-labs/xapi-cli/commit/810f89aec0eaa37e9c8df28511340c8166b523db))
+* **sandbox:** server-side lifetime and spending caps, concise run output ([a00ed05](https://github.com/xapi-labs/xapi-cli/commit/a00ed054e0133a820dc09daea47cbc3b7a9f9f41))
+* **sandbox:** show termination reasons and clarify budget limits ([6849d71](https://github.com/xapi-labs/xapi-cli/commit/6849d71394f2617c8752223bfbf507a64760db89))
+* **skill:** explain import lifecycle and trusted discovery metadata ([960796c](https://github.com/xapi-labs/xapi-cli/commit/960796c68f65396ac72579e5144ab6b4e1e2f6e1))
+* **skill:** guide service tags, official categories and token usage rules ([73696a4](https://github.com/xapi-labs/xapi-cli/commit/73696a4f7904d8fdc29535988093a43f1d20ab23))
+* **skill:** guide Tripo async provider registration ([#61](https://github.com/xapi-labs/xapi-cli/issues/61)) ([550171c](https://github.com/xapi-labs/xapi-cli/commit/550171c4522d5d5a0d0ad0ce936d11e56d48dbef))
+* **workers:** key-free local plan, secrets in init's next steps, shortest path in the skill ([33f20eb](https://github.com/xapi-labs/xapi-cli/commit/33f20eb0c1fc109ba3cc5282d7144050d301f6b1))
+
+
+### Bug Fixes
+
+* **agent:** report failed calls and protect generated chat routes ([a0b9d88](https://github.com/xapi-labs/xapi-cli/commit/a0b9d88897f2630ea015dd647612f258d1b3fa42))
+* **call:** clarify uncertain failures and response evidence ([96ddd6a](https://github.com/xapi-labs/xapi-cli/commit/96ddd6accddc5890e938ba080ebd1ed444fe8aa6))
+* **call:** preserve replaced files and complete JSON errors ([ac85a83](https://github.com/xapi-labs/xapi-cli/commit/ac85a83225321e28fc89b0f4d9915c30952380fa))
+* **cli:** reuse the login session for balance and oauth ([af0a957](https://github.com/xapi-labs/xapi-cli/commit/af0a9571867c080ab747329bb3e1a3c5c075f129))
+* **oauth:** inspect endpoint requirements before account binding ([fc59690](https://github.com/xapi-labs/xapi-cli/commit/fc596907dc8ab2c1e7900d177906b7d64c1fcbf2))
+* **skill:** describe text search and provider tag compatibility ([4b72ccc](https://github.com/xapi-labs/xapi-cli/commit/4b72ccc446ea914ae5e76f1a7ace58eec28c2572))
+* **skill:** explain referenced response schemas ([fbad100](https://github.com/xapi-labs/xapi-cli/commit/fbad100e7fe025eb86bca6f2da886d989c5dcc90))
+* **skill:** handle Binance candle boundaries and USD volume ([#63](https://github.com/xapi-labs/xapi-cli/issues/63)) ([889c15e](https://github.com/xapi-labs/xapi-cli/commit/889c15ee0747757c57d6a6179ae27210c8222fca))
+* **skill:** stop recommending the retired provider event feed ([#66](https://github.com/xapi-labs/xapi-cli/issues/66)) ([3a7c3d7](https://github.com/xapi-labs/xapi-cli/commit/3a7c3d7cd46348ed680c74451aa90231af2007bd))
+
+
+### Documentation
+
+* **action:** explain mixed billing states and overlapping amounts ([3d50300](https://github.com/xapi-labs/xapi-cli/commit/3d50300dddd3ce63d301093b1e4b17b8cbf3669c))
+* **action:** name the separate raw cost-state headers ([bf86fa8](https://github.com/xapi-labs/xapi-cli/commit/bf86fa828ee7667268e3eed9b6a42ed0c0edca32))
+* **cli:** keep the staging skill guide concise ([fe5c3c3](https://github.com/xapi-labs/xapi-cli/commit/fe5c3c32c155650f4de4516ee8fa5bdcee7b6dab))
+* **provider:** explain readiness and interrupted review recovery ([24e0b71](https://github.com/xapi-labs/xapi-cli/commit/24e0b71db385da78ba4c2fead1b5f1e350b5a5be))
+* **provider:** promote readiness and review guidance to staging ([1540b1b](https://github.com/xapi-labs/xapi-cli/commit/1540b1b9b063eeda0e9c3ee55866941c05791fc6))
+* **skill:** describe the restored Twitter search fallback behavior ([ea4a49c](https://github.com/xapi-labs/xapi-cli/commit/ea4a49c9b5caa3b2170bf3862d1c762a7e095706))
+* **skill:** how to choose between similar services and read a call's cost ([ef90979](https://github.com/xapi-labs/xapi-cli/commit/ef909791441c8bd354f04aa95063081fbbb48591))
+* **skill:** tags and categories in search results ([80522c1](https://github.com/xapi-labs/xapi-cli/commit/80522c1ffc2c8faa880bb600949b2a5590207345))
+
 ## [0.3.1](https://github.com/xapi-labs/xapi-cli/compare/v0.3.0...v0.3.1) (2026-10-22)
 
 
