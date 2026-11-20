@@ -65,11 +65,11 @@ canary call; do not expect a read command to return the secret.
 
 A provider can enable xAPI user identity forwarding on a working revision.
 The default is off. This setting is for synchronous HTTP proxy endpoints sharing
-one HTTPS origin. Configure a dedicated version-level `HEADER` or `BEARER`
-credential that the provider validates on every request.
+one HTTPS origin. The switch controls whether xAPI forwards the identifiers.
+Upstream authentication is configured separately.
 
-Start a working revision for the target major. For a first-time setup, put the
-dedicated upstream credential in a local patch file outside version control.
+Start a working revision for the target major. To configure an upstream
+credential as well, put it in a local patch file outside version control.
 This example uses a custom header. For Bearer auth, set `"authType": "BEARER"`
 and use `"Authorization"` in `privateHeaders`.
 With `HEADER` auth, ordinary headers such as `Content-Type` can accompany
@@ -91,7 +91,7 @@ npx xapi-to provider version update <service-id> <working-version-id> \
   --file ./auth.patch.json --forward-caller-identity on
 ```
 
-For a revision with a credential already configured, use the flag on its own.
+To change only the switch, use the flag on its own.
 For reusable automation, set `"forwardCallerIdentity": true` in the JSON patch.
 If you pass the field and flag together, their values must agree.
 
@@ -108,8 +108,9 @@ npx xapi-to provider versions <service-id>
 You can verify ownership in a dedicated sandbox service with two regular xAPI
 Keys from the same account and one from another account.
 
-On the provider server, validate the dedicated credential on every request
-before reading these headers.
+On the provider server, verify the request came from xAPI before using these
+headers for authorization. An existing upstream credential can serve this
+purpose.
 
 | Request header | Provider use |
 |---|---|
