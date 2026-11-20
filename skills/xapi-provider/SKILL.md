@@ -41,6 +41,11 @@ scope. Do not try unrelated keys.
   [lifecycle management](reference/lifecycle-management.md), then start from a
   file in [`templates/`](templates/).
 - Upstream authentication: read [authentication](reference/auth-types.md).
+- Use xAPI user identity to enforce resource ownership or audit which API key
+  called. Configure the working revision with `provider version update
+  <service-id> <working-version-id> --forward-caller-identity on`. Follow the
+  [caller identity setup](reference/auth-types.md#forward-xapi-caller-identifiers)
+  for the upstream credential, the two request headers, and verification.
 - Fixed, token, resource, or zero-price billing: read
   [billing](reference/billing-modes.md) and
   [free access](reference/free-api-access.md).

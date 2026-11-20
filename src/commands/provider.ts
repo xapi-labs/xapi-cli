@@ -15,6 +15,7 @@ import { err, output } from '../format.ts';
 
 const READ_RETRIES = 2;
 const BASE = '/api/api-services/agent';
+const VERSION_UPDATE_USAGE = 'xapi-to provider version update <service-id> <version-id> [--file <contract.json>] [--forward-caller-identity <on|off>] [--replace]';
 
 export const PROVIDER_HELP = `xapi-to provider - Manage provider services and their content
 
@@ -29,7 +30,7 @@ USAGE
   xapi-to provider create --file <service.json> [--logo-file <path>] [rate-limit flags]
   xapi-to provider update <service-id> [metadata/rate-limit flags]
   xapi-to provider versions <service-id>
-  xapi-to provider version update <service-id> <version-id> --file <contract.json> [--replace]
+  ${VERSION_UPDATE_USAGE}
   xapi-to provider major create <service-id>
   xapi-to provider revision start <service-id> <major>
   xapi-to provider publish <service-id> <revision-id> [--changelog <text>|--changelog-file <path>]
@@ -72,6 +73,21 @@ SERVICE RATE-LIMIT FLAGS
 
 Set both numeric flags together. Limits apply only to PROXY services and use
 one shared quota for each user and service, including all API keys of that user.
+
+CALLER IDENTITY FORWARDING
+  xapi-to provider version update <service-id> <working-version-id> --forward-caller-identity on
+  xapi-to provider version update <service-id> <working-version-id> --forward-caller-identity off
+
+Off by default. Set the flag on a working revision, then publish and check the
+live setting with provider versions <service-id>. Use --file to configure the
+dedicated upstream HEADER or BEARER credential on the same revision. A JSON
+contract can also set forwardCallerIdentity to true or false.
+
+For synchronous HTTP proxy endpoints on one HTTPS origin. The provider first
+authenticates the gateway credential, then reads both opaque request headers:
+  X-XAPI-Account-Subject   Stable within this service when a user changes keys.
+                           Use it to bind resources and enforce ownership.
+  X-XAPI-Key-Subject       Identifies one API key within this service for audit.
 
 SCOPES
   list/get/versions/review/diff/timeline/skill context: service:read
@@ -238,6 +254,10 @@ export async function provider(args: string[], flags: Record<string, string>) {
   if (flags['logo-file'] !== undefined && args[0] !== 'create') {
     err('--logo-file is only supported by provider create');
   }
+  const forwarding = flags['forward-caller-identity'];
+  if (forwarding !== undefined && (args[0] !== 'version' || args[1] !== 'update')) {
+    err('--forward-caller-identity is only supported by provider version update');
+  }
   if (onboardingCommand || revisionAlias) return providerOnboarding(args, flags);
   const cfg = getConfig();
   requireApiKey(cfg);
@@ -293,12 +313,28 @@ export async function provider(args: string[], flags: Record<string, string>) {
       }
 
       case 'version': {
-        if (rest[0] !== 'update') err('usage: xapi-to provider version update <service-id> <version-id> --file <contract.json> [--replace]');
-        const id = required(rest[1], 'xapi-to provider version update <service-id> <version-id> --file <contract.json>');
-        const versionId = required(rest[2], 'xapi-to provider version update <service-id> <version-id> --file <contract.json>');
+        if (rest[0] !== 'update') err(`usage: ${VERSION_UPDATE_USAGE}`);
+        const id = required(rest[1], VERSION_UPDATE_USAGE);
+        const versionId = required(rest[2], VERSION_UPDATE_USAGE);
+        const replace = boolFlag(flags, 'replace');
+
+        if (forwarding !== undefined && forwarding !== 'on' && forwarding !== 'off') {
+          err('--forward-caller-identity expects on or off');
+        }
+        if (flags.file === undefined && (replace || forwarding === undefined)) {
+          err(replace ? '--replace requires --file' : 'Pass --file or --forward-caller-identity <on|off>');
+        }
+        const body = flags.file === undefined ? {} : await readJsonObject(flags.file);
+        if (forwarding !== undefined) {
+          const enabled = forwarding === 'on';
+          if (Object.hasOwn(body, 'forwardCallerIdentity') && body.forwardCallerIdentity !== enabled) {
+            err('--forward-caller-identity conflicts with forwardCallerIdentity in --file');
+          }
+          body.forwardCallerIdentity = enabled;
+        }
         result = await apiKeyApiRequest(XAPI_API_HOST, apiKey, servicePath(id, `/versions/${encodeURIComponent(versionId)}`), {
-          method: boolFlag(flags, 'replace') ? 'PUT' : 'PATCH',
-          body: await readJsonObject(required(flags.file, 'xapi-to provider version update <service-id> <version-id> --file <contract.json>')),
+          method: replace ? 'PUT' : 'PATCH',
+          body,
         });
         break;
       }
