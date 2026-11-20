@@ -131,6 +131,60 @@ describe('provider command', () => {
     );
   });
 
+  it.each([['on', true], ['off', false]] as const)('sets caller identity %s on a working revision with only a PATCH', async (toggle, value) => {
+    await provider(['version', 'update', 'service-1', 'revision-1'], {
+      'forward-caller-identity': toggle,
+    });
+    expect(requestSpy).toHaveBeenCalledTimes(1);
+    expect(requestSpy).toHaveBeenCalledWith(
+      'api.xapi.to',
+      'sk-provider',
+      '/api/api-services/agent/services/service-1/versions/revision-1',
+      { method: 'PATCH', body: { forwardCallerIdentity: value } },
+    );
+  });
+
+  it('can configure the dedicated credential and caller identity in one revision update', async () => {
+    const contract = {
+      authType: 'HEADER',
+      privateHeaders: { 'X-Provider-Gateway-Key': 'fixture-credential' },
+    };
+    const { service } = await createFiles(contract);
+    await provider(['version', 'update', 'service-1', 'revision-1'], {
+      file: service,
+      'forward-caller-identity': 'on',
+    });
+    expect(requestSpy.mock.calls[0]?.[3]).toEqual({
+      method: 'PATCH',
+      body: { name: 'Weather', ...contract, forwardCallerIdentity: true },
+    });
+  });
+
+  it('preserves explicit JSON false through the existing full replacement path', async () => {
+    const { service } = await createFiles({ forwardCallerIdentity: false });
+    await provider(['version', 'update', 'service-1', 'revision-1'], { file: service, replace: 'true' });
+    expect(requestSpy.mock.calls[0]?.[3]).toEqual({
+      method: 'PUT',
+      body: { name: 'Weather', forwardCallerIdentity: false },
+    });
+  });
+
+  it('rejects ambiguous caller identity settings before sending a request', async () => {
+    const { service } = await createFiles({ forwardCallerIdentity: false });
+    const command = ['version', 'update', 'service-1', 'revision-1'];
+    await expect(provider(command, { 'forward-caller-identity': 'true' })).rejects.toThrow();
+    await expect(provider(command, { 'forward-caller-identity': 'off', replace: 'true' })).rejects.toThrow();
+    await expect(provider(command, { file: service, 'forward-caller-identity': 'on' })).rejects.toThrow();
+    await expect(provider(['update', 'service-1'], { 'forward-caller-identity': 'on' })).rejects.toThrow();
+    expect(requestSpy).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.map((call: unknown[]) => call[0])).toEqual(expect.arrayContaining([
+      '--forward-caller-identity expects on or off',
+      '--replace requires --file',
+      '--forward-caller-identity conflicts with forwardCallerIdentity in --file',
+      '--forward-caller-identity is only supported by provider version update',
+    ]));
+  });
+
   it('queries provider events with the opaque cursor unchanged', async () => {
     await provider(['events'], { after: 'opaque+/cursor=', limit: '25' });
 
