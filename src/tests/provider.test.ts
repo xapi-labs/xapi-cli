@@ -131,6 +131,14 @@ describe('provider command', () => {
     );
   });
 
+  async function writeCallerIdentityFixture(fields: Record<string, unknown>) {
+    const dir = await mkdtemp(join(tmpdir(), 'xapi-provider-identity-'));
+    temporary.push(dir);
+    const file = join(dir, 'revision.json');
+    await writeFile(file, JSON.stringify({ name: 'Weather', ...fields }));
+    return file;
+  }
+
   it.each([['on', true], ['off', false]] as const)('sets caller identity %s on a working revision with only a PATCH', async (toggle, value) => {
     await provider(['version', 'update', 'service-1', 'revision-1'], {
       'forward-caller-identity': toggle,
@@ -149,7 +157,7 @@ describe('provider command', () => {
       authType: 'HEADER',
       privateHeaders: { 'X-Provider-Gateway-Key': 'fixture-credential' },
     };
-    const { service } = await createFiles(contract);
+    const service = await writeCallerIdentityFixture(contract);
     await provider(['version', 'update', 'service-1', 'revision-1'], {
       file: service,
       'forward-caller-identity': 'on',
@@ -161,7 +169,7 @@ describe('provider command', () => {
   });
 
   it('preserves explicit JSON false through the existing full replacement path', async () => {
-    const { service } = await createFiles({ forwardCallerIdentity: false });
+    const service = await writeCallerIdentityFixture({ forwardCallerIdentity: false });
     await provider(['version', 'update', 'service-1', 'revision-1'], { file: service, replace: 'true' });
     expect(requestSpy.mock.calls[0]?.[3]).toEqual({
       method: 'PUT',
@@ -170,7 +178,7 @@ describe('provider command', () => {
   });
 
   it('rejects ambiguous caller identity settings before sending a request', async () => {
-    const { service } = await createFiles({ forwardCallerIdentity: false });
+    const service = await writeCallerIdentityFixture({ forwardCallerIdentity: false });
     const command = ['version', 'update', 'service-1', 'revision-1'];
     await expect(provider(command, { 'forward-caller-identity': 'true' })).rejects.toThrow();
     await expect(provider(command, { 'forward-caller-identity': 'off', replace: 'true' })).rejects.toThrow();
