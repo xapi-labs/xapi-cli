@@ -757,6 +757,11 @@ describe('--preview flag on the wire', () => {
     fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (url: any, init: RequestInit) => {
       const body = init.body ? JSON.parse(String(init.body)) : undefined;
       requests.push({ url: new URL(String(url)), body });
+      if (String(url).endsWith('/v1/actions/batch')) {
+        return new Response(JSON.stringify({ actions: [{ id: 'svc.op', method: 'GET' }], missing_ids: [] }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        });
+      }
       const contentType = body?.stream ? 'text/event-stream' : 'application/json';
       return new Response(body?.stream ? 'data: {}\n\n' : JSON.stringify({ success: true, data: {} }), {
         status: 200, headers: { 'content-type': contentType },
@@ -773,12 +778,27 @@ describe('--preview flag on the wire', () => {
     ['list', (flags: Record<string, string>) => actionList([], flags)],
     ['search', (flags: Record<string, string>) => actionSearch(['x'], flags)],
     ['services', (flags: Record<string, string>) => actionServices([], flags)],
+    ['categories', (flags: Record<string, string>) => actionCategories([], flags)],
   ] as const) {
     it(`${name} sends include_preview=true only with --preview`, async () => {
       await run({});
       await run({ preview: 'true' });
       expect(requests[0].url.searchParams.has('include_preview')).toBe(false);
       expect(requests[1].url.searchParams.get('include_preview')).toBe('true');
+    });
+  }
+
+  for (const [name, run] of [
+    ['get', (flags: Record<string, string>) => actionGet(['svc.op'], flags)],
+    ['get-batch', (flags: Record<string, string>) => actionBatchGet(['svc.op', 'svc.other'], flags)],
+  ] as const) {
+    it(`${name} sends include_preview in the batch body only with --preview`, async () => {
+      await run({});
+      await run({ preview: 'true' });
+      expect(requests.map((r) => r.url.pathname)).toEqual(['/v1/actions/batch', '/v1/actions/batch']);
+      expect('include_preview' in requests[0].body).toBe(false);
+      expect(requests[1].body.include_preview).toBe(true);
+      expect(requests[1].url.searchParams.has('include_preview')).toBe(false);
     });
   }
 

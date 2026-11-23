@@ -69,6 +69,7 @@ USAGE
 
 FLAGS
   --source capability|api   Filter by source type
+  --preview                 Also include your own PREVIEW services (unpublished, free to self-test)
   --format json|pretty|table  Output format
 `;
 
@@ -91,6 +92,7 @@ USAGE
   xapi-to get-batch <id> [id ...] [flags]
 
 FLAGS
+  --preview                 Also resolve your own PREVIEW services
   --format json|pretty|table  Output format
 
 EXAMPLES
@@ -105,6 +107,7 @@ USAGE
 FLAGS
   --method GET|POST|...     Filter by HTTP method
   --code <target>           Generate code snippet instead of showing schema
+  --preview                 Also resolve your own PREVIEW services
   --format json|pretty|table  Output format
 
 CODE TARGETS
@@ -231,6 +234,11 @@ function previewFlag(flags: Record<string, string>): true | undefined {
   return flags.preview === 'true' || undefined;
 }
 
+/** Client options that carry include_preview in POST bodies when --preview is given. */
+function withPreview<T extends client.ClientOptions>(cfg: T, flags: Record<string, string>): T {
+  return previewFlag(flags) ? { ...cfg, includePreview: true } : cfg;
+}
+
 function httpMethodFlag(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   if (value === 'true' || !/^[A-Za-z]+$/.test(value)) {
@@ -324,7 +332,7 @@ export async function actionCategories(args: string[], flags: Record<string, str
   const cfg = getConfig();
   const fmt = flags.format || getFormat();
   try {
-    const res = await client.actionCategories(cfg, { source: getSource(flags) });
+    const res = await client.actionCategories(cfg, { source: getSource(flags), include_preview: previewFlag(flags) });
     if (fmt === 'table') {
       output(res.categories.map(c => ({ category: c })), 'table');
     } else {
@@ -372,7 +380,7 @@ export async function actionGet(args: string[], flags: Record<string, string>) {
   const methodFilter = httpMethodFlag(flags.method);
   const cfg = getConfig();
   try {
-    const res = await client.actionGet(id, cfg);
+    const res = await client.actionGet(id, withPreview(cfg, flags));
     const actions = Array.isArray(res) ? res : [res];
     const filtered = methodFilter
       ? actions.filter((a: any) => a.method?.toUpperCase() === methodFilter)
@@ -406,7 +414,7 @@ export async function actionBatchGet(args: string[], flags: Record<string, strin
   if (args.length > 100) err('get-batch accepts at most 100 action IDs');
   const cfg = getConfig();
   try {
-    const res = await client.actionBatch(args, cfg);
+    const res = await client.actionBatch(args, withPreview(cfg, flags));
     output(res, flags.format as any);
   } catch (e: any) {
     err('get-batch failed', e.message);
@@ -456,7 +464,7 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
   }
 
   requireApiKey(cfg);
-  const callCfg = previewFlag(flags) ? { ...cfg, includePreview: true } : cfg;
+  const callCfg = withPreview(cfg, flags);
   let res: unknown;
   try {
     if (jsonPath !== undefined) {

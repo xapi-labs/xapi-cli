@@ -69,13 +69,16 @@ COMMANDS
     --preview                       Include your own PREVIEW services
   categories                        List all action categories
     --source capability|api         Filter by source type
+    --preview                       Include your own PREVIEW services
   services                          List all services
     --page N  --page-size N         Pagination
     --category <name>               Filter by category
     --preview                       Include your own PREVIEW services
   get <id> [--method GET|POST|...]   Get action schema (filter by HTTP method)
     --code <target>                  Generate code snippet (curl, py, js, ts, go)
+    --preview                        Also resolve your own PREVIEW services
   get-batch <id> [id ...]           Get up to 100 action schemas
+    --preview                       Also resolve your own PREVIEW services
   call <id> --input '{"key":"val"}'  Execute an action
     --method GET|POST|...            Override HTTP method
     --output <path>                   Save a raw binary response to a new file

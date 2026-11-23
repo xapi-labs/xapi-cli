@@ -119,11 +119,11 @@ const RETRY_MAX_DELAY_MS = 8_000;
 export interface ClientOptions {
   actionHost: string;
   apiKey?: string;
-  /** Execute calls only: send include_preview so the caller can reach their own PREVIEW services. */
+  /** POST execute/batch bodies: send include_preview so the caller can reach their own PREVIEW services. */
   includePreview?: boolean;
 }
 
-/** Older backends may reject unknown execute fields, so send include_preview only when requested. */
+/** Older backends may reject unknown body fields, so send include_preview only when requested. */
 function previewBody(opts: ClientOptions): { include_preview?: true } {
   return opts.includePreview ? { include_preview: true } : {};
 }
@@ -805,9 +805,10 @@ export async function actionSearch(
   );
 }
 
-export async function actionCategories(opts: ClientOptions, params: { source?: string } = {}) {
+export async function actionCategories(opts: ClientOptions, params: { source?: string; include_preview?: boolean } = {}) {
   const url = new URL(`${baseUrl(opts)}/v1/actions/categories`);
   if (params.source) url.searchParams.set('source', params.source);
+  if (params.include_preview) url.searchParams.set('include_preview', 'true');
   return request<{ categories: string[]; total: number }>(
     url.toString(),
     { method: 'GET', headers: headers(opts.apiKey) },
@@ -836,7 +837,7 @@ export async function actionBatch(ids: string[], opts: ClientOptions) {
     {
       method: 'POST',
       headers: headers(opts.apiKey),
-      body: JSON.stringify({ ids }),
+      body: JSON.stringify({ ids, ...previewBody(opts) }),
     },
     DEFAULT_TIMEOUT_MS,
     IDEMPOTENT_RETRIES, // read-only metadata fetch — safe to retry
