@@ -48,14 +48,17 @@ by default; pass `--preview` to opt in:
 ```bash
 npx xapi-to search "<service name>" --preview
 npx xapi-to list --service-id <service-id> --preview
+npx xapi-to get <action-id> --preview
 npx xapi-to call <action-id> --preview --input '{"key":"value"}'
 ```
 
-The flag sends `include_preview=true` on `list`, `search` and `services`, and
-`include_preview: true` in the `call` execute body. Direct Gateway calls to a
+The flag sends the query `include_preview=true` on `list`, `search`,
+`categories` and `services`, and the body field `include_preview: true` on
+`get`/`get-batch` (`POST /v1/actions/batch`) and `call` (`POST
+/v1/actions/execute`). Without the flag the field is not sent. Direct Gateway calls to a
 preview service need no flag. Any of the owner's API keys works; the former
 key-level `allowSandbox` permission no longer exists and is ignored if sent.
-Other users still receive 404. Preview responses carry `X-XAPI-Billing: preview`
+Other users receive 404 (platform admins excepted). Preview responses carry `X-XAPI-Billing: preview`
 (older backends: `sandbox`), and their usage records have `isPreviewCall: true`
 (older field `isSandboxCall`). A free preview call still spends real upstream
 supplier credits.

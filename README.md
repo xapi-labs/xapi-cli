@@ -238,8 +238,8 @@ retrying to avoid duplicate services. An older deployed backend may still return
 Older backends report this state as `SANDBOX`; the CLI accepts both.
 
 While a revision is in `PREVIEW`, you can call it for free to self-test. Pass
-`--preview` to `list`, `search`, `services` or `call` (API field
-`include_preview`) to include your own preview services; they are no longer
+`--preview` to `list`, `search`, `categories`, `services`, `get`, `get-batch`
+or `call` (API field `include_preview`) to include your own preview services; they are no longer
 exposed through an API key permission, and any of your keys works. Preview
 responses carry `X-XAPI-Billing: preview` and usage records mark them with
 `isPreviewCall: true`.

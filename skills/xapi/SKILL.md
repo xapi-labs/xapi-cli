@@ -86,7 +86,7 @@ npx xapi-to search "token price" --sort relevance  # strongest text match
 npx xapi-to search "token price" --sort price      # lowest comparable price
 npx xapi-to search "twitter" --include-all-versions  # include active non-default majors
 
-# List all APIs (supports --source, --category, --service-id, --page, --page-size; --preview adds your own unpublished PREVIEW services, also on search/services/call)
+# List all APIs (supports --source, --category, --service-id, --page, --page-size; --preview, on every discovery/get/call command, adds your own unpublished PREVIEW services)
 npx xapi-to list
 npx xapi-to list --source capability
 npx xapi-to list --category Social --page-size 10
