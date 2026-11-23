@@ -27,6 +27,12 @@ manage another provider's service or Skill. These commands validate the owner
 path; they do not prove a separate administrator can view or review a working
 revision.
 
+A key limited to selected services lists only those services and gets
+`404 API service not found` for the others; services it creates join its
+selection. A missing permission returns `403 API_KEY_SCOPE_MISSING` with
+`requiredPermission` and `grantedBy`. Key permissions, service selection, IP
+allowlist, and limit change only in the console after a full account login.
+
 ## Create and describe a service
 
 Create uses the backend service DTO as JSON so credentials and endpoint

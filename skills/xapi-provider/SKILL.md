@@ -236,3 +236,15 @@ or prove upstream health. Dedicated CLI readiness support is still pending.
 
 Scope and ownership are independent. A key with a scope cannot manage another
 provider's service or Skill.
+
+An owner can also limit a key to selected services. That key lists only those
+services, gets `404 API service not found` for any other service, and adds each
+service it creates to its own selection.
+
+A missing permission returns `403` with `code: API_KEY_SCOPE_MISSING`,
+`requiredPermission`, and `grantedBy` (the console permission groups that
+include it). Report `requiredPermission` to the user. Only the owner, logged in
+to the xAPI console with a full account login, can change a key's permissions,
+service selection, IP allowlist, or limit; a session obtained by logging in
+with an API Key cannot. The console's Developer template covers the operations
+above except rollback and deletion.
