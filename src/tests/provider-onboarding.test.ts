@@ -61,7 +61,7 @@ describe('provider lifecycle commands', () => {
       expect(call.url).toStartWith('https://api.xapi.to/api/api-services/agent/');
       if (call.url.endsWith('register-api-service')) return json({ success: true,
         apiService: { id: 'svc-1', activeVersionId: 'rev-1', activeVersion: { id: 'rev-1', state: 'DRAFT' } }, validation: { warnings: [] } }, 201);
-      if (call.method === 'PATCH') return json({ id: 'rev-1', state: 'SANDBOX', ...call.body });
+      if (call.method === 'PATCH') return json({ id: 'rev-1', state: 'PREVIEW', ...call.body });
       if (call.url.endsWith('/submit')) return json({ state: 'IN_REVIEW', willReview: true });
       return json(report(++polls === 1 ? 'IN_REVIEW' : 'PUBLISHED'));
     };
@@ -98,7 +98,7 @@ describe('provider lifecycle commands', () => {
   });
 
   it('imports YAML with its schema, auth, extensions and server-side Swagger conversion intact', async () => {
-    respond = () => json({ success: true, apiService: { id: 'svc', activeVersion: { id: 'rev', state: 'SANDBOX' } } });
+    respond = () => json({ success: true, apiService: { id: 'svc', activeVersion: { id: 'rev', state: 'PREVIEW' } } });
     const path = join(dir, 'openapi.yaml');
     await writeFile(path, `openapi: 3.0.3
 info:
@@ -197,7 +197,7 @@ paths:
   });
 
   it('guards endpoint merges while allowing explicit additions and full replacements', async () => {
-    respond = () => json({ state: 'SANDBOX' });
+    respond = () => json({ state: 'PREVIEW' });
     const path = await file({ endpoints: [{ name: 'search', method: 'GET', path: '/search' }] });
     await expect(provider(['update', 'svc'], { file: path, revision: 'rev-1' })).rejects.toThrow('cli error');
     expect(calls).toHaveLength(0);
@@ -280,7 +280,7 @@ paths:
   it('explains the backend immutable-revision conflict without echoing server input', async () => {
     respond = () => json({ code: 'REVISION_NOT_EDITABLE', message: 'private-secret', state: 'PUBLISHED' }, 409);
     await expect(provider(['update', 'svc'], { revision: 'rev-1', file: await file({ description: 'changed' }) })).rejects.toThrow('cli error');
-    expect(errSpy.mock.calls[0][1]).toContain('Only DRAFT or SANDBOX');
+    expect(errSpy.mock.calls[0][1]).toContain('Only DRAFT or PREVIEW');
     expect(errSpy.mock.calls[0][1]).not.toContain('private-secret');
     expect(calls).toHaveLength(1);
   });
@@ -293,11 +293,14 @@ paths:
   });
 
   for (const [state, review, reason] of [
+    ['PREVIEW', { status: 'AUTO_FAILED', outcome: 'rejected' }, 'rejected'],
+    ['PREVIEW', null, 'not_published'],
+    // Pre-rename backends still report SANDBOX during the transition.
     ['SANDBOX', { status: 'AUTO_FAILED', outcome: 'rejected' }, 'rejected'],
     ['IN_REVIEW', { status: 'PENDING_HUMAN', outcome: 'pending_human' }, 'manual_review_required'],
     ['DRAFT', null, 'not_published'], ['SUSPENDED', null, 'not_published'],
   ] as const) {
-    it(`returns nonzero for ${state}/${reason}`, async () => {
+    it(`returns nonzero for ${state}/${reason}${review ? '' : ' without review'}`, async () => {
       respond = () => json(report(state, review));
       await provider(['wait', 'svc'], { revision: 'rev-1' });
       expect(process.exitCode).toBe(1);

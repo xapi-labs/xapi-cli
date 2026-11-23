@@ -27,6 +27,7 @@ FLAGS
   --service-id <id>         Filter by service
   --page N                  Page number (default: 1)
   --page-size N             Results per page
+  --preview                 Also include your own PREVIEW services (unpublished, free to self-test)
   --format json|pretty|table  Output format
 
 EXAMPLES
@@ -49,6 +50,7 @@ FLAGS
                             Recommended (default), strongest match, or lowest
                             comparable price after exact-id/local-match guards
   --include-all-versions    Include active non-default major versions
+  --preview                 Also include your own PREVIEW services (unpublished, free to self-test)
   --format json|pretty|table  Output format
 
 EXAMPLES
@@ -79,6 +81,7 @@ FLAGS
   --category <name>         Filter by category: id, alias or name, any case
   --page N                  Page number
   --page-size N             Results per page
+  --preview                 Also include your own PREVIEW services (unpublished, free to self-test)
   --format json|pretty|table  Output format
 `;
 
@@ -139,6 +142,7 @@ FLAGS
   --output <path>           Save a raw binary response to a new file
   --output-json <path>      Save the full JSON response to a new private file
   --stream                  Forward the action's HTTP SSE response unchanged
+  --preview                 Allow calling your own PREVIEW service (free self-test)
   --code <target>           Generate code snippet instead of executing
   --format json|pretty|table  Output format
 
@@ -222,6 +226,11 @@ function positiveIntegerFlag(value: string | undefined, name: string): number | 
   return Number(value);
 }
 
+/** --preview: also show/allow the caller's own PREVIEW services (formerly SANDBOX). */
+function previewFlag(flags: Record<string, string>): true | undefined {
+  return flags.preview === 'true' || undefined;
+}
+
 function httpMethodFlag(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   if (value === 'true' || !/^[A-Za-z]+$/.test(value)) {
@@ -241,6 +250,7 @@ export async function actionList(args: string[], flags: Record<string, string>) 
       page_size: positiveIntegerFlag(flags['page-size'], '--page-size'),
       category: flags.category,
       service_id: flags['service-id'],
+      include_preview: previewFlag(flags),
     });
     const actions = (res.actions || []) as any[];
     if (fmt === 'table') {
@@ -288,6 +298,7 @@ export async function actionSearch(args: string[], flags: Record<string, string>
       // Backward-compatible aliases from the original feature branch.
       include_all_versions: ['include-all-versions', 'all-versions', 'include-history']
         .some((name) => flags[name] === 'true'),
+      include_preview: previewFlag(flags),
       sort: requestedSort,
     });
     if (requestedSort && res.sort !== requestedSort) {
@@ -333,6 +344,7 @@ export async function actionServices(args: string[], flags: Record<string, strin
       page: positiveIntegerFlag(flags.page, '--page'),
       page_size: positiveIntegerFlag(flags['page-size'], '--page-size'),
       category: flags.category,
+      include_preview: previewFlag(flags),
     });
     const services = (res.services || []) as any[];
     if (fmt === 'table') {
@@ -444,22 +456,23 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
   }
 
   requireApiKey(cfg);
+  const callCfg = previewFlag(flags) ? { ...cfg, includePreview: true } : cfg;
   let res: unknown;
   try {
     if (jsonPath !== undefined) {
-      const saved = await client.actionSaveJson(id, cleanInput, cfg, jsonPath, method);
+      const saved = await client.actionSaveJson(id, cleanInput, callCfg, jsonPath, method);
       output({ success: true, ...saved }, flags.format as any);
       return;
     }
     if (stream) {
-      await client.actionStream(id, cleanInput, cfg, method);
+      await client.actionStream(id, cleanInput, callCfg, method);
       return;
     }
     if (flags.output) {
       const result = await client.actionDownload(
         id,
         cleanInput,
-        cfg,
+        callCfg,
         flags.output,
         method,
       );
@@ -476,7 +489,7 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
       );
       return;
     }
-    res = await client.actionCall(id, cleanInput, cfg, method);
+    res = await client.actionCall(id, cleanInput, callCfg, method);
   } catch (e: any) {
     if (e instanceof client.BusinessResponseError) output(redactActionFailure(e.responseBody, cfg.apiKey), flags.format as any);
     await errAfterFlush('call failed', actionErrorDetail(e, cfg.apiKey));

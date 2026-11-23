@@ -59,17 +59,20 @@ COMMANDS
     --page N  --page-size N         Pagination
     --category <name>               Filter by category
     --service-id <id>               Filter by service
+    --preview                       Include your own PREVIEW services
   search <query>                    Search actions by keyword (--all-versions: 含非默认但仍在跑的大版本)
     --source capability|api         Filter by source type
     --category <name>               Filter by category
     --page N  --page-size N         Pagination
     --sort default|relevance|price  Recommended, strongest match, or comparable price
     --include-all-versions          Include active non-default major versions
+    --preview                       Include your own PREVIEW services
   categories                        List all action categories
     --source capability|api         Filter by source type
   services                          List all services
     --page N  --page-size N         Pagination
     --category <name>               Filter by category
+    --preview                       Include your own PREVIEW services
   get <id> [--method GET|POST|...]   Get action schema (filter by HTTP method)
     --code <target>                  Generate code snippet (curl, py, js, ts, go)
   get-batch <id> [id ...]           Get up to 100 action schemas
@@ -78,6 +81,7 @@ COMMANDS
     --output <path>                   Save a raw binary response to a new file
     --output-json <path>              Save the full JSON response to a new private file
     --stream                          Forward HTTP SSE frames unchanged
+    --preview                         Allow calling your own PREVIEW service
     --code <target>                  Generate code snippet instead of executing
     Variants: python.requests, python.httpx, javascript.fetch, javascript.axios
 
