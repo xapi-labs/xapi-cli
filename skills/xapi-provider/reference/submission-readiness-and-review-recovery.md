@@ -35,7 +35,8 @@ Normal Agent audit logging still applies. Its result contains:
 | `changes.reviewTestReason/reviewTestNote` | Why that review-test decision applies |
 | `selfTest` | Advisory availability, reason, observation boundary (`since`), endpoint observations and untested count; `blocking` is `false` |
 
-Issue codes include `SERVICE_BLOCKED`, `REVISION_NOT_IN_SANDBOX`, `NO_ENDPOINTS`,
+Issue codes include `SERVICE_BLOCKED`, `REVISION_NOT_IN_PREVIEW` (formerly
+`REVISION_NOT_IN_SANDBOX`), `NO_ENDPOINTS`,
 `PROVIDER_SCHEMA_INVALID`, `ENDPOINT_PATH_INVALID`, `MISSING_BASE_URL`,
 `WS_MISSING_UPSTREAM`, `SANDBOX_CONFIG_INCOMPLETE`, and
 `PER_TOKEN_USAGE_UNREADABLE`. Correct the reported issues, then read readiness
@@ -56,7 +57,7 @@ submission flow described in [lifecycle management](lifecycle-management.md).
 
 `REVIEW_INTERRUPTED` is a provider inbox notification for platform failure during
 automatic review. Its title identifies the service/revision; its body says the
-revision returned to Sandbox without content changes and can be submitted again.
+revision returned to Preview without content changes and can be submitted again.
 It does not carry the internal exception text, and it is not an author-content
 rejection or an approval. Notification data includes `apiVersionId`,
 `majorVersion` and the affected `reviewId`.
@@ -64,11 +65,11 @@ rejection or an approval. Notification data includes `apiVersionId`,
 Recovery is tied to that review attempt and revision. A stale worker must not
 roll back a newer attempt, a completed decision or an unrelated revision, and
 must not emit a misleading recovery notification for them. The serving revision
-continues serving while the working revision returns to `SANDBOX`.
+continues serving while the working revision returns to `PREVIEW`.
 
 On receiving a notification, read `provider versions` and `provider review` for
 the referenced IDs. Confirm the current working revision is still the intended
-`SANDBOX` revision, inspect readiness if supported, then explicitly submit it
+`PREVIEW` revision, inspect readiness if supported, then explicitly submit it
 again when appropriate. A notification can be stale; never blindly resubmit a
 revision that is already `IN_REVIEW`, has a newer attempt, or has been published.
 Do not automatically replay an ambiguous submit response; read current state

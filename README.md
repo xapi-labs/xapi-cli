@@ -91,6 +91,7 @@ xapi-to search "token price" --source api               # search APIs only
 xapi-to search "token price" --sort relevance           # strongest text match
 xapi-to search "token price" --sort price               # lowest comparable price
 xapi-to search "twitter" --include-all-versions          # include active non-default majors
+xapi-to search "weather" --preview                      # also include your own PREVIEW services
 
 xapi-to categories                                      # list all categories
 xapi-to categories --source capability                  # categories for capabilities only
@@ -209,7 +210,7 @@ xapi-to provider import --file openapi.json > imported.json
 PROVIDER_SERVICE_ID=$(jq -er '.serviceId' imported.json)
 PROVIDER_REVISION_ID=$(jq -er '.revisionId' imported.json)
 
-# Imports with endpoints start in SANDBOX on updated backends.
+# Imports with endpoints start in PREVIEW on updated backends.
 # Inspect configuration and prices before submission.
 xapi-to provider get "$PROVIDER_SERVICE_ID" --format pretty
 
@@ -233,7 +234,15 @@ nonzero; its structured validation errors are preserved. Registration creates
 a new service each time. If a response is lost, inspect `provider list` before
 retrying to avoid duplicate services. An older deployed backend may still return
 `DRAFT` for an import with endpoints; only then save its configuration once with
-`provider update --revision <id> --file config.json` to enter `SANDBOX`.
+`provider update --revision <id> --file config.json` to enter `PREVIEW`.
+Older backends report this state as `SANDBOX`; the CLI accepts both.
+
+While a revision is in `PREVIEW`, you can call it for free to self-test. Pass
+`--preview` to `list`, `search`, `services` or `call` (API field
+`include_preview`) to include your own preview services; they are no longer
+exposed through an API key permission, and any of your keys works. Preview
+responses carry `X-XAPI-Billing: preview` and usage records mark them with
+`isPreviewCall: true`.
 
 For an authenticated upstream, store credentials in a local JSON object such
 as `{"Authorization":"Bearer YOUR_UPSTREAM_KEY"}` and pass
@@ -296,7 +305,7 @@ does not guarantee publication, but a passing review can automatically publish
 and switch live traffic. `wait` checks the requested revision, succeeds
 only for `PUBLISHED`, and outputs the review report with `success` and `reason`.
 `--changelog` is limited to 2,000 characters by both the CLI and backend.
-Rejection, a draft/sandbox/suspended revision, or a legacy manual-review hold
+Rejection, a draft/preview/suspended revision, or a legacy manual-review hold
 exit nonzero. Pending review continues until publication, the timeout (default
 10 minutes), or optional `--max-attempts`. Timeout and attempt-limit results
 include the last received report; polling can be resumed with the same IDs.

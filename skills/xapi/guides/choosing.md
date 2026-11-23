@@ -131,7 +131,7 @@ review status matters to the user's choice.
 
 Action execution envelopes may include `rate_limit` with `limit`, `remaining`,
 `reset_at` and optional `retry_after_seconds`. Service quota errors carry
-`error.retry_after_seconds`; a quota rejection for free API sandbox calls uses
+`error.retry_after_seconds`; a quota rejection for free API preview calls uses
 flat `retry_after_seconds` plus `rate_limit_buckets` (`creator_minute`,
 `creator_daily`, `api_key_daily`). Inspect the actual error body, including any
 outer Action envelope, instead of assuming one field location for all routes.

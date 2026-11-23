@@ -62,7 +62,7 @@ long-term asset retention require separate verification.
 
 ## Acceptance boundary
 
-Private draft/sandbox calls still spend real supplier credits while xAPI wallet
+Private draft/preview calls still spend real supplier credits while xAPI wallet
 billing can be disabled. Supplier success and usage reconciliation do not prove
 nonzero caller-wallet settlement. Before paid public access, verify the final
 deployed candidate's ownership checks, result query/download, reservation

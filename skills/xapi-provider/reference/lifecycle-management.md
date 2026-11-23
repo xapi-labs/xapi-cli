@@ -6,13 +6,15 @@ Use the commands here instead of constructing management requests yourself.
 ## Service and revision states
 
 Creating a service with a non-empty `endpoints` list starts its v1 revision in
-`SANDBOX`, including `provider import` and `provider create --file`. An empty
-service starts in `DRAFT`; saving a valid contract moves it to `SANDBOX`.
+`PREVIEW`, including `provider import` and `provider create --file`. An empty
+service starts in `DRAFT`; saving a valid contract moves it to `PREVIEW`.
+Older backends report `PREVIEW` as `SANDBOX` and revision labels as `sandbox`;
+treat them as the same state.
 Read the returned state: older deployed backends may still create `DRAFT` even
 with endpoints, in which case save the contract once before submitting.
 Publishing moves it to `IN_REVIEW`. A passing
 review produces an immutable `PUBLISHED` revision. A failed review returns the
-revision to `SANDBOX`; an uncertain review may wait for human review. A service
+revision to `PREVIEW`; an uncertain review may wait for human review. A service
 can also become `SUSPENDED` after publication.
 
 Use these reads to determine current state and IDs:
@@ -35,7 +37,28 @@ published revision is not necessarily serving. The legacy revision `status`
 field is not the routing truth.
 
 `revision start` may return an existing working revision, including one already
-in review. Only `DRAFT` and `SANDBOX` are editable; inspect state before writing.
+in review. Only `DRAFT` and `PREVIEW` are editable; inspect state before writing.
+
+## Self-test a preview service
+
+The owner can call their own `PREVIEW` service for free, rate-limited, before
+submitting it. Preview services are hidden from Action discovery and execution
+by default; pass `--preview` to opt in:
+
+```bash
+npx xapi-to search "<service name>" --preview
+npx xapi-to list --service-id <service-id> --preview
+npx xapi-to call <action-id> --preview --input '{"key":"value"}'
+```
+
+The flag sends `include_preview=true` on `list`, `search` and `services`, and
+`include_preview: true` in the `call` execute body. Direct Gateway calls to a
+preview service need no flag. Any of the owner's API keys works; the former
+key-level `allowSandbox` permission no longer exists and is ignored if sent.
+Other users still receive 404. Preview responses carry `X-XAPI-Billing: preview`
+(older backends: `sandbox`), and their usage records have `isPreviewCall: true`
+(older field `isSandboxCall`). A free preview call still spends real upstream
+supplier credits.
 
 Use the major and working `revision` number from the overview to read its
 contract, for example v1.4 for major 1, revision 4:
