@@ -114,6 +114,14 @@ npx xapi-to provider revision start <service-id> <major>
 npx xapi-to provider major create <service-id>
 ```
 
+To delist one endpoint, set `hidden: true` on it in a working revision
+(`x-xapi-hidden: true` in OpenAPI) and publish. A delist-only change does not
+trigger the upstream review test. Callers then get `410 EndpointDelisted`, and
+the endpoint leaves docs, Marketplace and Tools. Set it back to `false` and
+publish to restore it; delete the endpoint instead only to remove it for good.
+For TIME_RENTAL, delist only the CREATE endpoint: submission rejects a delisted
+TERMINATE or STATUS endpoint because open rentals could no longer be stopped.
+
 ## Marketplace content and usage Skill
 
 Update service-card content separately from the version contract:
@@ -193,6 +201,11 @@ npx xapi-to provider default-major <service-id> <major>
 npx xapi-to provider deprecate <service-id> <major>
 npx xapi-to provider restore <service-id> <major>
 ```
+
+`deprecate` on the default major is refused with `409
+DEFAULT_MAJOR_HAS_LIVE_MAJORS` while another major is live: run `default-major`
+to a live major first. Deprecating the only live major pauses the whole service.
+A deprecated major answers `410 MajorVersionDelisted` to `X-Xapi-Version` calls.
 
 Do not automatically retry an ambiguous rollback response. Read `versions` and
 `review` first. Deletion requires both `service:delete` and the explicit service

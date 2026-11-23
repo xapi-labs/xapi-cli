@@ -456,8 +456,21 @@ export async function provider(args: string[], flags: Record<string, string>) {
     // Provider error bodies can echo submitted configuration or credentials.
     // Preserve local errors, but never print an HTTP response body verbatim.
     const message = error instanceof HttpError
-      ? `HTTP ${error.status}`
+      ? defaultMajorConflict(error) ?? `HTTP ${error.status}`
       : String(redactProvider(error instanceof Error ? error.message : 'Unknown error', [apiKey]));
     err('provider request failed', message);
   }
+}
+
+// Deprecating the default major while another major is live is refused (409).
+// The body is a fixed server message plus major labels, so it is safe to show.
+function defaultMajorConflict(error: HttpError): string | undefined {
+  const body = error.responseBody as { code?: unknown; liveMajors?: unknown } | undefined;
+  if (error.status !== 409 || body?.code !== 'DEFAULT_MAJOR_HAS_LIVE_MAJORS') return undefined;
+  const live = Array.isArray(body.liveMajors)
+    ? body.liveMajors.filter((v): v is string => typeof v === 'string' && /^v\d+$/.test(v))
+    : [];
+  const target = live[0] ?? '<other-major>';
+  return `HTTP 409: other majors are still live (${live.join(', ') || 'unknown'}). ` +
+    `Switch the default first: xapi-to provider default-major <service-id> ${target.replace(/^v/, '')}, then deprecate.`;
 }

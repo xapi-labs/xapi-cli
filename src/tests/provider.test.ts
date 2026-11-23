@@ -229,6 +229,23 @@ describe('provider command', () => {
     );
   });
 
+  it('explains the default-major 409 without echoing other response bodies', async () => {
+    requestSpy.mockRejectedValueOnce(new client.HttpError(409, 'conflict', undefined, {
+      code: 'DEFAULT_MAJOR_HAS_LIVE_MAJORS',
+      message: '默认版本是 v2，请先切换默认版本到 v1，再弃用 v2',
+      liveMajors: ['v1'],
+    }));
+    await expect(provider(['deprecate', 'service-1', '2'], {})).rejects.toThrow('err called');
+    expect(errSpy).toHaveBeenCalledWith(
+      'provider request failed',
+      'HTTP 409: other majors are still live (v1). Switch the default first: xapi-to provider default-major <service-id> 1, then deprecate.',
+    );
+
+    requestSpy.mockRejectedValueOnce(new client.HttpError(409, 'conflict', undefined, { code: 'OTHER', secret: 'x' }));
+    await expect(provider(['deprecate', 'service-1', '2'], {})).rejects.toThrow('err called');
+    expect(errSpy).toHaveBeenLastCalledWith('provider request failed', 'HTTP 409');
+  });
+
   it('links a primary skill using service:update', async () => {
     await provider(['skill', 'link', 'service-1', 'skill-1'], {});
 
