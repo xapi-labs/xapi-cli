@@ -96,7 +96,10 @@ For reusable automation, set `"forwardCallerIdentity": true` in the JSON patch.
 If you pass the field and flag together, their values must agree.
 
 When only the forwarding switch changes, publishing activates it immediately
-without a review step. Inspect the diff, publish, and confirm
+without a review step. When forwarding is on and the revision also changes the
+upstream, contract or authentication, publishing activates it immediately and
+the revision is spot-checked afterward, because the review key cannot call
+identity-aware endpoints. Inspect the diff, publish, and confirm
 `servingForwardCallerIdentity` for the target major.
 
 ```bash
@@ -109,8 +112,10 @@ You can verify ownership in a dedicated sandbox service with two regular xAPI
 Keys from the same account and one from another account.
 
 On the provider server, verify the request came from xAPI before using these
-headers for authorization. An existing upstream credential can serve this
-purpose.
+headers for authorization. Use an upstream credential issued only to xAPI and
+validate it on every request. A key that other clients also hold cannot prove
+the request came through xAPI, because they could call the upstream directly
+with forged headers.
 
 | Request header | Provider use |
 |---|---|
@@ -125,6 +130,8 @@ call with their regular xAPI Key.
 
 To turn forwarding off, set `--forward-caller-identity off` on a working
 revision and publish it. A JSON patch can also set
-`"forwardCallerIdentity": false`. The gateway keeps stripping both reserved
+`"forwardCallerIdentity": false`. The change takes effect as soon as it is
+published, so make identity-aware routes tolerate missing headers first. The
+gateway keeps stripping both reserved
 headers on every HTTP revision of a previously enrolled service, including
 after a rollback.
