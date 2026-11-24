@@ -135,7 +135,7 @@ or on-chain confirmation. Use a deliberately invalid, format-complete fixture
 for a forwarding check; do not construct a valid signed transaction to obtain 2xx.
 
 The maintained public Aptos contract has 27 operations. Raw table
-`POST /v1/tables/{handle}/raw_item` is delisted (`x-xapi-hidden: true`) pending
+`POST /v1/tables/{handle}/raw_item` is delisted (`x-xapi-delisted: true`) pending
 upstream compatibility: it is not listed or exported and the gateway returns
 410 for it. Do not advertise it as supported. Its binary response type `application/x-bcs` is different from the
 signed-transaction **request** media type above.

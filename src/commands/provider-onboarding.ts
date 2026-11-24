@@ -33,7 +33,7 @@ COMMON FLAGS
 configuration and credential files remain JSON. Swagger 2.0 conversion and
 OpenAPI validation happen on the server. Missing prices require an explicit
 choice; --default-price affects only unpriced PER_CALL operations, including
-hidden ones, and preserves existing prices and other billing types.
+delisted ones, and preserves existing prices and other billing types.
 Merge updates to existing endpoints require their IDs. Use --mode replace
 to replace the endpoint list, or --allow-new-endpoints to intentionally add.
 Creation with endpoints starts in SANDBOX; empty services start in DRAFT.

@@ -78,9 +78,9 @@ Every imported operation needs an explicit price or billing configuration.
 For missing `PER_CALL` prices (including operations with no billing extension),
 choose the price with the user and pass `--default-price <USD>`, or add
 `x-xapi-billing.costPerCall` to the spec. `--default-price 0` explicitly chooses
-free access. The default fills only missing per-call prices, including hidden
+free access. The default fills only missing per-call prices, including delisted
 operations; it preserves explicit prices, including zero, and never changes a
-billing type. Delisted (`hidden`) operations are not callable (the gateway
+billing type. Delisted (`x-xapi-delisted: true`) operations are not callable (the gateway
 returns 410) but still need pricing, because they can be restored.
 `PER_RESOURCE` needs `costPerResource`, `PER_TOKEN` needs non-empty
 `tokenPricing` with a rate for each listed model, and `DYNAMIC` needs

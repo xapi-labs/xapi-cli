@@ -138,13 +138,13 @@ paths:
     expect(calls[1].body.openApiSpec).toEqual(swagger);
   });
 
-  it('requires explicit missing-price choices and preserves authored billing, including hidden operations', async () => {
+  it('requires explicit missing-price choices and preserves authored billing, including delisted operations', async () => {
     respond = () => json({ success: true, apiService: { id: 'svc', activeVersionId: 'rev' } });
     const spec = { openapi: '3.0.3', paths: {
       '/missing': { get: { summary: 'Missing' } },
       '/typed': { post: { 'x-xapi-billing': { type: 'PER_CALL' } } },
       '/empty-type': { GET: { 'x-xapi-billing': { type: '' } } },
-      '/hidden': { get: { 'x-xapi-hidden': true } },
+      '/delisted': { get: { 'x-xapi-delisted': true } },
       '/priced': { get: { 'x-xapi-billing': { costPerCall: 0.25 } } },
       '/free': { get: { 'x-xapi-billing': { type: 'PER_CALL', costPerCall: 0 } } },
       '/resource': { get: { 'x-xapi-billing': { type: 'PER_RESOURCE', costPerResource: 0.03 } } },
@@ -157,10 +157,10 @@ paths:
     for (const price of ['0', '0.002']) {
       await provider(['import'], { file: path, 'default-price': price });
       const paths = calls.at(-1)!.body.openApiSpec.paths;
-      for (const [route, method] of [['/missing', 'get'], ['/typed', 'post'], ['/hidden', 'get'], ['/empty-type', 'GET']]) {
+      for (const [route, method] of [['/missing', 'get'], ['/typed', 'post'], ['/delisted', 'get'], ['/empty-type', 'GET']]) {
         expect(paths[route!][method!]['x-xapi-billing'].costPerCall).toBe(Number(price));
       }
-      expect(paths['/hidden'].get['x-xapi-hidden']).toBe(true);
+      expect(paths['/delisted'].get['x-xapi-delisted']).toBe(true);
       for (const route of ['/priced', '/free', '/resource', '/token']) {
         expect(paths[route]).toEqual(spec.paths[route as keyof typeof spec.paths]);
       }
