@@ -290,7 +290,7 @@ export async function providerOnboarding(args: string[], flags: Record<string, s
         message += ': revision is not editable. Only DRAFT or SANDBOX can be updated; use a working revision for changes to a published API';
       }
       message = legacyFieldNotice(e) ?? message;
-      if (['import', 'update', 'submit'].includes(command)) message += '. No automatic retry was made; inspect provider list/get/review before retrying';
+      if (['import', 'update', 'submit'].includes(command)) message += `${message.endsWith('.') ? '' : '.'} No automatic retry was made; inspect provider list/get/review before retrying`;
     } else message = e instanceof SyntaxError ? 'Invalid JSON response from provider API' : e instanceof Error ? e.message : 'Unknown error';
     err(`provider ${command} failed`, redactProvider(message, secrets));
   }
