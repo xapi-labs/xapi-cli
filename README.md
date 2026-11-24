@@ -250,8 +250,9 @@ with `--default-price 0.001`, or use `--default-price 0` when free access is
 intended. The default fills only missing `PER_CALL` prices (including hidden
 operations) and preserves authored prices and billing types. Resource, token
 and dynamic operations need their own pricing configuration in the spec; a
-per-call default cannot fill those. Hidden endpoints remain callable, so they
-also need an explicit pricing choice.
+per-call default cannot fill those. Delisted (`hidden`) endpoints are not
+callable (the gateway returns 410), but they keep their pricing so they can be
+restored, so they also need an explicit pricing choice.
 
 `provider update --revision <id>` reads a version configuration object, using the backend
 fields `description`, `baseUrl`, `baseUrls`, `authType`, `privateHeaders`,

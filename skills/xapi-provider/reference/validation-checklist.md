@@ -80,7 +80,8 @@ choose the price with the user and pass `--default-price <USD>`, or add
 `x-xapi-billing.costPerCall` to the spec. `--default-price 0` explicitly chooses
 free access. The default fills only missing per-call prices, including hidden
 operations; it preserves explicit prices, including zero, and never changes a
-billing type. Hidden operations remain callable and still need pricing.
+billing type. Delisted (`hidden`) operations are not callable (the gateway
+returns 410) but still need pricing, because they can be restored.
 `PER_RESOURCE` needs `costPerResource`, `PER_TOKEN` needs non-empty
 `tokenPricing` with a rate for each listed model, and `DYNAMIC` needs
 `dynamicRules`; configure those in the spec rather than using the per-call
