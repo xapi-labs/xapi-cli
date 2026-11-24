@@ -42,7 +42,7 @@ describe("workers init", () => {
       globalThis.fetch = Object.assign(async () => { calls++; throw new Error("Unexpected AI request"); }, { preconnect: originalFetch.preconnect });
       try {
         for (const input of [null, [], { message: 42 }, { message: " " }]) {
-          const response = await module.default.fetch(new Request("https://example.test/chat", { method: "POST", body: JSON.stringify(input) }), { MODEL_KEY: "test" });
+          const response = await module.default.fetch(new Request("https://example.test/chat", { method: "POST", headers: { authorization: "Bearer app-test" }, body: JSON.stringify(input) }), { APP_TOKEN: "app-test", MODEL_KEY: "test" });
           expect(response.status).toBe(400);
         }
         expect(calls).toBe(0);

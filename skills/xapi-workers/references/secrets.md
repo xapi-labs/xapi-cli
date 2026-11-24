@@ -31,25 +31,48 @@ When a named Wrangler environment exists, its vars do not inherit root vars. Rep
 
 ## First project setup
 
+New `agent` and `chat` templates require both APP_TOKEN (application caller
+authentication) and MODEL_KEY (server-side model credential). Health is public;
+POST /chat fails before calling the model if APP_TOKEN is absent or invalid.
+Read the generated TEMPLATE.md for create/link, Secret setup, and preview tests.
+The generated Agent/Chat Wrangler toolchain requires Node.js 22.12.0 or newer,
+even when the CLI itself supports an older Node version. Use `npx xapi-to` for
+published builds or the same built local CLI that initialized the project;
+do not assume unreleased template changes are present in npm latest.
+New projects from these two templates default to a $0.25 preview daily Worker
+budget; explicit `--preview-budget USD|none` takes precedence. Model API charges
+are separate from that Worker budget. Use an independently limited runtime Key;
+do not describe it as AI-only unless a separate service/model policy enforces it.
+Existing projects and other templates keep their configured budgets.
+
 For an existing linked project, use its saved Worker ID directly. For a new project with required Secrets, choose either supported path:
 
 - **Interactive:** run `workers plan --env preview`, review the missing Secret names, then `workers push --env preview`. After confirmation, push saves the Worker ID and may provision planned resources; it stops before Artifact upload/deploy if Secrets are still missing. Use the returned ID to set values, then rerun push. This first stop is incomplete setup, not a successful release. Do not delete the saved ID or create another Worker.
-- **Non-interactive/CI, or to configure Secrets before provisioning resources:** use `workers create` with the name, slug, template and both budgets from `xapi.worker.json` (and placement/location when configured). Save its returned ID as top-level `workerId` in that same file, set Secrets, then plan/push. `create` does not link the local config automatically. A non-interactive push with missing prerequisites intentionally makes no changes.
+- **Non-interactive/CI, or to configure Secrets before provisioning resources:** use `workers create --config xapi.worker.json`. It reads the project's name, slug, template, budgets and placement/location, creates the Worker record and saves its top-level `workerId`; an already linked project reuses its owned record. It does not build, provision declared resources, upload or publish. Set Secrets, then plan/push. A non-interactive push with missing prerequisites makes no changes and prints this setup command. The older `create --name ... --slug ...` primitive remains available but does not link a local config.
 
-Creation syntax (substitute the project's actual configuration):
+Create/link once, then use the returned `id` for the target environment's Secret commands. Required names come from that environment's `xapi.worker.json` and selected Wrangler configuration; the same name can have different preview and production values. Creation does not copy or set values in either environment.
+
+Preview setup, when preview needs Secrets:
 
 ```sh
-xapi workers create --name "My service" --slug my-service --template worker \
-  --preview-budget 0.25 --production-budget 2
-# Save the returned id as xapi.worker.json's top-level workerId.
-xapi workers secrets apply <worker-id> --env preview --env-file .env.worker
+xapi workers create --config xapi.worker.json
+xapi workers secrets apply <worker-id> --env preview --env-file .env.preview
 xapi workers plan --env preview
 xapi workers push --env preview --non-interactive
 ```
 
+Production setup, when production needs Secrets, uses the same linked Worker ID:
+
+```sh
+xapi workers secrets apply <worker-id> --env production --env-file .env.production
+xapi workers promote --to production
+```
+
+Promotion reuses an accepted preview Artifact. If only production declares required Secrets, preview does not need those values. `.env.preview` and `.env.production` are example file names; choose the file containing the intended values, or use `secrets set`. This adds no requirement to configure Secrets in an environment that does not need them.
+
 If the application needs its assigned origin before its first build, create/link the project first and run `xapi workers get <worker-id> --format json`. Read the selected environment's `publicOrigin`, `publicBasePath`, `publicUrl`, `routingMode`, and `webAppReady`; do not construct a hostname from the slug. For HOSTNAME routing with webAppReady=true, use publicOrigin for origin-valued settings and the application's real callback path for OAuth. PATH_FALLBACK includes a base path and is not interchangeable with a root-hosted application URL; only use it if the app supports that base path. HOSTNAME_PENDING is not proof of an accessible website. If the required routing is not ready, report that routing prerequisite instead of treating it as a missing Secret. Then set public vars and OAuth callback configuration before rebuilding.
 
-Only application Secret values belong in `.env.worker`, never the xAPI management Key. `apply` sets the supplied names; omitted names are not deleted. Missing required values must be provided, not removed from the required-name list to make a plan look ready.
+Only application Secret values belong in these Secret files, never the xAPI management Key. `apply` sets the supplied names in the explicitly selected environment; omitted names are not deleted. Missing required values must be provided, not removed from the required-name list to make a plan look ready.
 
 Wrangler `vars` are public plain-text/JSON bindings, not required Secrets.
 Named environments declare their own vars and `secrets.required`. Updating or
@@ -94,7 +117,9 @@ xapi workers secrets status <worker-id> --env preview
 
 JSON lists required Secret names, not values or an exclusive allowlist. Removing a name does not delete its value. Value writes are independent for each environment/key; unrelated resource work and code publication do not create a global Secret lock. The first write to an absent script may briefly coordinate script initialization.
 
-Code deploy, promotion, rollback, pause, and resume preserve provider secrets with Cloudflare native binding inheritance. They do not read values from xAPI or copy values between environments. A missing required binding should block activation rather than opening a route with incomplete runtime configuration.
+Code deploy, promotion, rollback, system suspension, and resume preserve provider secrets with Cloudflare native binding inheritance. They do not read values from xAPI or copy values between environments. A missing required binding should block activation rather than opening a route with incomplete runtime configuration.
+
+During financial retention (`retentionStartedAt` is non-null), adding, rotating or deleting Secrets is blocked along with other user writes. Add sufficient funds and explicitly recover the environment first; do not repeatedly retry Secret writes. See [billing.md](billing.md).
 
 Delete only with explicit authorization:
 

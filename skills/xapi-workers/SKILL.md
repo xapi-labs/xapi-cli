@@ -7,6 +7,21 @@ description: Deploy, operate, and verify applications on xAPI-managed Cloudflare
 
 Use the `xapi` CLI (`xapi-to` is the same executable). Verify `xapi workers --help` before using it; an older published installation may lack these commands even when the repository already contains them. Stop and report the version mismatch instead of silently replacing managed deployment with Wrangler direct deployment. Wrangler `deploy --dry-run --outfile` is allowed only as a local framework packaging step; the resulting Artifact must still be published with xAPI.
 
+## Shortest path for a new project
+
+Each step ends with the signal to check before the next one:
+
+1. `xapi workers templates`: pick a template id (`worker`, `webhook`, `agent`, `chat` or `persistent-agent`).
+2. `xapi workers init my-app --template agent`: the output lists `files`, `budgets` (agent/chat preview defaults to $0.25 a day) and `nextSteps`. Follow `nextSteps` in order.
+3. `npm install`, then `xapi workers plan --env preview --local`: the local build succeeds, and no key is needed. Secrets show as `BLOCKED` until step 5.
+4. `xapi workers create --config xapi.worker.json`: returns the Worker ID and writes it into `xapi.worker.json`.
+5. `xapi workers secrets set <worker-id> <NAME> --env preview --from-env <NAME>` for each Secret the plan named (agent/chat need `APP_TOKEN` and `MODEL_KEY`): `workers secrets status` lists them as set. For `MODEL_KEY`, use a separate key with a spending limit set in the xAPI Console. Never use the deployment key.
+6. `xapi workers plan --env preview` shows `canApply: true`. Then `xapi workers push --env preview`: the deployment is `ACTIVE` and the health check passes.
+7. `xapi workers logs <worker-id> --env preview --since 10m`: your test requests appear.
+8. Before production, choose a production budget and set the production Secrets. Then run `xapi workers promote --to production`.
+
+Everything below covers existing projects, resources, billing and recovery.
+
 ## Start with scope
 
 - Identify the control-plane host, Worker ID, and **preview or production** from the project and `workers get`. Test control plane and preview environment are separate choices.
@@ -40,9 +55,10 @@ This is an informational reminder, not a separate approval gate. Use existing cr
 
 - **Build/deploy/import/CI:** read [deployment.md](references/deployment.md).
 - **Use and verify resources, including Containers:** read [resources.md](references/resources.md).
+- **Export owned D1/R2 data:** read [the export workflow](references/resources.md#export-d1-and-r2-business-data). Binding selection needs `workers:read` plus the separate `workers:data:read` scope; management read/write does not grant data access. Export completion does not establish migration or import completion.
 - **Configure public vars and runtime credentials (including first-project setup):** read [secrets.md](references/secrets.md). Secret values go to the environment's Cloudflare User Worker binding; never ask xAPI to reveal them.
 - **How much did it cost?** Read [billing.md](references/billing.md) before answering, collecting, or reconciling consumption.
-- **Pause/recover/delete/refund:** read [lifecycle.md](references/lifecycle.md) before lifecycle mutations.
+- **Funding protection/recover/delete/refund:** read [lifecycle.md](references/lifecycle.md) before lifecycle mutations.
 - **Bind/switch a domain, handle DNS conflicts, or buy an xdomain domain:** read [domains.md](references/domains.md). Check zone eligibility and existing records first. Use combined attach for xdomain, or challenge plus manual TXT and attach for an eligible zone without an xdomain record. Do not manually create a CNAME to the Dispatcher or expose Cloudflare zone IDs.
 
 ## Evidence and completion
@@ -55,7 +71,7 @@ For Cloudflare Containers, `ACTIVE` means the Worker upload, matching Durable Ob
 
 For incomplete observations report **unknown**, not zero or success. Keep deployment completion, resource behavior, xAPI consumption, storage-day finalization, provider invoice reconciliation, and physical cleanup as separate verdicts. Report only verified outcomes and the next concrete unresolved check.
 
-Pause exit 0 or `ACCEPTED` confirms a returned receipt, not completed suspension.
+Lifecycle action exit 0 or `ACCEPTED` confirms a returned receipt, not completion.
 With `SUSPENDING` / `CONTAINER_STOP_PENDING`, inspect `billing lifecycle` and
 `retention show --format json` for the current steps. Runtime upload success or a
 `SKIPPED` native stop does not prove the Container stopped. `retryRequired` calls

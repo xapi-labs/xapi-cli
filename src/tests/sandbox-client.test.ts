@@ -200,6 +200,15 @@ describe('sandbox client', () => {
     expect(calls).toBe(3);
   });
 
+  it('includes a known termination reason when an instance stops before the wanted state', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      id: 'box-1', observedState: 'TERMINATED', terminationReason: 'MAX_TOTAL_USD_EXCEEDED',
+    }), { status: 200 }));
+    await expect(client.sandboxWait(
+      { sandboxHost: 'sandbox.test.xapi.to', apiKey: 'sk-test' }, 'box-1', ['RUNNING'], 1_000, 1,
+    )).rejects.toThrow('termination reason: MAX_TOTAL_USD_EXCEEDED');
+  });
+
   it('aborts an in-flight state read when the wait deadline expires', async () => {
     let calls = 0;
     fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(((_url: any, init: any) => {

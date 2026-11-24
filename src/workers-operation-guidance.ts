@@ -72,6 +72,10 @@ export function workerLifecycleGuidance(dataValue: unknown): string[] {
       lines.push("Lifecycle completion is unknown. Read the current lifecycle and retention evidence before choosing an action.");
   }
 
+  if (data.retentionStartedAt != null) {
+    lines.push("Financial retention is active: user writes, including deployment, Secret changes and resource deletion, are unavailable. Read billing/status, add sufficient funds and explicitly request recovery; recharge alone does not resume execution.");
+  }
+
   if (data.phase != null || data.completedSteps != null || data.totalSteps != null) {
     lines.push("Phase and progress describe recorded step receipts, not an exhaustive plan. Even all recorded steps completed or a completed phase does not prove the whole operation is done.");
   }
@@ -88,7 +92,7 @@ export function workerLifecycleGuidance(dataValue: unknown): string[] {
 }
 
 export interface WorkerRetentionGuidanceOptions extends WorkerGuidanceTarget {
-  action: "show" | "quote" | "accept" | "pause" | "resume" | "keep-paused" | "delete";
+  action: "show" | "quote" | "accept" | "resume" | "delete";
   response: unknown;
   /** Set only when an optional client-side polling session actually ended. */
   pollingEnded?: boolean;

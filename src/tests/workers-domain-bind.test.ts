@@ -13,12 +13,10 @@ describe("xdomain + Workers binding", () => {
       (async (target: string | URL | Request, init?: RequestInit) => {
         const url = String(target);
         calls.push(url);
-        if (url.includes("/v1/actions/") && (!init?.method || init.method === "GET")) {
-          actionIds.push(decodeURIComponent(url.split("/").pop() || ""));
-          return new Response(JSON.stringify([{ id: actionIds.at(-1) }]), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
+        if (url.endsWith("/v1/actions/batch") && init?.method === "POST") {
+          const { ids } = JSON.parse(String(init.body)) as { ids: string[] };
+          actionIds.push(...ids);
+          return Response.json({ actions: ids.map((id) => ({ id })), missing_ids: [] });
         }
         if (url.endsWith("/v1/actions/execute")) {
           const body = JSON.parse(String(init?.body));
@@ -96,8 +94,9 @@ describe("xdomain + Workers binding", () => {
     fetchSpy = spyOn(globalThis, "fetch").mockImplementation(
       (async (target: string | URL | Request, init?: RequestInit) => {
         const url = String(target);
-        if (url.includes("/v1/actions/") && (!init?.method || init.method === "GET")) {
-          return Response.json([{ id: decodeURIComponent(url.split("/").pop() || "") }]);
+        if (url.endsWith("/v1/actions/batch") && init?.method === "POST") {
+          const { ids } = JSON.parse(String(init.body)) as { ids: string[] };
+          return Response.json({ actions: ids.map((id) => ({ id })), missing_ids: [] });
         }
         if (url.endsWith("/v1/actions/execute")) {
           const body = JSON.parse(String(init?.body));

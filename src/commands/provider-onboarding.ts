@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { parseYAML } from 'confbox/yaml';
 import { getConfig, requireApiKey } from '../config.ts';
 import { HttpError, isRetryableRequestError } from '../client.ts';
 import { output, err, type OutputFormat } from '../format.ts';
@@ -9,13 +10,14 @@ export const PROVIDER_ONBOARDING_HELP = `xapi-to provider - Import and publish y
 
 COMMANDS
   spec-rules                       Read current OpenAPI rules (public)
-  import --file openapi.json        Create a DRAFT service from OpenAPI JSON
+  import --file openapi.json|yaml   Create a service from OpenAPI JSON or YAML
+    --default-price <USD>           Price for unpriced PER_CALL operations (0 = free)
     --private-headers-file <path>   Upstream credentials as a JSON object
   update <service-id> --revision <id> --file config.json
     --mode merge|replace           PATCH merge (default) or PUT replacement
-    --allow-new-endpoints          Allow merge entries without IDs to create endpoints
+    --allow-new-endpoints          Allow ID-less merge entries; backend key matching applies
   submit <service-id> --revision <id>
-    --changelog <text>             Submit for review; this alone is not publication
+    --changelog <text>             Submit for review; passing review may publish
   review <service-id> --revision <id>
                                    Read latest review and previous attempts
   wait <service-id> --revision <id>
@@ -27,10 +29,14 @@ COMMON FLAGS
   --format json|pretty|table
   --help
 
-Files must contain JSON objects; --file - reads stdin. Import reads a raw
-OpenAPI spec; update reads version configuration (not a raw OpenAPI spec).
+--file - reads stdin. Import accepts a raw JSON or YAML OpenAPI object;
+configuration and credential files remain JSON. Swagger 2.0 conversion and
+OpenAPI validation happen on the server. Missing prices require an explicit
+choice; --default-price affects only unpriced PER_CALL operations, including
+hidden ones, and preserves existing prices and other billing types.
 Merge updates to existing endpoints require their IDs. Use --mode replace
 to replace the endpoint list, or --allow-new-endpoints to intentionally add.
+Creation with endpoints starts in SANDBOX; empty services start in DRAFT.
 Saving a draft configuration moves it to SANDBOX, ready for submit.
 
 PERMISSIONS
@@ -44,7 +50,7 @@ Writes are not retried automatically. Credentials are redacted from output.
 `;
 
 const FLAGS: Record<string, string[]> = {
-  'spec-rules': [], import: ['file', 'private-headers-file'],
+  'spec-rules': [], import: ['file', 'private-headers-file', 'default-price'],
   update: ['revision', 'file', 'mode', 'allow-new-endpoints'],
   submit: ['revision', 'changelog'], review: ['revision'],
   wait: ['revision', 'interval', 'timeout', 'max-attempts'],
@@ -72,7 +78,7 @@ function duration(raw: string, name: string): number {
   return ms;
 }
 
-async function jsonFile(path: string): Promise<ProviderObject> {
+async function jsonFile(path: string, allowYaml = false): Promise<ProviderObject> {
   let text: string;
   try {
     if (path === '-') {
@@ -80,14 +86,60 @@ async function jsonFile(path: string): Promise<ProviderObject> {
       for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
       text = Buffer.concat(chunks).toString('utf8');
     } else text = await readFile(path, 'utf8');
-  } catch { throw new Error('Could not read JSON input file'); }
+  } catch { throw new Error('Could not read input file'); }
   let value: unknown;
   try { value = JSON.parse(text); }
-  // JSON.parse error messages can quote input credentials.
-  catch { throw new Error('Input must be valid JSON (JSON objects only; YAML is not supported)'); }
+  catch {
+    // Parser errors and warnings can quote input credentials.
+    if (!allowYaml) throw new Error('Input must be valid JSON');
+    try {
+      value = parseYAML(text, { onWarning() { throw new Error('Unsupported YAML'); } });
+      JSON.stringify(value, (_key, item) => {
+        if (typeof item === 'number' && !Number.isFinite(item)) throw new Error('Non-finite YAML number');
+        return item;
+      }); // Reject cyclic aliases and numbers that JSON would silently replace with null.
+    } catch { throw new Error('Input must be valid JSON or single-document YAML with finite numbers and no cyclic aliases'); }
+  }
   const result = object(value);
-  if (!result) throw new Error('Input must be a JSON object');
+  if (!result) throw new Error(`Input must be a ${allowYaml ? 'JSON or YAML' : 'JSON'} object`);
   return result;
+}
+
+function applyImportPricing(spec: ProviderObject, rawDefault: string | undefined): void {
+  const defaultPrice = rawDefault === undefined ? undefined : Number(rawDefault);
+  if (rawDefault !== undefined && (!rawDefault.trim() || !Number.isFinite(defaultPrice) || defaultPrice! < 0)) {
+    throw new Error('--default-price must be a finite non-negative USD amount (0 explicitly means free)');
+  }
+  for (const pathItem of Object.values(object(spec.paths) ?? {})) {
+    const path = object(pathItem);
+    if (!path) continue;
+    for (const [method, value] of Object.entries(path)) {
+      if (!['get', 'post', 'put', 'patch', 'delete', 'head', 'options'].includes(method.toLowerCase())) continue;
+      const operation = object(value);
+      if (!operation) continue;
+      const rawBilling = operation['x-xapi-billing'];
+      const billing = object(rawBilling) ?? {};
+      if (rawBilling != null && !object(rawBilling)) throw new Error('x-xapi-billing must be an object');
+      const type = billing.type || 'PER_CALL';
+      if (type === 'PER_CALL' && billing.costPerCall == null) {
+        if (defaultPrice === undefined) {
+          throw new Error('Import has unpriced PER_CALL operations. Set x-xapi-billing.costPerCall or choose --default-price <USD> (0 explicitly means free)');
+        }
+        operation['x-xapi-billing'] = { ...billing, costPerCall: defaultPrice };
+      } else if (type === 'PER_RESOURCE' && billing.costPerResource == null) {
+        throw new Error('Import has unpriced PER_RESOURCE operations. Set x-xapi-billing.costPerResource; --default-price applies only to PER_CALL');
+      } else if (type === 'PER_TOKEN') {
+        const pricing = object(billing.tokenPricing);
+        const rates = pricing && ('inputPricePerToken' in pricing || 'outputPricePerToken' in pricing)
+          ? [pricing] : Object.values(pricing ?? {}).map(object);
+        if (!rates.length || rates.some(rate => !rate || (rate.inputPricePerToken == null && rate.outputPricePerToken == null))) {
+          throw new Error('Import has unpriced PER_TOKEN operations. Set x-xapi-billing.tokenPricing; --default-price applies only to PER_CALL');
+        }
+      } else if (type === 'DYNAMIC' && !object(billing.dynamicRules)) {
+        throw new Error('Import has DYNAMIC operations without x-xapi-billing.dynamicRules; --default-price applies only to PER_CALL');
+      }
+    }
+  }
 }
 
 function segment(value: string): string {
@@ -124,7 +176,8 @@ export async function providerOnboarding(args: string[], flags: Record<string, s
       const file = flag(flags, 'file', true)!;
       const headersFile = flag(flags, 'private-headers-file');
       if (file === '-' && headersFile === '-') throw new Error('Only one input may read stdin');
-      const spec = await jsonFile(file);
+      const spec = await jsonFile(file, true);
+      applyImportPricing(spec, flag(flags, 'default-price'));
       const body: ProviderObject = { openApiSpec: spec };
       if (headersFile) {
         body.privateHeaders = await jsonFile(headersFile);

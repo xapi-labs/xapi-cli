@@ -2,14 +2,107 @@
  * HTTP client - thin wrapper around fetch with timeout/retry
  */
 
-import { Agent, fetch as objectFetch, type Dispatcher } from 'undici/index.js';
+import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici/index.js';
 import { scheme, assertAllowedHost } from './config.ts';
-import { open, rm } from 'node:fs/promises';
+import { lstat, open, rm } from 'node:fs/promises';
+import { readFileSync, type Stats } from 'node:fs';
 import { once } from 'node:events';
 import { resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { requestDeadline } from './request-deadline.ts';
+
+// Node's bundled fetch may speak a newer dispatcher protocol (notably Node 26).
+// Only substitute its built-in lazy undici loader; an import-time snapshot can
+// already be a preload interceptor. Resolve other globals at call time, and use
+// the intrinsic toString so an override's own toString cannot hide that override.
+const matchedFetch = undiciFetch as unknown as typeof fetch;
+// Snapshot only the proxy option from Node's startup config. Node still owns
+// config loading and activation; preserving native fetch cannot enable a proxy.
+// Config false overrides NODE_USE_ENV_PROXY in Node 24; Node 22 still enables
+// its native proxy for that environment setting. NODE_OPTIONS/CLI flags win.
+// Configuration values are not in execArgv.
+let configHasPreload = false;
+const configEnvironmentProxyEnabled = (() => {
+  if (process.versions.bun) return false;
+  let path: string | undefined;
+  let aliasedConfigFlag = false;
+  for (const [index, option] of process.execArgv.entries()) {
+    const separator = option.indexOf('=');
+    // Node treats underscores and dashes alike in option names, not values.
+    const rawName = option.split('=', 1)[0];
+    const name = rawName.replace(/_/g, '-');
+    if (name === '--experimental-config-file') {
+      path = separator !== -1 ? option.slice(separator + 1) : process.execArgv[index + 1] || 'node.config.json';
+      aliasedConfigFlag = rawName !== name;
+    } else if (name === '--experimental-default-config-file' && !path) {
+      path = 'node.config.json';
+      aliasedConfigFlag = rawName !== name;
+    }
+  }
+  if (!path) return undefined;
+  try {
+    const config = JSON.parse(readFileSync(resolve(path), 'utf8'));
+    const selected = Array.isArray(config.configs)
+      ? config.configs.find((entry: { nodeVersion: number }) => entry.nodeVersion === Number(process.versions.node.split('.')[0]))?.config
+      : config;
+    const nodeOptions = selected?.nodeOptions;
+    configHasPreload = Boolean(nodeOptions?.import?.length || nodeOptions?.require?.length ||
+      nodeOptions?.loader?.length || nodeOptions?.['experimental-loader']?.length);
+    const enabled = nodeOptions?.['use-env-proxy'];
+    // Node 24 accepts aliased config flags without loading their file. Such a
+    // false value cannot prove deactivation of an environment-enabled proxy.
+    if (enabled === false && aliasedConfigFlag) return undefined;
+    return typeof enabled === 'boolean' ? enabled : undefined;
+  } catch {
+    // If the startup file is no longer readable, keep native routing rather
+    // than risk bypassing a proxy configured before this module was imported.
+    return true;
+  }
+})();
+
+function preserveNativeFetch(): boolean {
+  if (process.versions.bun) return false;
+  // Node normalizes the existing environment setting and startup flags. CLI
+  // flags override NODE_OPTIONS; later positive/negative flags win. Keep quoted
+  // NODE_OPTIONS arguments together so a filename cannot look like a flag.
+  const envOptions = (process.env.NODE_OPTIONS || '').match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+  const optionNames = [...envOptions.map(value => value.replace(/"/g, '')), ...process.execArgv]
+    .map(option => option.split('=', 1)[0].replace(/_/g, '-'));
+  // Startup modules can mutate environment variables after native proxy setup.
+  // Dotenv can supply NODE_OPTIONS preloads that then remove their own options.
+  // Keep Node's transport when that state cannot be reconstructed safely.
+  if (configHasPreload || optionNames.some(name => name.startsWith('-r') ||
+      ['--require', '--import', '--loader', '--experimental-loader',
+        '--env-file', '--env-file-if-exists'].includes(name))) return true;
+  if (!process.allowedNodeEnvironmentFlags.has('--use-env-proxy')) return false;
+  const environmentEnabled = process.env.NODE_USE_ENV_PROXY === '1';
+  let enabled = process.versions.node.startsWith('22.')
+    ? Boolean(configEnvironmentProxyEnabled || environmentEnabled)
+    : configEnvironmentProxyEnabled ?? environmentEnabled;
+  for (const name of optionNames) {
+    if (name === '--use-env-proxy') enabled = true;
+    else if (name === '--no-use-env-proxy') enabled = false;
+  }
+  return enabled;
+}
+
+function defaultFetch(): typeof fetch {
+  const fetcher = globalThis.fetch;
+  const source = Function.prototype.toString.call(fetcher);
+  const node18Loader = source.replace(/\s+/g, '') ===
+    'asyncfunctionfetch(input,init=undefined){returnlazyUndici().fetch(input,init);}';
+  // A paired direct Agent would bypass Node's opted-in proxy routing. Preserve
+  // native fetch in that mode, with no external dispatcher; Node owns its proxy
+  // and NO_PROXY behavior just as it does for a transparent native delegate.
+  // Startup preload/loader uncertainty also retains native fetch. Like foreign
+  // fetch, its internal parser deadlines remain Node's own; our
+  // AbortSignal deadlines do not override those internal deadlines.
+  return !preserveNativeFetch() &&
+    (node18Loader || /\brequire\(['"]internal\/deps\/undici\/undici['"]\)/.test(source))
+    ? matchedFetch : fetcher;
+}
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const EXECUTE_TIMEOUT_MS = 60_000;
@@ -28,6 +121,24 @@ export interface ClientOptions {
   apiKey?: string;
 }
 
+/** Optional Action metadata from supporting backends; source is not review evidence. */
+export interface ActionReview {
+  status: 'unknown' | 'pending' | 'approved' | 'approved_pending_review' | 'rejected';
+  method: 'unknown' | 'automated' | 'human' | 'whitelist' | 'skipped';
+  automated_verdict: 'PASS' | 'PASS_WITH_REVIEW' | 'FAIL' | 'UNCERTAIN' | null;
+  revision_id?: string;
+  /** ApiReview record update time, not a test-call or human-decision timestamp. */
+  record_updated_at: string | null;
+}
+
+/** Execution envelope rate_limit; retry hints never authorize replaying a call. */
+export interface ActionRateLimitState {
+  limit: number;
+  remaining: number;
+  reset_at: number;
+  retry_after_seconds?: number;
+}
+
 export interface ApiKeyApiRequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
@@ -41,8 +152,9 @@ export class HttpError extends Error {
     detail: string,
     public readonly retryAfterMs?: number,
     public readonly responseBody?: unknown,
+    options?: ErrorOptions,
   ) {
-    super(`HTTP ${status}: ${detail}`);
+    super(`HTTP ${status}: ${detail}`, options);
     this.name = 'HttpError';
   }
 }
@@ -51,6 +163,14 @@ export class RequestTimeoutError extends Error {
   constructor(public readonly timeoutMs: number) {
     super(`request timed out after ${timeoutMs}ms`);
     this.name = 'RequestTimeoutError';
+  }
+}
+
+/** Preserve the Action envelope even when legacy auth handling supplies a hint. */
+export class BusinessResponseError extends Error {
+  constructor(message: string, public readonly responseBody: unknown) {
+    super(message);
+    this.name = 'BusinessResponseError';
   }
 }
 
@@ -110,6 +230,21 @@ function parseRetryAfterMs(res: Response): number | undefined {
   return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
 }
 
+function parseErrorResponseBody(text: string): unknown {
+  try { return JSON.parse(text); } catch { return undefined; }
+}
+
+/** Headers establish an HTTP failure even if its error body is interrupted. */
+async function readActionHttpError(res: Response): Promise<HttpError> {
+  const retryAfterMs = isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined;
+  try {
+    const text = await res.text();
+    return new HttpError(res.status, text.slice(0, 300), retryAfterMs, parseErrorResponseBody(text));
+  } catch (cause) {
+    return new HttpError(res.status, 'could not read error response', retryAfterMs, undefined, { cause });
+  }
+}
+
 function abortError(signal?: AbortSignal | null): Error {
   const reason = signal?.reason;
   return reason instanceof Error
@@ -134,7 +269,7 @@ function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
   });
 }
 
-// A scoped dispatcher prevents Node's fetch implementation from reintroducing
+// A scoped dispatcher prevents fetch from reintroducing
 // its own 300-second parser deadlines. The request AbortSignal owns the deadline.
 class RequestDeadlineAgent extends Agent {
   progress?: () => void;
@@ -174,19 +309,83 @@ class RequestDeadlineAgent extends Agent {
   }
 }
 
+// Private dispatcher hooks are valid only for this exact undici implementation.
+// A preserved wrapper/proxy may delegate to a different bundled undici version.
+function requestTransport(fetcher: typeof fetch, sessionTransport?: RequestDeadlineAgent) {
+  return fetcher === matchedFetch ? sessionTransport || new RequestDeadlineAgent() : undefined;
+}
+
+// Foreign fetch exposes body demand, not socket callbacks. Keep the stream
+// backpressured and split large encoder chunks so progress follows consumption.
+// Do not tee/buffer the upload or count empty pulls as activity.
+function progressBody(source: ReadableStream<Uint8Array>, progress: () => void, signal: AbortSignal) {
+  const reader = source.getReader();
+  let pending: Uint8Array | undefined;
+  let offset = 0;
+  let stopped = false;
+  let output: ReadableStreamDefaultController<Uint8Array>;
+  const cancel = (reason?: unknown) => {
+    if (stopped) return;
+    stopped = true;
+    pending = undefined;
+    signal.removeEventListener('abort', onAbort);
+    // A custom producer's cancel hook may never settle; do not let it hold up
+    // deadline/cancellation reporting or replace the original fetch error.
+    void reader.cancel(reason).catch(() => undefined);
+  };
+  const dispose = () => { cancel(); output.error(abortError(signal)); };
+  const onAbort = () => { cancel(signal.reason); output.error(abortError(signal)); };
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      output = controller;
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    },
+    async pull(controller) {
+      try {
+        let emptyChunks = 0;
+        while (!stopped && (!pending || offset === pending.byteLength)) {
+          const chunk = await reader.read();
+          if (stopped) return;
+          if (chunk.done) {
+            stopped = true;
+            signal.removeEventListener('abort', onAbort);
+            reader.releaseLock();
+            controller.close();
+            return;
+          }
+          pending = chunk.value;
+          offset = 0;
+          // Synchronously produced empty chunks otherwise keep this loop in
+          // microtasks forever, starving the abort/deadline timers. Yield
+          // periodically without treating empty chunks as progress or limiting them.
+          if (pending.byteLength === 0 && ++emptyChunks % 64 === 0) await yieldToEventLoop();
+        }
+        if (stopped || !pending) return;
+        const chunk = pending.subarray(offset, offset + 65_536);
+        offset += chunk.byteLength;
+        controller.enqueue(chunk);
+        progress();
+      } catch (error) { cancel(error); controller.error(error); }
+    },
+    cancel,
+  }, { highWaterMark: 0 });
+  return { body, dispose };
+}
+
 export async function request<T>(
   url: string,
   options: RequestInit,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   retries = 0,
   deadlineMode: 'total' | 'idle' = 'total',
-  fetcher: typeof fetch = fetch,
+  fetcher: typeof fetch = defaultFetch(),
   sessionTransport?: RequestDeadlineAgent,
 ): Promise<T> {
   // Enforce the host allowlist before the API key ever leaves the machine.
   assertAllowedHost(url);
 
-  const transport = sessionTransport || new RequestDeadlineAgent();
+  const transport = requestTransport(fetcher, sessionTransport);
   try {
     let attempt = 0;
     while (true) {
@@ -198,17 +397,35 @@ export async function request<T>(
       let timedOut = false;
       let finished = false;
       let timer = requestDeadline(() => { timedOut = true; controller.abort(); }, timeoutMs);
-      transport.progress = deadlineMode === 'idle' ? () => {
+      const progress = deadlineMode === 'idle' ? () => {
         if (finished || controller.signal.aborted) return;
         timer.dispose();
         timer = requestDeadline(() => { timedOut = true; controller.abort(); }, timeoutMs);
       } : undefined;
+      if (transport) transport.progress = progress;
+      let uploadBody: ReturnType<typeof progressBody> | undefined;
       try {
         // redirect: 'manual' — never auto-follow. fetch forwards custom headers
         // (including XAPI-Key) across redirects, which would carry the API key to a
         // host outside the allowlist. The xapi API never legitimately redirects.
-        const fetchOptions = { ...options, redirect: 'manual', signal: controller.signal, dispatcher: transport } as RequestInit;
+        const fetchOptions = { ...options, redirect: 'manual', signal: controller.signal, ...(transport ? { dispatcher: transport } : {}) } as RequestInit;
+        if (!transport && progress && options.body != null) {
+          // Encode once: these headers carry the boundary matching this exact
+          // FormData stream. Never serialize it again after wrapping its body.
+          const encoded = new Request(url, { ...fetchOptions, duplex: 'half' } as RequestInit);
+          if (encoded.body) {
+            uploadBody = progressBody(encoded.body, progress, controller.signal);
+            Object.assign(fetchOptions, { body: uploadBody.body, headers: encoded.headers, duplex: 'half' });
+          }
+        }
         const res = await fetcher(url, fetchOptions);
+        const readText = async () => {
+          if (transport || !progress || !res.body) return res.text();
+          const responseBody = progressBody(res.body, progress, controller.signal);
+          try { return await new Response(responseBody.body).text(); }
+          finally { responseBody.dispose(); }
+        };
+        if (!transport) progress?.();
         if (res.status >= 300 && res.status < 400) {
           throw new Error(
             `refusing to follow redirect to "${res.headers.get('location') ?? '?'}" `
@@ -218,13 +435,17 @@ export async function request<T>(
         if (!res.ok) {
           const retryAfterMs = isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined;
           if (isRetryableStatus(res.status) && attempt < retries) {
-            await res.text().catch(() => ''); // drain body so the socket can be reused
+            await readText().catch(() => ''); // drain body so the socket can be reused
             timer.dispose();
             await sleep(backoffDelayMs(attempt, retryAfterMs), callerSignal);
             attempt++;
             continue;
           }
-          const text = await res.text();
+          const text = await readText().catch((cause: unknown) => {
+            // Headers already establish a definite HTTP failure, even if its
+            // body is interrupted. Do not relabel it as an unknown write.
+            throw new HttpError(res.status, 'could not read error response', retryAfterMs, undefined, { cause });
+          });
           let responseBody: unknown;
           try { responseBody = JSON.parse(text); } catch { /* Plain upstream errors stay plain. */ }
           throw new HttpError(res.status, text.slice(0, 300), retryAfterMs, responseBody);
@@ -232,7 +453,7 @@ export async function request<T>(
         if (res.status === 204) {
           return undefined as T;
         }
-        const text = await res.text();
+        const text = await readText();
         if (!text.trim()) {
           return undefined as T;
         }
@@ -241,21 +462,23 @@ export async function request<T>(
         if (body && typeof body === 'object' && 'success' in body && (body as any).success === false) {
           const data = (body as any).data;
           if (data?.statusCode === 401 || data?.error === 'Unauthorized') {
-            throw new Error(
+            throw new BusinessResponseError(
               'Authentication failed: ' + (data.message || 'Invalid or missing API key')
               + '. Run "npx xapi-to config set apiKey=<key>" to update your key.',
+              body,
             );
           }
-          if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && data?.message?.includes('OAuth'))) {
-            throw new Error(
+          if (data?.error === 'OAuth Required' || (data?.statusCode === 403 && typeof data?.message === 'string' && data.message.includes('OAuth'))) {
+            throw new BusinessResponseError(
               (data.message || 'OAuth authorization required')
-              + '. Run "xapi-to oauth bind" to connect your account.',
+              + '. Inspect "xapi-to get <actionId>" and "xapi-to oauth status"; use "xapi-to oauth bind --provider <provider>" only if the endpoint requires your OAuth account.',
+              body,
             );
           }
         }
         return body;
       } catch (e) {
-        if (timedOut) {
+        if (timedOut && !(e instanceof HttpError)) {
           const timeoutError = new RequestTimeoutError(timeoutMs);
           if (attempt < retries) {
             await sleep(backoffDelayMs(attempt), callerSignal);
@@ -274,27 +497,33 @@ export async function request<T>(
       } finally {
         finished = true;
         timer.dispose();
+        uploadBody?.dispose();
         callerSignal?.removeEventListener('abort', abortFromCaller);
       }
     }
   } finally {
-    if (!sessionTransport) await transport.destroy().catch(() => undefined);
+    if (!sessionTransport) await transport?.destroy().catch(() => undefined);
   }
 }
 
-/** A continuing upload has no total-duration cutoff. Never replay the write. */
+/** No total upload cutoff and no write replay. Matched transport observes socket
+ * progress; foreign fetch observes backpressured body consumption and response
+ * chunks via standard streams. Its internal parser deadlines remain its own. */
 export function uploadRequest<T>(url: string, options: RequestInit): Promise<T> {
   return request<T>(url, options, transferIdleTimeoutMs(), 0, 'idle');
 }
 
 /** Control-plane calls in one upload share their connection while retaining
- * host/redirect checks and an independent total deadline for every request. */
+ * host/redirect checks and an independent total deadline for every request.
+ * Native proxy/preload mode reuses Node's pool without an external dispatcher. Like
+ * foreign fetch, Node owns its internal parser deadlines in that mode. */
 export function createArtifactControlSession() {
-  const transport = new RequestDeadlineAgent();
+  const fetcher = defaultFetch();
+  const transport = requestTransport(fetcher);
   return {
     request: <T>(url: string, options: RequestInit, budget: number, retries: number) =>
-      request<T>(url, options, budget, retries, 'total', objectFetch as unknown as typeof fetch, transport),
-    close: () => transport.destroy().catch(() => undefined),
+      request<T>(url, options, budget, retries, 'total', fetcher, transport),
+    close: async () => { await transport?.destroy().catch(() => undefined); },
   };
 }
 
@@ -405,7 +634,7 @@ export function createArtifactUploadTransport() {
         );
       };
       try {
-        const response = await objectFetch(url, {
+        const response = await undiciFetch(url, {
           method: 'PUT',
           body: bytes as BodyInit,
           headers,
@@ -576,12 +805,17 @@ export async function actionCategories(opts: ClientOptions, params: { source?: s
 }
 
 export async function actionGet(id: string, opts: ClientOptions) {
-  return request<unknown[]>(
-    `${baseUrl(opts)}/v1/actions/${encodeURIComponent(id)}`,
-    { method: 'GET', headers: headers(opts.apiKey) },
-    DEFAULT_TIMEOUT_MS,
-    IDEMPOTENT_RETRIES,
-  );
+  // Avoid fixed collection routes, including on backends without by-id lookup.
+  const result = await actionBatch([id], opts);
+  if (!result || !Array.isArray(result.actions) || !Array.isArray(result.missing_ids)
+    || !result.missing_ids.every((missingId) => typeof missingId === 'string')
+    || !result.actions.every((action) => action !== null && typeof action === 'object' && !Array.isArray(action))) {
+    throw new Error('Invalid Action batch response');
+  }
+  if (result.missing_ids.includes(id) || result.actions.length === 0) {
+    throw new HttpError(404, `Action not found: ${id}`);
+  }
+  return result.actions;
 }
 
 export async function actionBatch(ids: string[], opts: ClientOptions) {
@@ -624,6 +858,69 @@ export async function actionCall(
   );
 }
 
+/** Save a complete JSON response before reporting action failures; never replay execution. */
+export async function actionSaveJson(
+  actionId: string,
+  input: Record<string, unknown>,
+  opts: ClientOptions,
+  outputPath: string,
+  httpMethod?: string,
+): Promise<{ output: string; bytes: number }> {
+  const target = resolve(outputPath);
+  let file: Awaited<ReturnType<typeof open>> | undefined;
+  let identity: Stats | undefined;
+  let complete = false;
+  const ownsTarget = async () => {
+    if (!identity) return false;
+    const current = await lstat(target).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+      return undefined;
+    });
+    return current?.isFile() === true && current.dev === identity.dev && current.ino === identity.ino;
+  };
+  try {
+    try {
+      file = await open(target, 'wx', 0o600);
+    } catch (error: any) {
+      if (error?.code === 'EEXIST') throw new Error(`Output file already exists: ${target}`);
+      throw error;
+    }
+    identity = await file.stat();
+    let response: unknown;
+    let responseError: unknown;
+    try {
+      response = await actionCall(actionId, input, opts, httpMethod, 0);
+    } catch (error) {
+      if (!(error instanceof HttpError || error instanceof BusinessResponseError) || error.responseBody === undefined) {
+        if (error instanceof SyntaxError || error instanceof RequestTimeoutError || error instanceof HttpError || isRetryableNetworkError(error)) {
+          throw new Error(`${error instanceof Error ? error.message : String(error)}; no complete JSON was saved. Execution may have completed; the request was not retried.`, { cause: error });
+        }
+        throw error;
+      }
+      response = error.responseBody;
+      responseError = error;
+    }
+    if (response === undefined) throw new Error('Expected a JSON response; output file removed. Execution may have completed; the request was not retried.');
+    const json = JSON.stringify(response) + '\n';
+    await file.writeFile(json, 'utf8');
+    await file.close();
+    complete = true;
+    if (!await ownsTarget()) throw new Error(`Output path changed during execution: ${target}; the saved file may have been moved. The request was not retried.`);
+    if (responseError) throw responseError;
+    if (response && typeof response === 'object' && 'success' in response && response.success === false) {
+      throw new Error(`Action returned success: false; full JSON saved to ${target}`);
+    }
+    return { output: target, bytes: Buffer.byteLength(json) };
+  } finally {
+    if (file && !complete) {
+      await file.close().catch(() => undefined);
+      // ponytail: identity check and unlink are separate; use a stable output directory,
+      // not an adversarial shared directory requiring atomic filesystem publication.
+      if (await ownsTarget()) await rm(target, { force: true });
+    }
+  }
+}
+
 /** Execute an action through the SSE interface and forward frames unchanged. */
 export async function actionStream(
   actionId: string,
@@ -631,6 +928,8 @@ export async function actionStream(
   opts: ClientOptions,
   httpMethod?: string,
 ): Promise<void> {
+  const fetcher = defaultFetch();
+  const transport = requestTransport(fetcher);
   const controller = new AbortController();
   let timedOut = false;
   let activeTimeoutMs = EXECUTE_TIMEOUT_MS;
@@ -645,10 +944,10 @@ export async function actionStream(
   };
   resetTimeout(EXECUTE_TIMEOUT_MS);
   const url = `${baseUrl(opts)}/v1/actions/execute`;
-  assertAllowedHost(url);
 
   try {
-    const res = await fetch(url, {
+    assertAllowedHost(url);
+    const res = await fetcher(url, {
       method: 'POST',
       headers: {
         ...headers(opts.apiKey),
@@ -662,7 +961,8 @@ export async function actionStream(
       }),
       redirect: 'manual',
       signal: controller.signal,
-    });
+      ...(transport ? { dispatcher: transport } : {}),
+    } as RequestInit);
     if (res.status >= 300 && res.status < 400) {
       throw new Error(
         `refusing to follow redirect to "${res.headers.get('location') ?? '?'}" `
@@ -670,12 +970,7 @@ export async function actionStream(
       );
     }
     if (!res.ok) {
-      const text = await res.text();
-      throw new HttpError(
-        res.status,
-        text.slice(0, 300),
-        isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined,
-      );
+      throw await readActionHttpError(res);
     }
 
     const contentType = res.headers.get('content-type') || '';
@@ -695,10 +990,11 @@ export async function actionStream(
       if (!process.stdout.write(chunk)) await once(process.stdout, 'drain');
     }
   } catch (error) {
-    if (timedOut) throw new RequestTimeoutError(activeTimeoutMs);
+    if (timedOut && !(error instanceof HttpError)) throw new RequestTimeoutError(activeTimeoutMs);
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
+    await transport?.destroy().catch(() => undefined);
   }
 }
 
@@ -718,6 +1014,8 @@ export async function actionDownload(
   outputPath: string,
   httpMethod?: string,
 ): Promise<ActionDownloadResult> {
+  const fetcher = defaultFetch();
+  const transport = requestTransport(fetcher);
   const controller = new AbortController();
   let timedOut = false;
   let activeTimeoutMs = EXECUTE_TIMEOUT_MS;
@@ -749,7 +1047,7 @@ export async function actionDownload(
 
     const url = `${baseUrl(opts)}/v1/actions/execute`;
     assertAllowedHost(url);
-    const res = await fetch(url, {
+    const res = await fetcher(url, {
       method: 'POST',
       headers: headers(opts.apiKey),
       body: JSON.stringify({
@@ -760,7 +1058,8 @@ export async function actionDownload(
       }),
       redirect: 'manual',
       signal: controller.signal,
-    });
+      ...(transport ? { dispatcher: transport } : {}),
+    } as RequestInit);
     if (res.status >= 300 && res.status < 400) {
       throw new Error(
         `refusing to follow redirect to "${res.headers.get('location') ?? '?'}" `
@@ -768,12 +1067,7 @@ export async function actionDownload(
       );
     }
     if (!res.ok) {
-      const text = await res.text();
-      throw new HttpError(
-        res.status,
-        text.slice(0, 300),
-        isRetryableStatus(res.status) ? parseRetryAfterMs(res) : undefined,
-      );
+      throw await readActionHttpError(res);
     }
 
     let bytes = 0;
@@ -805,10 +1099,11 @@ export async function actionDownload(
       status: res.status,
     };
   } catch (error) {
-    if (timedOut) throw new RequestTimeoutError(activeTimeoutMs);
+    if (timedOut && !(error instanceof HttpError)) throw new RequestTimeoutError(activeTimeoutMs);
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
+    await transport?.destroy().catch(() => undefined);
     if (!complete && file) {
       await file.close().catch(() => undefined);
       await rm(target, { force: true }).catch(() => undefined);

@@ -40,6 +40,45 @@ test('explicit Queue consumer configure/disable commands pass scoped native inte
   } finally {api.restore();}
 });
 
+test('schedule pause/resume stays independent and requires no environment flag', async () => {
+  const api = mockApi();
+  try {
+    for (const action of ['pause', 'resume']) {
+      await workersCommand(['schedules', action, 'worker/owned', 'schedule/owned'], {});
+    }
+    expect(api.fetchSpy).toHaveBeenCalledTimes(2);
+    for (const [index, enabled] of [false, true].entries()) {
+      const [url, init] = api.fetchSpy.mock.calls[index];
+      expect(String(url)).toEndWith('/workers/worker%2Fowned/schedules/schedule%2Fowned');
+      expect(init.method).toBe('PATCH');
+      expect(JSON.parse(init.body)).toEqual({ enabled });
+    }
+  } finally { api.restore(); }
+});
+
+test('paused Queue commands print saved/disabled receipts without resuming or probing', async () => {
+  const api = mockApi();
+  const configured = { status: 'CONFIGURED', activation: 'ON_RESUME', paused: true };
+  const disabled = { status: 'DISABLED', paused: true };
+  try {
+    api.fetchSpy.mockResolvedValueOnce(Response.json(configured)).mockResolvedValueOnce(Response.json(disabled));
+    const body = { queue: 'jobs', max_batch_size: 7 };
+    await workersCommand(['resources', 'queue-consumer', 'configure', 'worker-owned', 'queue-owned'],
+      { env: 'preview', body: JSON.stringify(body), format: 'json' });
+    expect(JSON.parse(String(api.logSpy.mock.calls[0][0]))).toEqual(configured);
+    expect(api.fetchSpy).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(api.fetchSpy.mock.calls[0][1].body)).toEqual(body);
+    await workersCommand(['resources', 'queue-consumer', 'disable', 'worker-owned', 'queue-owned'],
+      { env: 'preview', format: 'json' });
+    expect(JSON.parse(String(api.logSpy.mock.calls[1][0]))).toEqual(disabled);
+    expect(api.fetchSpy.mock.calls.map(([url, init]: any[]) => [new URL(url).pathname, init.method])).toEqual([
+      ['/api/v1/workers/worker-owned/environments/preview/resources/queue-owned/queue-consumer', 'PUT'],
+      ['/api/v1/workers/worker-owned/environments/preview/resources/queue-owned/queue-consumer', 'DELETE'],
+    ]);
+    expect(api.logSpy.mock.calls.map(args => String(args[0])).join('\n')).not.toMatch(/running|ACTIVE/);
+  } finally { api.restore(); }
+});
+
 test('remote build accepts over 200 files, large source and Unicode/space paths inside its actual source/transport budgets',async()=>{
   const root=realpathSync(mkdtempSync(join(tmpdir(),'xapi-source-budget-')));roots.push(root);
   writeFileSync(join(root,'中文 入口.mjs'),'//'+ '字'.repeat(600_000));
@@ -47,9 +86,13 @@ test('remote build accepts over 200 files, large source and Unicode/space paths 
   for(let i=0;i<201;i++)writeFileSync(join(root,`part-${i}.js`),'export {};');
   const api=mockApi();
   try {
+    let body: any;
+    api.fetchSpy.mockImplementation(async (target: string, init: RequestInit) => {
+      body = await new Request(target, init).json();
+      return Response.json({status:'CONFIGURED',id:'fixture'});
+    });
     await workersCommand(['build','worker-owned'],{project:root,entrypoint:'中文 入口.mjs',command:'npm run build'});
     expect(api.fetchSpy).toHaveBeenCalledTimes(1);
-    const body=JSON.parse(api.fetchSpy.mock.calls[0][1].body);
     expect(body.files).toHaveLength(203);expect(body.entrypoint).toBe('中文 入口.mjs');
     expect(body.files.find((file:any)=>file.path==='helper.mjs').content.length).toBeGreaterThan(1_000_000);
     expect(body.files.find((file:any)=>file.path==='中文 入口.mjs').content).toStartWith('//字');

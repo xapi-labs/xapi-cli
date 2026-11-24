@@ -15,7 +15,7 @@ import {
   resourceMatches,
 } from "./workers-push.ts";
 import { workerEnvironmentContainers, loadWorkerProject } from "./workers-project.ts";
-import { readWranglerDeploymentSettings } from "./workers-wrangler-import.ts";
+import { readWranglerDeploymentSettings, type WranglerConfigurationSettings } from "./workers-wrangler-import.ts";
 import { conflictingWorkerSecretBinding } from "./workers-binding-validation.ts";
 import type { WorkerVariableType } from "./workers-artifact.ts";
 
@@ -360,8 +360,8 @@ export async function createWorkerPromotionPlan(
   worker: UnknownRecord;
   artifact: UnknownRecord;
   nativePlan: NativeDeploymentPlan;
-  compatibility: ReturnType<typeof readWranglerDeploymentSettings>;
-  sourceCompatibility: ReturnType<typeof readWranglerDeploymentSettings>;
+  compatibility: WranglerConfigurationSettings;
+  sourceCompatibility: WranglerConfigurationSettings;
 }> {
   if (options.to !== "production") {
     throw new WorkerPushError("workers promote requires --to production");
@@ -417,7 +417,7 @@ export async function createWorkerPromotionPlan(
       "ACTIVE preview deployment is missing immutable Artifact metadata",
     );
   }
-  let compatibility = readWranglerDeploymentSettings(project, "production", text(artifact.mediaType));
+  let compatibility = readWranglerDeploymentSettings(project, "production", text(artifact.mediaType), {localAssets:false});
   const sourceCompatibility = compatibility;
   // Promotion reuses the preview Artifact; it cannot supply native output from
   // a production build for configuration outside the existing desired state.
@@ -652,7 +652,7 @@ export async function promoteWorkerProject(
     }
   }
   if (JSON.stringify(loadWorkerProject(project.rootDir, project.configPath).config) !== JSON.stringify(project.config) ||
-      JSON.stringify(readWranglerDeploymentSettings(project, "production", text(prepared.artifact.mediaType))) !== JSON.stringify(prepared.sourceCompatibility))
+      JSON.stringify(readWranglerDeploymentSettings(project, "production", text(prepared.artifact.mediaType), {localAssets:false})) !== JSON.stringify(prepared.sourceCompatibility))
     throw new WorkerPushError("Production configuration changed after plan; rerun promote to review it before applying changes");
   const wait =
     options.sleep ||

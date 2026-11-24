@@ -127,7 +127,7 @@ describe('bundled xAPI live-service guides', () => {
       'never ask for, expose, or forward', 'eth_sendRawTransaction',
       'keys or seed phrases', 'fails closed', 'public RPC endpoints',
     ]) expect(blockpi).toContain(required);
-    expectValidJsonExamples(blockpi, 3);
+    expectValidJsonExamples(blockpi, 4);
     expectBalancedFences(blockpi);
   });
 
@@ -138,6 +138,17 @@ describe('bundled xAPI live-service guides', () => {
       'Trading API (9)', 'Transaction API (7)', 'Wallet API (5)',
       'DeFi Data and Transaction (11)',
     ]) expect(binance).toContain(heading);
+  });
+
+  it('teaches defensive candle pagination, mutable candles, USD volume and quota sharing', () => {
+    for (const required of [
+      'after = min(timestampMs) - 1', 'before', 'may include the boundary',
+      '[open, high, low, close, volumeUsd, timestampMs, tradeCount]',
+      'chain ID + token contract + bar + timestampMs',
+      'newer response replace', 'single shared queue', 'coalesce',
+      '429', 'Retry-After', 'base-token',
+    ]) expect(binance).toContain(required);
+    expect(binance).not.toContain('are exclusive Unix');
   });
 
   it('documents Binance safety, limits, serving-contract drift, and provider errors', () => {

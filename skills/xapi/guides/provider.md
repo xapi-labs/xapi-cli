@@ -23,7 +23,9 @@ Use narrowly scoped keys. Common scopes are:
 - `service:delete` only for deliberate removal workflows
 
 Scope permission and ownership are independent. A key with a scope still cannot
-manage another provider's service or Skill.
+manage another provider's service or Skill. These commands validate the owner
+path; they do not prove a separate administrator can view or review a working
+revision.
 
 ## Create and describe a service
 
@@ -35,6 +37,36 @@ npx xapi-to provider create --file ./service.json
 npx xapi-to provider list
 npx xapi-to provider get <service-id>
 ```
+
+### Upload a local LOGO when creating
+
+```bash
+npx xapi-to provider create --file ./service.json --logo-file ./logo.png
+```
+
+`--logo-file` accepts JPG, PNG, GIF and WebP up to 10 MB. The CLI checks the
+local file, uploads it using the same API Key with `service:create`, then sends
+the returned remote URL as `logoUrl` in the create request. Storage credentials
+remain on the server. Existing JSON `logoUrl` and creation without a LOGO work
+as before. Remove a JSON `logoUrl` before passing `--logo-file`; supplying both
+is an error. This flag is supported only by `provider create`.
+
+File, authentication, permission, network and storage errors stop creation and
+return a nonzero exit code. Uploads are not automatically retried. Upload and
+service creation are separate writes: if creation fails after upload, the image
+may remain unused. Inspect `provider list` after an ambiguous create response
+before retrying; do not automatically replay the create write.
+
+The installed CLI help must list `--logo-file`, and the selected server must
+support provider LOGO uploads. A 404 requires a server update; 401 requires
+checking the configured API Key; 403 requires `service:create` and allowed
+source IPs. The server rechecks image content and enforces a 20/minute/IP limit.
+A repository change does not imply that the CLI package or backend has already
+been released.
+
+After successful creation, run `provider get <service-id>` and verify its
+`logoUrl` matches the returned image URL; verify the image in the web console
+when validating a deployed environment.
 
 Keep the three service content layers distinct:
 
@@ -119,6 +151,23 @@ if they were evidence.
 automatically retry this write after an ambiguous transport failure. Read the
 version overview and review state before deciding whether to submit again.
 
+A passing review can automatically publish and switch the serving revision.
+In `provider versions`, use `majors[].working.id` for draft edits and verify
+`servingRevisionId` after publication. Cloning creates new endpoint UUIDs while
+preserving `endpointKey`; get the working contract and use its endpoint IDs for
+patches. See the [provider lifecycle reference](../../xapi-provider/reference/lifecycle-management.md)
+for PATCH/PUT matching and removal rules.
+
+Use the overview's major/revision label to select that contract, for example
+`npx xapi-to provider get <service-id> --version v1.4`; confirm its revision ID
+matches `working.id`. A working revision already `IN_REVIEW` is not editable.
+
+For Decisions model configuration and DYNAMIC billing, read
+[AI provider contracts](../../xapi-provider/reference/ai-spec-and-models.md).
+For an HTTP/2 upstream, read [HTTP transport](../../xapi-provider/reference/http-transport.md)
+before updating `openApiSpec`; neither workflow requires a new CLI transport
+flag.
+
 ## Create, upload, and link the usage Skill
 
 Generate a service-specific starting point from the currently serving endpoints:
@@ -129,7 +178,10 @@ npx xapi-to provider skill scaffold \
 ```
 
 The scaffold command refuses to overwrite an existing file unless `--force` is
-explicitly supplied. Complete the instructions and metadata, then submit either
+explicitly supplied. Check generated examples against the serving contract:
+strip internal named-base selectors such as `{{alpha}}` from public paths,
+use the real HTTP method, body and media type, and use raw Gateway requests for
+BCS input. Complete the instructions and metadata, then submit either
 a local directory or a public GitHub tree:
 
 ```bash
@@ -171,21 +223,36 @@ to remove the primary association. The context response reports drift when host,
 major version, or serving endpoints no longer match the stored fingerprint; update
 and resubmit the Skill rather than merely overwriting the fingerprint.
 
+The current fingerprint covers host, major and endpoint keys. `drift: false`
+does not certify unchanged schemas, MIME types or transport; review those when
+the contract changes even if endpoint keys remain identical.
+
 ## Observe and recover
 
 ```bash
 npx xapi-to provider metrics --days 30
 npx xapi-to provider metrics <service-id> --days 7
-npx xapi-to provider events --limit 50
-npx xapi-to provider events --after '<opaque-next-cursor>' --limit 50
 ```
 
-Pass event cursors back unchanged. Metrics and events are owner-scoped; usage
-events are also restricted to the current key where applicable.
+Metrics are owner-scoped.
 
-Verify the finalized cost of a canary or provider call with its receipt ID. Use
-the `X-XAPI-Request-Id` response header or the final `xapi.usage` SSE event, and
-wait when asynchronous billing has not finalized yet:
+`provider events` is deprecated: the platform no longer records new agent
+events, and previously recorded events are being removed. Use
+`provider metrics` for service health and `usage wait` for a single call's
+finalized result.
+
+`provider timeline <service-id>` lists one service's review submissions and
+outcomes, platform actions and creation, newest first (`service:read`). Page
+with the previous response's `nextBefore` and `nextBeforeId` via `--before` and
+`--before-id`, unchanged.
+
+Verify the finalized cost of a canary or provider call with an xAPI receipt ID
+when the selected interface exposes it, such as the direct service Gateway's
+`X-XAPI-Request-Id` header or a documented `xapi.usage` SSE event. Ordinary CLI
+JSON calls currently return the body without exposing response headers, and
+the AI Gateway does not yet provide a reliable receipt-ID response contract.
+Do not substitute an upstream response `id`. With a known xAPI request ID, wait
+when asynchronous billing has not finalized yet:
 
 ```bash
 npx xapi-to usage <request-id>

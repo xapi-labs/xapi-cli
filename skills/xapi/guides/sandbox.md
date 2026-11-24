@@ -199,7 +199,36 @@ Read these output fields first:
 - `result.exitCode`, `result.stdout`, `result.stderr`: remote result;
 - `cleanup.operationStatus`, `cleanup.state`: teardown result;
 - `finalState`: should be `TERMINATED` (or provider-terminal `FAILED`);
-- `totalCost`: service-calculated cost, not a client estimate.
+- `totalCost`: service-calculated cost, not a client estimate;
+- `limits`: the server-side limits the instance ran under.
+
+`offering` is just the offering's name; add `--verbose` for the full offering
+(resources and rate card).
+
+Server-side limits remain active if the CLI is killed or loses its network:
+
+- `--max-lifetime 10m`: expiration requests termination after the scheduler's
+  next check. `sandbox run` sets a lifetime by default (twice the wait and
+  command timeouts, plus 10 minutes).
+- `--max-total-usd 0.05`: limits consumer budget admission and settlement, and
+  triggers termination as the limit approaches. It must cover the first billing
+  window plus the shutdown reserve; otherwise create fails with the minimum.
+  The maximum is `999999.99999999` USD (at most six integer digits and eight
+  decimal places); larger or more precise values are rejected with HTTP 400.
+
+Budget checks include pending holds. USD holds round up to eight decimal places
+(minimum `0.00000001` USD for a positive charge); final usage charges round half
+up to eight decimal places, releasing the unused hold. For example, an operation
+priced at `0.000000004` USD reserves `0.00000001` USD and settles at `0` USD.
+With a `0.00000001` USD budget, only one such hold can be pending at a time.
+
+Termination is asynchronous. Scheduler delay, provider shutdown and resource
+release can continue after a limit triggers; the policy does not strictly cap
+provider infrastructure costs. Inspect observed terminal state and finalized
+billing rather than assuming the resource stopped exactly at expiration.
+
+`sandbox create` takes the same two flags. Without them, a created instance
+runs until it is terminated or the balance runs out.
 
 A remote non-zero exit code becomes the local CLI exit code after cleanup, so
 shells and AI runners can detect failure without parsing stdout.
@@ -232,8 +261,10 @@ npx xapi-to sandbox file read "$box_id" report.json --output ./report.json
 ```
 
 Use a stable business `--idempotency-key` when the caller might repeat create
-after a lost response. Do not blindly repeat mutations with a new key: the first
-request may already have created a billable instance.
+after a lost response. Keep the same limits on a retried create: changing limits
+with the same key returns HTTP 409; numerically equivalent USD strings are
+accepted. Do not blindly repeat mutations with a new key: the first request may
+already have created a billable instance.
 
 An unconfirmed create does not prevent a deliberate new creation. If you choose
 to try again, use a new key for that new request and keep the original instance
@@ -812,6 +843,13 @@ npx xapi-to sandbox terminate <suspected-id> --wait-timeout 5m
 If terminate returns a state-change conflict, inspect state and retry after the
 in-flight transition finishes. Do not treat an accepted operation response as
 completion; wait for the instance's observed terminal state.
+
+On updated backends, instance detail and history include `terminationReason`
+when the cause is known. The CLI shows it in instance/run tables and in a wait
+error when an instance stops before the requested state. Report that reason
+alongside the observed state and billing evidence; do not infer a budget or
+runtime limit merely from `TERMINATED`. A missing/null reason means unknown or
+an older backend, not a successful user-requested cleanup.
 
 ## AI operating rules
 

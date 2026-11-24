@@ -95,7 +95,7 @@ function printTable(rows: Record<string, unknown>[]): void {
   }
 }
 
-export function err(msg: string, detail?: unknown): never {
+function writeError(msg: string, detail?: unknown): void {
   if (process.stderr.isTTY) {
     console.error(`Error: ${msg}`);
     if (detail !== undefined) {
@@ -109,5 +109,20 @@ export function err(msg: string, detail?: unknown): never {
     if (detail !== undefined) out.detail = detail;
     console.error(JSON.stringify(out));
   }
+}
+
+export function err(msg: string, detail?: unknown): never {
+  writeError(msg, detail);
+  process.exit(1);
+}
+
+/** Action failures may carry large stdout envelopes and structured stderr. */
+export async function errAfterFlush(msg: string, detail?: unknown): Promise<never> {
+  writeError(msg, detail);
+  // Empty writes are ordered after all earlier writes on each stream. Their
+  // callbacks, rather than a guessed delay, prove that queued output drained.
+  await Promise.all([process.stdout, process.stderr].map(stream =>
+    new Promise<void>(resolve => stream.write('', () => resolve())),
+  ));
   process.exit(1);
 }

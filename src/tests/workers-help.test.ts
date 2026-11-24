@@ -6,6 +6,13 @@ import {
 } from "../commands/workers.ts";
 
 describe("Workers focused help", () => {
+  test("retention exposes recovery and deletion while schedules retain native pause/resume", () => {
+    expect(WORKERS_HELP).toContain("retention show|quote|accept|resume|delete <worker-id> --env ENV");
+    expect(WORKERS_HELP).not.toContain("keep-paused");
+    expect(WORKERS_HELP).not.toContain("accept|pause");
+    expect(WORKERS_HELP).toContain("schedules pause|resume <worker-id> <schedule-id>");
+  });
+
   test("init help separates new, frontend, Wrangler, and Next SSR paths", () => {
     expect(WORKERS_INIT_HELP).toContain("New Worker");
     expect(WORKERS_INIT_HELP).toContain("Existing React, Vite, Vue");

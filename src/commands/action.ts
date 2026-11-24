@@ -6,8 +6,9 @@
 
 import { getConfig, requireApiKey } from '../config.ts';
 import * as client from '../client.ts';
-import { output, err, getFormat } from '../format.ts';
+import { output, err, errAfterFlush, getFormat } from '../format.ts';
 import { generateCode, buildDefaultInput, resolveTarget } from '../codegen.ts';
+import { actionErrorDetail, isActionFailure, redactActionFailure } from '../action-error.ts';
 
 const VALID_SOURCES = ['capability', 'api'];
 const VALID_SEARCH_SORTS = ['default', 'relevance', 'price'] as const;
@@ -22,7 +23,7 @@ USAGE
 
 FLAGS
   --source capability|api   Filter by source type
-  --category <name>         Filter by category
+  --category <name>         Filter by category: id, alias or name, any case
   --service-id <id>         Filter by service
   --page N                  Page number (default: 1)
   --page-size N             Results per page
@@ -41,7 +42,7 @@ USAGE
 
 FLAGS
   --source capability|api   Filter by source type
-  --category <name>         Filter by category
+  --category <name>         Filter by category: id, alias or name, any case
   --page N                  Page number (default: 1)
   --page-size N             Results per page
   --sort default|relevance|price
@@ -55,7 +56,7 @@ EXAMPLES
   xapi-to search "tweet detail" --source api
   xapi-to search "tweet detail" --sort relevance
   xapi-to search weather --sort price
-  xapi-to search weather --category utility --format table
+  xapi-to search weather --category weather --format table
   xapi-to search twitter --include-all-versions
 `;
 
@@ -75,7 +76,7 @@ USAGE
   xapi-to services [flags]
 
 FLAGS
-  --category <name>         Filter by category
+  --category <name>         Filter by category: id, alias or name, any case
   --page N                  Page number
   --page-size N             Results per page
   --format json|pretty|table  Output format
@@ -136,6 +137,7 @@ FLAGS
   --input <json>            Input payload as JSON (required for execution)
   --method GET|POST|...     Override HTTP method
   --output <path>           Save a raw binary response to a new file
+  --output-json <path>      Save the full JSON response to a new private file
   --stream                  Forward the action's HTTP SSE response unchanged
   --code <target>           Generate code snippet instead of executing
   --format json|pretty|table  Output format
@@ -242,21 +244,32 @@ export async function actionList(args: string[], flags: Record<string, string>) 
     });
     const actions = (res.actions || []) as any[];
     if (fmt === 'table') {
-      output(actions.map((a: any) => ({
-        id: a.id,
-        method: a.method ?? '',
-        displayName: a.displayName ?? '',
-        source: a.source ?? '',
-        category: a.meta?.category ?? '',
-        status: a.status ?? '',
-        cost: a.meta?.cost ?? '',
-      })), 'table');
+      output(actions.map(actionTableRow), 'table');
     } else {
       output(res, flags.format as any);
     }
   } catch (e: any) {
     err('list failed', e.message);
   }
+}
+
+const percent = (rate: unknown) =>
+  typeof rate === 'number' ? `${(rate * 100).toFixed(1)}%` : '';
+
+/** One table row per action: what it is, what it costs, how its service has done. */
+function actionTableRow(a: any) {
+  return {
+    id: a.id,
+    service: a.service?.name ?? (a.source === 'capability' ? 'built-in' : ''),
+    method: a.method ?? '',
+    category: a.meta?.category ?? '',
+    price: a.meta?.pricing?.comparable ? a.meta.pricing.listed_price : '',
+    pricing: a.meta?.pricing?.billing_type ?? '',
+    // Service-level, last 30 days; empty means no data, not zero.
+    p50_ms: a.stats?.p50_ms ?? '',
+    success_30d: percent(a.stats?.upstream_success_rate),
+    calls_30d: a.stats?.calls ?? '',
+  };
 }
 
 export async function actionSearch(args: string[], flags: Record<string, string>) {
@@ -286,18 +299,7 @@ export async function actionSearch(args: string[], flags: Record<string, string>
     }
     const results = (res.results || []) as any[];
     if (fmt === 'table') {
-      output(results.map((a: any) => ({
-        id: a.id,
-        method: a.method ?? '',
-        displayName: a.displayName ?? '',
-        source: a.source ?? '',
-        category: a.meta?.category ?? '',
-        status: a.status ?? '',
-        price: a.meta?.pricing?.comparable
-          ? a.meta.pricing.listed_price
-          : '',
-        pricing: a.meta?.pricing?.billing_type ?? '',
-      })), 'table');
+      output(results.map(actionTableRow), 'table');
     } else {
       output(res, flags.format as any);
     }
@@ -405,12 +407,19 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
   if (!id) err('usage: xapi-to call <id> --input \'{"key":"val"}\'');
   if (flags.code) validateCodeFlag(flags);
   if (flags.output === 'true') err('--output requires a file path');
+  const jsonPath = flags['output-json'];
+  if (jsonPath !== undefined && (!jsonPath.trim() || jsonPath === 'true' || jsonPath === '-')) {
+    err('--output-json requires a file path, not stdout');
+  }
   const stream = flags.stream === 'true' || flags.stream === '1' || flags.stream === 'yes';
   if (flags.code && flags.output) {
     err('--output cannot be combined with --code');
   }
   if (stream && flags.output) err('--stream cannot be combined with --output');
   if (stream && flags.code) err('--stream cannot be combined with --code');
+  if (jsonPath !== undefined && (flags.output !== undefined || stream || flags.code !== undefined)) {
+    err('--output-json cannot be combined with --output, --stream or --code');
+  }
   const cfg = getConfig();
   let input: Record<string, unknown> = {};
   if (flags.input) {
@@ -435,7 +444,13 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
   }
 
   requireApiKey(cfg);
+  let res: unknown;
   try {
+    if (jsonPath !== undefined) {
+      const saved = await client.actionSaveJson(id, cleanInput, cfg, jsonPath, method);
+      output({ success: true, ...saved }, flags.format as any);
+      return;
+    }
     if (stream) {
       await client.actionStream(id, cleanInput, cfg, method);
       return;
@@ -461,9 +476,11 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
       );
       return;
     }
-    const res = await client.actionCall(id, cleanInput, cfg, method);
-    output(res, flags.format as any);
+    res = await client.actionCall(id, cleanInput, cfg, method);
   } catch (e: any) {
-    err('call failed', e.message);
+    if (e instanceof client.BusinessResponseError) output(redactActionFailure(e.responseBody, cfg.apiKey), flags.format as any);
+    await errAfterFlush('call failed', actionErrorDetail(e, cfg.apiKey));
   }
+  output(isActionFailure(res) ? redactActionFailure(res, cfg.apiKey) : res, flags.format as any);
+  if (isActionFailure(res)) await errAfterFlush('call failed', actionErrorDetail(undefined, cfg.apiKey, res));
 }
