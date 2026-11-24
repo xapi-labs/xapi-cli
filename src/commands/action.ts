@@ -145,7 +145,7 @@ FLAGS
   --output <path>           Save a raw binary response to a new file
   --output-json <path>      Save the full JSON response to a new private file
   --stream                  Forward the action's HTTP SSE response unchanged
-  --preview                 Allow calling your own PREVIEW service (free self-test)
+  --preview                 Allow calling your own PREVIEW service (free self-test; needs a backend with preview support)
   --code <target>           Generate code snippet instead of executing
   --format json|pretty|table  Output format
 
@@ -397,7 +397,7 @@ export async function actionGet(args: string[], flags: Record<string, string>) {
       }
       const action = filtered[0] as any;
       const { method: _schemaMethod, ...cleanCodeInput } = buildDefaultInput(action.input ?? {});
-      const result = generateCode(flags.code, { actionId: id, input: cleanCodeInput, actionHost: cfg.actionHost, method: action.method });
+      const result = generateCode(flags.code, { actionId: id, input: cleanCodeInput, actionHost: cfg.actionHost, method: action.method, includePreview: previewFlag(flags) });
       outputCode(result, flags);
       return;
     }
@@ -458,7 +458,7 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
     || (typeof inputMethod === 'string' ? inputMethod.toUpperCase() : undefined);
 
   if (flags.code) {
-    const result = generateCode(flags.code, { actionId: id, input: cleanInput, actionHost: cfg.actionHost, method });
+    const result = generateCode(flags.code, { actionId: id, input: cleanInput, actionHost: cfg.actionHost, method, includePreview: previewFlag(flags) });
     outputCode(result, flags);
     return;
   }

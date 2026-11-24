@@ -123,6 +123,13 @@ export interface ClientOptions {
   includePreview?: boolean;
 }
 
+/** Backends that predate preview reject the body field (`property include_preview should not exist`). */
+export function withPreviewHint(status: number, message: string): string {
+  return status === 400 && message.includes('include_preview')
+    ? `${message} (--preview needs an xAPI backend with preview support; on older backends a key with the legacy sandbox permission reaches your own unpublished services without --preview)`
+    : message;
+}
+
 /** Older backends may reject unknown body fields, so send include_preview only when requested. */
 function previewBody(opts: ClientOptions): { include_preview?: true } {
   return opts.includePreview ? { include_preview: true } : {};
@@ -455,7 +462,7 @@ export async function request<T>(
           });
           let responseBody: unknown;
           try { responseBody = JSON.parse(text); } catch { /* Plain upstream errors stay plain. */ }
-          throw new HttpError(res.status, text.slice(0, 300), retryAfterMs, responseBody);
+          throw new HttpError(res.status, withPreviewHint(res.status, text.slice(0, 300)), retryAfterMs, responseBody);
         }
         if (res.status === 204) {
           return undefined as T;
