@@ -321,9 +321,10 @@ them first, then deprecate. Calls that pin a deprecated major with
 `X-Xapi-Version` get `410 MajorVersionDelisted`.
 
 To delist a single endpoint without touching the major, set `delisted: true` on
-it (`x-xapi-delisted: true` in OpenAPI) in a working revision and publish. The
-change skips the upstream review test and the gateway answers
-`410 EndpointDelisted`; publishing `delisted: false` restores it. TIME_RENTAL
+it in a working revision and publish (`x-xapi-delisted: true` in OpenAPI only
+applies to endpoints an import creates). A delist-only revision skips the
+upstream review test, and callers get `410 EndpointDelisted`; publishing
+`delisted: false` restores it. TIME_RENTAL
 groups may delist CREATE only; a delisted TERMINATE or STATUS endpoint blocks
 submission with `RENTAL_LIFECYCLE_DELISTED`.
 

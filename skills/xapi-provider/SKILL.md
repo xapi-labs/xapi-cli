@@ -114,10 +114,13 @@ npx xapi-to provider revision start <service-id> <major>
 npx xapi-to provider major create <service-id>
 ```
 
-To delist one endpoint, set `delisted: true` on it in a working revision
-(`x-xapi-delisted: true` in OpenAPI) and publish. A delist-only change does not
-trigger the upstream review test. Callers then get `410 EndpointDelisted`, and
-the endpoint leaves docs, Marketplace and Tools. Set it back to `false` and
+To delist one endpoint, set `delisted: true` on it in a working revision and
+publish. `x-xapi-delisted: true` in OpenAPI only applies to endpoints an import
+creates; re-importing keeps an existing endpoint's state, so use the patch below.
+If delisting is the revision's only change, it skips the upstream review test;
+other pending edits in the same working revision are still reviewed. Callers
+then get `410 EndpointDelisted` (host calls and Actions), and the endpoint
+leaves docs, Marketplace and Tools. Set it back to `false` and
 publish to restore it; delete the endpoint instead only to remove it for good.
 For TIME_RENTAL, delist only the CREATE endpoint: submission rejects a delisted
 TERMINATE or STATUS endpoint because open rentals could no longer be stopped.
