@@ -121,6 +121,8 @@ the endpoint leaves docs, Marketplace and Tools. Set it back to `false` and
 publish to restore it; delete the endpoint instead only to remove it for good.
 For TIME_RENTAL, delist only the CREATE endpoint: submission rejects a delisted
 TERMINATE or STATUS endpoint because open rentals could no longer be stopped.
+SANDBOX endpoints cannot be delisted one by one (submission returns
+`SANDBOX_ENDPOINT_DELISTED`); deprecate the major to stop a sandbox service.
 With merge mode, the patch carries only the endpoint ID from the working
 revision (`currentVersion.endpoints` after `provider get`):
 
