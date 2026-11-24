@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { apiKeyApiRequest, HttpError } from '../client.ts';
 import { providerOnboarding, PROVIDER_ONBOARDING_HELP } from './provider-onboarding.ts';
 import { uploadProviderLogo } from '../provider-logo.ts';
-import { redactProvider } from '../provider-client.ts';
+import { legacyFieldNotice, redactProvider } from '../provider-client.ts';
 import {
   getConfig,
   requireApiKey,
@@ -456,7 +456,7 @@ export async function provider(args: string[], flags: Record<string, string>) {
     // Provider error bodies can echo submitted configuration or credentials.
     // Preserve local errors, but never print an HTTP response body verbatim.
     const message = error instanceof HttpError
-      ? defaultMajorConflict(error) ?? `HTTP ${error.status}`
+      ? defaultMajorConflict(error) ?? legacyFieldNotice(error) ?? `HTTP ${error.status}`
       : String(redactProvider(error instanceof Error ? error.message : 'Unknown error', [apiKey]));
     err('provider request failed', message);
   }

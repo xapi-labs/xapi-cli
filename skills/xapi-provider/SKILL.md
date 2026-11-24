@@ -121,6 +121,14 @@ the endpoint leaves docs, Marketplace and Tools. Set it back to `false` and
 publish to restore it; delete the endpoint instead only to remove it for good.
 For TIME_RENTAL, delist only the CREATE endpoint: submission rejects a delisted
 TERMINATE or STATUS endpoint because open rentals could no longer be stopped.
+With merge mode, the patch carries only the endpoint ID from the working
+revision (`currentVersion.endpoints` after `provider get`):
+
+```bash
+echo '{"endpoints":[{"id":"ENDPOINT_ID","delisted":true}]}' > delist.json
+npx xapi-to provider update <service-id> --revision <working-revision-id> --file delist.json
+```
+
 The old names `hidden` / `x-xapi-hidden` are rejected with HTTP 400; use
 `delisted` / `x-xapi-delisted`.
 

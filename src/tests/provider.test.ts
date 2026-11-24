@@ -246,6 +246,19 @@ describe('provider command', () => {
     expect(errSpy).toHaveBeenLastCalledWith('provider request failed', 'HTTP 409');
   });
 
+  it('shows the backend rename notice for legacy delist field names only', async () => {
+    const notice = 'Field `hidden` is no longer supported: it was renamed to `delisted` (delisted = not listed, the gateway returns 410; set false to restore). Send `delisted` instead.';
+    requestSpy.mockRejectedValueOnce(new client.HttpError(400, 'bad', undefined, {
+      statusCode: 400, error: 'Bad Request', message: ['endpoints.0.' + notice, 'name should not be empty'],
+    }));
+    await expect(provider(['deprecate', 'service-1', '2'], {})).rejects.toThrow('err called');
+    expect(errSpy).toHaveBeenLastCalledWith('provider request failed', `HTTP 400: endpoints.0.${notice}`);
+
+    requestSpy.mockRejectedValueOnce(new client.HttpError(400, 'bad', undefined, { message: ['secret-value is invalid'] }));
+    await expect(provider(['deprecate', 'service-1', '2'], {})).rejects.toThrow('err called');
+    expect(errSpy).toHaveBeenLastCalledWith('provider request failed', 'HTTP 400');
+  });
+
   it('links a primary skill using service:update', async () => {
     await provider(['skill', 'link', 'service-1', 'skill-1'], {});
 
