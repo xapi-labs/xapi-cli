@@ -1,4 +1,4 @@
-import { BusinessResponseError, HttpError, RequestTimeoutError } from './client.ts';
+import { BusinessResponseError, HttpError, PREVIEW_UNSUPPORTED_HINT, RequestTimeoutError } from './client.ts';
 
 function record(value: unknown): Record<string, any> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -41,6 +41,8 @@ export function actionErrorDetail(error: unknown, apiKey?: string, envelope?: un
     ?? (error instanceof RequestTimeoutError ? 'REQUEST_TIMEOUT'
       : status ? `HTTP_${status}` : unknown ? 'EXECUTION_OUTCOME_UNKNOWN' : 'ACTION_FAILED');
   const details = inner?.details ?? body?.details ?? (Array.isArray(message) ? message : undefined);
+  // call errors are rebuilt from the response body, so the client's message hint is lost here.
+  const previewUnsupported = status === 400 && JSON.stringify([message, details]).includes('include_preview');
   return redactActionFailure({
     ...(status ? { status } : {}),
     code,
@@ -49,5 +51,6 @@ export function actionErrorDetail(error: unknown, apiKey?: string, envelope?: un
     ...(error instanceof HttpError && error.retryAfterMs !== undefined ? { retry_after_ms: error.retryAfterMs } : {}),
     outcome: unknown ? 'unknown' : 'failed',
     ...(unknown ? { hint: 'The upstream may have completed the action. Check its result before retrying a write.' } : {}),
+    ...(previewUnsupported ? { hint: PREVIEW_UNSUPPORTED_HINT } : {}),
   }, apiKey);
 }
