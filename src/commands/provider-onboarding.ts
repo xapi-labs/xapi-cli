@@ -36,8 +36,8 @@ choice; --default-price affects only unpriced PER_CALL operations, including
 hidden ones, and preserves existing prices and other billing types.
 Merge updates to existing endpoints require their IDs. Use --mode replace
 to replace the endpoint list, or --allow-new-endpoints to intentionally add.
-Creation with endpoints starts in SANDBOX; empty services start in DRAFT.
-Saving a draft configuration moves it to SANDBOX, ready for submit.
+Creation with endpoints starts in PREVIEW (formerly SANDBOX); empty services
+start in DRAFT. Saving a draft configuration moves it to PREVIEW, ready for submit.
 
 PERMISSIONS
   import: service:create (legacy allowRegister also accepted)
@@ -258,7 +258,7 @@ export async function providerOnboarding(args: string[], flags: Record<string, s
       if (received) {
         const revision = object(report?.revision);
         const state = revision?.state;
-        if (revision?.id !== revisionId || !['DRAFT', 'SANDBOX', 'IN_REVIEW', 'PUBLISHED', 'SUSPENDED'].includes(String(state))) {
+        if (revision?.id !== revisionId || !['DRAFT', 'PREVIEW', 'SANDBOX', 'IN_REVIEW', 'PUBLISHED', 'SUSPENDED'].includes(String(state))) {
           throw new Error('Invalid review response: expected requested revision ID and known state');
         }
         last = report;
@@ -287,7 +287,7 @@ export async function providerOnboarding(args: string[], flags: Record<string, s
       else if (e.status === 401) message += ': invalid or expired API key';
       else if (e.status === 400) message += ': request rejected; check spec-rules, configuration, and revision state';
       else if (e.status === 409 && /"code"\s*:\s*"REVISION_NOT_EDITABLE"/.test(e.message)) {
-        message += ': revision is not editable. Only DRAFT or SANDBOX can be updated; use a working revision for changes to a published API';
+        message += ': revision is not editable. Only DRAFT or PREVIEW can be updated; use a working revision for changes to a published API';
       }
       if (['import', 'update', 'submit'].includes(command)) message += '. No automatic retry was made; inspect provider list/get/review before retrying';
     } else message = e instanceof SyntaxError ? 'Invalid JSON response from provider API' : e instanceof Error ? e.message : 'Unknown error';

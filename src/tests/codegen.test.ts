@@ -149,6 +149,15 @@ describe('generateCode', () => {
     });
   });
 
+  describe('--preview', () => {
+    it('adds include_preview to every snippet only when requested', () => {
+      for (const target of ['curl', 'python', 'python.httpx', 'javascript', 'javascript.axios', 'typescript', 'go']) {
+        expect(generateCode(target, { ...params, includePreview: true }).code).toContain('include_preview');
+        expect(generateCode(target, params).code).not.toContain('include_preview');
+      }
+    });
+  });
+
   describe('python', () => {
     it('generates requests code', () => {
       const result = generateCode('python', params);
