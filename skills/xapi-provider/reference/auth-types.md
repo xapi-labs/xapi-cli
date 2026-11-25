@@ -65,13 +65,15 @@ canary call; do not expect a read command to return the secret.
 
 A provider can enable xAPI user identity forwarding on a working revision.
 The default is off. This setting is for synchronous HTTP proxy endpoints sharing
-one HTTPS origin. Configure a dedicated version-level `HEADER` or `BEARER`
-credential that the provider validates on every request.
+one HTTPS origin. The switch controls whether xAPI forwards the identifiers.
+Upstream authentication is configured separately.
 
-Start a working revision for the target major. For a first-time setup, put the
-dedicated upstream credential in a local patch file outside version control.
+Start a working revision for the target major. To configure an upstream
+credential as well, put it in a local patch file outside version control.
 This example uses a custom header. For Bearer auth, set `"authType": "BEARER"`
 and use `"Authorization"` in `privateHeaders`.
+With `HEADER` auth, ordinary headers such as `Content-Type` can accompany
+the dedicated credential.
 
 ```json
 {
@@ -89,13 +91,15 @@ npx xapi-to provider version update <service-id> <working-version-id> \
   --file ./auth.patch.json --forward-caller-identity on
 ```
 
-For a revision with a credential already configured, use the flag on its own.
+To change only the switch, use the flag on its own.
 For reusable automation, set `"forwardCallerIdentity": true` in the JSON patch.
 If you pass the field and flag together, their values must agree.
 
-Verify in a dedicated sandbox service with a regular xAPI Key before publishing.
-Use two keys from the same account and a key from another account to check
-ownership. Then inspect the diff, publish, and confirm
+When only the forwarding switch changes, publishing activates it immediately
+without a review step. When forwarding is on and the revision also changes the
+upstream, contract or authentication, publishing activates it immediately and
+the revision is spot-checked afterward, because the review key cannot call
+identity-aware endpoints. Inspect the diff, publish, and confirm
 `servingForwardCallerIdentity` for the target major.
 
 ```bash
@@ -104,8 +108,14 @@ npx xapi-to provider publish <service-id> <working-version-id>
 npx xapi-to provider versions <service-id>
 ```
 
-On the provider server, validate the dedicated credential on every request
-before reading these headers.
+You can verify ownership in a dedicated sandbox service with two regular xAPI
+Keys from the same account and one from another account.
+
+On the provider server, verify the request came from xAPI before using these
+headers for authorization. Use an upstream credential issued only to xAPI and
+validate it on every request. A key that other clients also hold cannot prove
+the request came through xAPI, because they could call the upstream directly
+with forged headers.
 
 | Request header | Provider use |
 |---|---|
@@ -120,6 +130,8 @@ call with their regular xAPI Key.
 
 To turn forwarding off, set `--forward-caller-identity off` on a working
 revision and publish it. A JSON patch can also set
-`"forwardCallerIdentity": false`. The gateway keeps stripping both reserved
+`"forwardCallerIdentity": false`. The change takes effect as soon as it is
+published, so make identity-aware routes tolerate missing headers first. The
+gateway keeps stripping both reserved
 headers on every HTTP revision of a previously enrolled service, including
 after a rollback.
