@@ -27,6 +27,7 @@ FLAGS
   --service-id <id>         Filter by service
   --page N                  Page number (default: 1)
   --page-size N             Results per page
+  --preview                 Also include your own PREVIEW services (unpublished, free to self-test)
   --format json|pretty|table  Output format
 
 EXAMPLES
@@ -49,6 +50,7 @@ FLAGS
                             Recommended (default), strongest match, or lowest
                             comparable price after exact-id/local-match guards
   --include-all-versions    Include active non-default major versions
+  --preview                 Also include your own PREVIEW services (unpublished, free to self-test)
   --format json|pretty|table  Output format
 
 EXAMPLES
@@ -67,6 +69,7 @@ USAGE
 
 FLAGS
   --source capability|api   Filter by source type
+  --preview                 Also include your own PREVIEW services (unpublished, free to self-test)
   --format json|pretty|table  Output format
 `;
 
@@ -79,6 +82,7 @@ FLAGS
   --category <name>         Filter by category: id, alias or name, any case
   --page N                  Page number
   --page-size N             Results per page
+  --preview                 Also include your own PREVIEW services (unpublished, free to self-test)
   --format json|pretty|table  Output format
 `;
 
@@ -88,6 +92,7 @@ USAGE
   xapi-to get-batch <id> [id ...] [flags]
 
 FLAGS
+  --preview                 Also resolve your own PREVIEW services
   --format json|pretty|table  Output format
 
 EXAMPLES
@@ -102,6 +107,7 @@ USAGE
 FLAGS
   --method GET|POST|...     Filter by HTTP method
   --code <target>           Generate code snippet instead of showing schema
+  --preview                 Also resolve your own PREVIEW services
   --format json|pretty|table  Output format
 
 CODE TARGETS
@@ -139,6 +145,7 @@ FLAGS
   --output <path>           Save a raw binary response to a new file
   --output-json <path>      Save the full JSON response to a new private file
   --stream                  Forward the action's HTTP SSE response unchanged
+  --preview                 Allow calling your own PREVIEW service (free self-test; needs a backend with preview support)
   --code <target>           Generate code snippet instead of executing
   --format json|pretty|table  Output format
 
@@ -222,6 +229,16 @@ function positiveIntegerFlag(value: string | undefined, name: string): number | 
   return Number(value);
 }
 
+/** --preview: also show/allow the caller's own PREVIEW services (formerly SANDBOX). */
+function previewFlag(flags: Record<string, string>): true | undefined {
+  return flags.preview === 'true' || undefined;
+}
+
+/** Client options that carry include_preview in POST bodies when --preview is given. */
+function withPreview<T extends client.ClientOptions>(cfg: T, flags: Record<string, string>): T {
+  return previewFlag(flags) ? { ...cfg, includePreview: true } : cfg;
+}
+
 function httpMethodFlag(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   if (value === 'true' || !/^[A-Za-z]+$/.test(value)) {
@@ -241,6 +258,7 @@ export async function actionList(args: string[], flags: Record<string, string>) 
       page_size: positiveIntegerFlag(flags['page-size'], '--page-size'),
       category: flags.category,
       service_id: flags['service-id'],
+      include_preview: previewFlag(flags),
     });
     const actions = (res.actions || []) as any[];
     if (fmt === 'table') {
@@ -288,6 +306,7 @@ export async function actionSearch(args: string[], flags: Record<string, string>
       // Backward-compatible aliases from the original feature branch.
       include_all_versions: ['include-all-versions', 'all-versions', 'include-history']
         .some((name) => flags[name] === 'true'),
+      include_preview: previewFlag(flags),
       sort: requestedSort,
     });
     if (requestedSort && res.sort !== requestedSort) {
@@ -313,7 +332,7 @@ export async function actionCategories(args: string[], flags: Record<string, str
   const cfg = getConfig();
   const fmt = flags.format || getFormat();
   try {
-    const res = await client.actionCategories(cfg, { source: getSource(flags) });
+    const res = await client.actionCategories(cfg, { source: getSource(flags), include_preview: previewFlag(flags) });
     if (fmt === 'table') {
       output(res.categories.map(c => ({ category: c })), 'table');
     } else {
@@ -333,6 +352,7 @@ export async function actionServices(args: string[], flags: Record<string, strin
       page: positiveIntegerFlag(flags.page, '--page'),
       page_size: positiveIntegerFlag(flags['page-size'], '--page-size'),
       category: flags.category,
+      include_preview: previewFlag(flags),
     });
     const services = (res.services || []) as any[];
     if (fmt === 'table') {
@@ -360,7 +380,7 @@ export async function actionGet(args: string[], flags: Record<string, string>) {
   const methodFilter = httpMethodFlag(flags.method);
   const cfg = getConfig();
   try {
-    const res = await client.actionGet(id, cfg);
+    const res = await client.actionGet(id, withPreview(cfg, flags));
     const actions = Array.isArray(res) ? res : [res];
     const filtered = methodFilter
       ? actions.filter((a: any) => a.method?.toUpperCase() === methodFilter)
@@ -377,7 +397,7 @@ export async function actionGet(args: string[], flags: Record<string, string>) {
       }
       const action = filtered[0] as any;
       const { method: _schemaMethod, ...cleanCodeInput } = buildDefaultInput(action.input ?? {});
-      const result = generateCode(flags.code, { actionId: id, input: cleanCodeInput, actionHost: cfg.actionHost, method: action.method });
+      const result = generateCode(flags.code, { actionId: id, input: cleanCodeInput, actionHost: cfg.actionHost, method: action.method, includePreview: previewFlag(flags) });
       outputCode(result, flags);
       return;
     }
@@ -394,7 +414,7 @@ export async function actionBatchGet(args: string[], flags: Record<string, strin
   if (args.length > 100) err('get-batch accepts at most 100 action IDs');
   const cfg = getConfig();
   try {
-    const res = await client.actionBatch(args, cfg);
+    const res = await client.actionBatch(args, withPreview(cfg, flags));
     output(res, flags.format as any);
   } catch (e: any) {
     err('get-batch failed', e.message);
@@ -438,28 +458,29 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
     || (typeof inputMethod === 'string' ? inputMethod.toUpperCase() : undefined);
 
   if (flags.code) {
-    const result = generateCode(flags.code, { actionId: id, input: cleanInput, actionHost: cfg.actionHost, method });
+    const result = generateCode(flags.code, { actionId: id, input: cleanInput, actionHost: cfg.actionHost, method, includePreview: previewFlag(flags) });
     outputCode(result, flags);
     return;
   }
 
   requireApiKey(cfg);
+  const callCfg = withPreview(cfg, flags);
   let res: unknown;
   try {
     if (jsonPath !== undefined) {
-      const saved = await client.actionSaveJson(id, cleanInput, cfg, jsonPath, method);
+      const saved = await client.actionSaveJson(id, cleanInput, callCfg, jsonPath, method);
       output({ success: true, ...saved }, flags.format as any);
       return;
     }
     if (stream) {
-      await client.actionStream(id, cleanInput, cfg, method);
+      await client.actionStream(id, cleanInput, callCfg, method);
       return;
     }
     if (flags.output) {
       const result = await client.actionDownload(
         id,
         cleanInput,
-        cfg,
+        callCfg,
         flags.output,
         method,
       );
@@ -476,7 +497,7 @@ export async function actionCall(args: string[], flags: Record<string, string>) 
       );
       return;
     }
-    res = await client.actionCall(id, cleanInput, cfg, method);
+    res = await client.actionCall(id, cleanInput, callCfg, method);
   } catch (e: any) {
     if (e instanceof client.BusinessResponseError) output(redactActionFailure(e.responseBody, cfg.apiKey), flags.format as any);
     await errAfterFlush('call failed', actionErrorDetail(e, cfg.apiKey));

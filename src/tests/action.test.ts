@@ -3,6 +3,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import * as client from '../client.ts';
 import * as format from '../format.ts';
 import * as config from '../config.ts';
@@ -735,4 +738,84 @@ describe('action commands', () => {
       expect(exitSpy).toHaveBeenCalledWith(0);
     });
   });
+});
+
+describe('--preview flag on the wire', () => {
+  let fetchSpy: ReturnType<typeof spyOn>;
+  let cfgSpy: ReturnType<typeof spyOn>;
+  let outputSpy: ReturnType<typeof spyOn>;
+  let writeSpy: ReturnType<typeof spyOn>;
+  let dir: string;
+  const requests: Array<{ url: URL; body: any }> = [];
+
+  beforeEach(async () => {
+    requests.length = 0;
+    dir = await mkdtemp(join(tmpdir(), 'xapi-preview-'));
+    cfgSpy = spyOn(config, 'getConfig').mockReturnValue({ actionHost: 'action.xapi.to', apiKey: 'sk-test' });
+    outputSpy = spyOn(format, 'output').mockImplementation(() => {});
+    writeSpy = spyOn(process.stdout, 'write').mockImplementation(() => true);
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (url: any, init: RequestInit) => {
+      const body = init.body ? JSON.parse(String(init.body)) : undefined;
+      requests.push({ url: new URL(String(url)), body });
+      if (String(url).endsWith('/v1/actions/batch')) {
+        return new Response(JSON.stringify({ actions: [{ id: 'svc.op', method: 'GET' }], missing_ids: [] }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        });
+      }
+      const contentType = body?.stream ? 'text/event-stream' : 'application/json';
+      return new Response(body?.stream ? 'data: {}\n\n' : JSON.stringify({ success: true, data: {} }), {
+        status: 200, headers: { 'content-type': contentType },
+      });
+    }) as any);
+  });
+
+  afterEach(async () => {
+    fetchSpy.mockRestore(); cfgSpy.mockRestore(); outputSpy.mockRestore(); writeSpy.mockRestore();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  for (const [name, run] of [
+    ['list', (flags: Record<string, string>) => actionList([], flags)],
+    ['search', (flags: Record<string, string>) => actionSearch(['x'], flags)],
+    ['services', (flags: Record<string, string>) => actionServices([], flags)],
+    ['categories', (flags: Record<string, string>) => actionCategories([], flags)],
+  ] as const) {
+    it(`${name} sends include_preview=true only with --preview`, async () => {
+      await run({});
+      await run({ preview: 'true' });
+      expect(requests[0].url.searchParams.has('include_preview')).toBe(false);
+      expect(requests[1].url.searchParams.get('include_preview')).toBe('true');
+    });
+  }
+
+  for (const [name, run] of [
+    ['get', (flags: Record<string, string>) => actionGet(['svc.op'], flags)],
+    ['get-batch', (flags: Record<string, string>) => actionBatchGet(['svc.op', 'svc.other'], flags)],
+  ] as const) {
+    it(`${name} sends include_preview in the batch body only with --preview`, async () => {
+      await run({});
+      await run({ preview: 'true' });
+      expect(requests.map((r) => r.url.pathname)).toEqual(['/v1/actions/batch', '/v1/actions/batch']);
+      expect('include_preview' in requests[0].body).toBe(false);
+      expect(requests[1].body.include_preview).toBe(true);
+      expect(requests[1].url.searchParams.has('include_preview')).toBe(false);
+    });
+  }
+
+  for (const [mode, flags] of [
+    ['json', {}],
+    ['stream', { stream: 'true' }],
+    ['output', { output: 'out.bin' }],
+    ['output-json', { 'output-json': 'out.json' }],
+  ] as const) {
+    it(`call (${mode}) sends include_preview in the execute body only with --preview`, async () => {
+      const withPaths = (suffix: string) => Object.fromEntries(Object.entries(flags)
+        .map(([k, v]) => [k, k.startsWith('output') ? join(dir, suffix + v) : v]));
+      await actionCall(['svc.op'], { input: '{}', ...withPaths('a-') });
+      await actionCall(['svc.op'], { input: '{}', preview: 'true', ...withPaths('b-') });
+      expect(requests.map((r) => r.url.pathname)).toEqual(['/v1/actions/execute', '/v1/actions/execute']);
+      expect('include_preview' in requests[0].body).toBe(false);
+      expect(requests[1].body.include_preview).toBe(true);
+    });
+  }
 });

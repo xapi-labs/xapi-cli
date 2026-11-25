@@ -458,3 +458,14 @@ try {
     expect(result.stdout).toContain('Node moving/stalled uploads: passed');
   } finally {rmSync(root,{recursive:true,force:true});}
 });
+
+import { withPreviewHint } from '../client.ts';
+
+describe('withPreviewHint', () => {
+  it('explains the 400 an older backend returns for include_preview', () => {
+    const msg = '{"message":["property include_preview should not exist"],"statusCode":400}';
+    expect(withPreviewHint(400, msg)).toContain('--preview needs an xAPI backend with preview support');
+    expect(withPreviewHint(400, 'bad input')).toBe('bad input');
+    expect(withPreviewHint(404, msg)).toBe(msg);
+  });
+});

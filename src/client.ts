@@ -119,6 +119,20 @@ const RETRY_MAX_DELAY_MS = 8_000;
 export interface ClientOptions {
   actionHost: string;
   apiKey?: string;
+  /** POST execute/batch bodies: send include_preview so the caller can reach their own PREVIEW services. */
+  includePreview?: boolean;
+}
+
+/** Backends that predate preview reject the body field (`property include_preview should not exist`). */
+export function withPreviewHint(status: number, message: string): string {
+  return status === 400 && message.includes('include_preview')
+    ? `${message} (--preview needs an xAPI backend with preview support; on older backends a key with the legacy sandbox permission reaches your own unpublished services without --preview)`
+    : message;
+}
+
+/** Older backends may reject unknown body fields, so send include_preview only when requested. */
+function previewBody(opts: ClientOptions): { include_preview?: true } {
+  return opts.includePreview ? { include_preview: true } : {};
 }
 
 /** Optional Action metadata from supporting backends; source is not review evidence. */
@@ -448,7 +462,7 @@ export async function request<T>(
           });
           let responseBody: unknown;
           try { responseBody = JSON.parse(text); } catch { /* Plain upstream errors stay plain. */ }
-          throw new HttpError(res.status, text.slice(0, 300), retryAfterMs, responseBody);
+          throw new HttpError(res.status, withPreviewHint(res.status, text.slice(0, 300)), retryAfterMs, responseBody);
         }
         if (res.status === 204) {
           return undefined as T;
@@ -743,7 +757,9 @@ function baseUrl(opts: ClientOptions): string {
 
 export async function actionList(
   opts: ClientOptions,
-  params: { page?: number; page_size?: number; category?: string; source?: string; service_id?: string } = {},
+  params: {
+    page?: number; page_size?: number; category?: string; source?: string; service_id?: string; include_preview?: boolean;
+  } = {},
 ) {
   const url = new URL(`${baseUrl(opts)}/v1/actions`);
   if (params.page) url.searchParams.set('page', String(params.page));
@@ -751,6 +767,7 @@ export async function actionList(
   if (params.category) url.searchParams.set('category', params.category);
   if (params.source) url.searchParams.set('source', params.source);
   if (params.service_id) url.searchParams.set('service_id', params.service_id);
+  if (params.include_preview) url.searchParams.set('include_preview', 'true');
   return request<{ actions: unknown[]; pagination: unknown }>(
     url.toString(),
     { method: 'GET', headers: headers(opts.apiKey) },
@@ -768,6 +785,7 @@ export async function actionSearch(
     page?: number;
     page_size?: number;
     include_all_versions?: boolean;
+    include_preview?: boolean;
     sort?: 'default' | 'relevance' | 'price';
   } = {},
 ) {
@@ -778,6 +796,7 @@ export async function actionSearch(
   if (params.page) url.searchParams.set('page', String(params.page));
   if (params.page_size) url.searchParams.set('page_size', String(params.page_size));
   if (params.include_all_versions) url.searchParams.set('include_all_versions', 'true');
+  if (params.include_preview) url.searchParams.set('include_preview', 'true');
   if (params.sort) url.searchParams.set('sort', params.sort);
   return request<{
     results: unknown[];
@@ -793,9 +812,10 @@ export async function actionSearch(
   );
 }
 
-export async function actionCategories(opts: ClientOptions, params: { source?: string } = {}) {
+export async function actionCategories(opts: ClientOptions, params: { source?: string; include_preview?: boolean } = {}) {
   const url = new URL(`${baseUrl(opts)}/v1/actions/categories`);
   if (params.source) url.searchParams.set('source', params.source);
+  if (params.include_preview) url.searchParams.set('include_preview', 'true');
   return request<{ categories: string[]; total: number }>(
     url.toString(),
     { method: 'GET', headers: headers(opts.apiKey) },
@@ -824,7 +844,7 @@ export async function actionBatch(ids: string[], opts: ClientOptions) {
     {
       method: 'POST',
       headers: headers(opts.apiKey),
-      body: JSON.stringify({ ids }),
+      body: JSON.stringify({ ids, ...previewBody(opts) }),
     },
     DEFAULT_TIMEOUT_MS,
     IDEMPOTENT_RETRIES, // read-only metadata fetch — safe to retry
@@ -851,7 +871,7 @@ export async function actionCall(
     {
       method: 'POST',
       headers: headers(opts.apiKey),
-      body: JSON.stringify({ action_id: actionId, ...(httpMethod ? { method: httpMethod } : {}), input }),
+      body: JSON.stringify({ action_id: actionId, ...(httpMethod ? { method: httpMethod } : {}), input, ...previewBody(opts) }),
     },
     Math.min(timeoutMs, EXECUTE_TIMEOUT_MS),
     retries,
@@ -958,6 +978,7 @@ export async function actionStream(
         ...(httpMethod ? { method: httpMethod } : {}),
         input,
         stream: true,
+        ...previewBody(opts),
       }),
       redirect: 'manual',
       signal: controller.signal,
@@ -1055,6 +1076,7 @@ export async function actionDownload(
         ...(httpMethod ? { method: httpMethod } : {}),
         input,
         response_mode: 'raw',
+        ...previewBody(opts),
       }),
       redirect: 'manual',
       signal: controller.signal,
@@ -1113,12 +1135,13 @@ export async function actionDownload(
 
 export async function actionServices(
   opts: ClientOptions,
-  params: { page?: number; page_size?: number; category?: string } = {},
+  params: { page?: number; page_size?: number; category?: string; include_preview?: boolean } = {},
 ) {
   const url = new URL(`${baseUrl(opts)}/v1/actions/services`);
   if (params.page) url.searchParams.set('page', String(params.page));
   if (params.page_size) url.searchParams.set('page_size', String(params.page_size));
   if (params.category) url.searchParams.set('category', params.category);
+  if (params.include_preview) url.searchParams.set('include_preview', 'true');
   return request<{ services: unknown[]; pagination: unknown }>(
     url.toString(),
     { method: 'GET', headers: headers(opts.apiKey) },
