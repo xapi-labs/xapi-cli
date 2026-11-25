@@ -2,7 +2,7 @@
 
 Complete guide for AI capabilities via xAPI — text chat, summarize/rewrite, embeddings, asynchronous image/video generation, text-to-speech, and speech-to-text.
 
-All AI endpoints are **built-in capabilities** (`--source capability`). Pass parameters with `--input` as a JSON object.
+The `ai.*` calls below are **built-in capabilities** (`--source capability`). Pass parameters with `--input` as a JSON object. Decisions uses a separate native HTTP Gateway protocol; see [Decisions](ai_gateway.md#decisions) for model discovery, typed questions/answers, costs and variant handling. Do not send Decisions through `ai.text.chat.auto` or invent an `ai.decisions.*` capability.
 
 This guide covers CLI capabilities. For Claude Code, Anthropic/OpenAI SDKs, streaming HTTP APIs, and Gateway routing, read `guides/ai_gateway.md`. For full-duplex OpenAI Realtime or provider-native streaming ASR/TTS, read `guides/ws_gateway.md`.
 

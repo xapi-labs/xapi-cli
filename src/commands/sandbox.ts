@@ -68,8 +68,9 @@ HISTORY FLAGS
   --page N  --page-size N           Pagination (page size: 1-100)
 
 SAFETY
-  sandbox run terminates in finally, including command failure. Use --keep only
-  when you intentionally want billing to continue after the CLI exits.
+  sandbox run terminates in finally, including command failure, and asks the
+  server to terminate it after --max-lifetime even if the CLI dies. Use --keep
+  only when you intentionally want billing to continue after the CLI exits.
   Provider names above are deployment aliases; a local published host prefix
   can differ from the upstream vendor name. Inspect offerings without a pin first.
 
@@ -157,6 +158,8 @@ CONTROL
   --idempotency-key KEY              Stable retry key; generated and returned if omitted
   --metadata <json>                  Instance metadata
   --resume-on-access                 Request automatic resume on supported providers
+  --max-lifetime 2h                  Server terminates the instance after this long
+  --max-total-usd N                  Server terminates before the total cost passes N
   --wait                             Wait until RUNNING
   --wait-timeout 5m  --interval 2s   Polling controls
 
@@ -248,10 +251,15 @@ RUN FLAGS
   --metadata <json>                 Instance metadata for audit correlation
   --idempotency-key KEY             Stable create retry key
   --wait-timeout 5m  --interval 2s  Lifecycle polling controls
+  --max-lifetime 10m                Server-side lifetime (default: twice the wait
+                                    and command timeouts plus 10m; none with --keep)
+  --max-total-usd N                 Server terminates before the total cost passes N
+  --verbose                         Include the full offering in the output
   --keep                            Keep the instance running and billing
 
 Runs quote -> create -> wait -> exec -> terminate. Cleanup also runs after
-command failure, SIGINT, or SIGTERM.`,
+command failure, SIGINT, or SIGTERM; the server-side lifetime covers a CLI
+that is killed or loses the network.`,
 };
 
 const COMMON_FLAGS = ['help', 'host', 'provider', 'format'] as const;
@@ -341,6 +349,7 @@ export function sandboxTableRows(view: SandboxTableView, data: any): Record<stri
       offering: item.offering?.name || item.offering,
       exitCode: item.result?.exitCode,
       finalState: item.finalState,
+      terminationReason: item.terminationReason,
       cleanup: item.cleanup?.state || (item.cleanup?.kept ? 'KEPT' : ''),
       totalCost: item.totalCost,
     }));
@@ -349,6 +358,7 @@ export function sandboxTableRows(view: SandboxTableView, data: any): Record<stri
     id: item.id || item.instanceId,
     state: item.observedState || item.state || item.finalState,
     desiredState: item.desiredState,
+    terminationReason: item.terminationReason,
     offering: item.offering?.name || item.offeringName || item.offeringId,
     provider: item.provider?.name || item.providerName || item.provider,
     createdAt: item.createdAt,
@@ -492,6 +502,23 @@ function createDefaultCapabilities(flags: Record<string, string>): string[] | un
     || flagValue(flags, 'gpu-count')
     || flagValue(flags, 'gpu-model')) return undefined;
   return ['exec'];
+}
+
+/** policy.maxLifetimeSeconds / maxTotalUsd for create; the server enforces both. */
+function limitPolicy(
+  flags: Record<string, string>,
+  defaultLifetimeSeconds?: number,
+): { maxLifetimeSeconds?: number; maxTotalUsd?: string } {
+  const lifetime = flagValue(flags, 'max-lifetime');
+  const seconds = lifetime !== undefined
+    ? Math.ceil(durationMs(lifetime, 0, 'max-lifetime') / 1_000)
+    : defaultLifetimeSeconds;
+  if (seconds !== undefined && seconds < 60) err('--max-lifetime must be at least 60s');
+  const total = positiveNumber(flagValue(flags, 'max-total-usd'), 'max-total-usd');
+  return {
+    ...(seconds !== undefined ? { maxLifetimeSeconds: seconds } : {}),
+    ...(total !== undefined ? { maxTotalUsd: total.toFixed(8) } : {}),
+  };
 }
 
 function waitSettings(flags: Record<string, string>) {
@@ -638,7 +665,7 @@ export async function sandboxCreate(args: string[], flags: Record<string, string
   help(flags, 'create');
   validateFlags(flags, 'create', [
     ...SELECTION_FLAGS, ...POLL_FLAGS, 'quote-id', 'offering-id', 'metadata',
-    'idempotency-key', 'resume-on-access', 'wait',
+    'idempotency-key', 'resume-on-access', 'wait', 'max-lifetime', 'max-total-usd',
   ]);
   const wait = booleanFlag(flags, 'wait');
   const resumeOnAccess = booleanFlag(flags, 'resume-on-access');
@@ -663,6 +690,7 @@ export async function sandboxCreate(args: string[], flags: Record<string, string
     err('--max-hourly-usd cannot be combined with --offering-id; create from requirements to enforce a price ceiling');
   }
   const idempotencyKey = flagValue(flags, 'idempotency-key') || `cli:create:${randomUUID()}`;
+  const limits = limitPolicy(flags);
   let created: SandboxDetail | undefined;
   try {
     let selection: Record<string, unknown>;
@@ -680,7 +708,7 @@ export async function sandboxCreate(args: string[], flags: Record<string, string
       selection,
       metadata,
       idempotencyKey,
-      policy: { resumeOnAccess },
+      policy: { resumeOnAccess, ...limits },
     });
     let result = created;
     if (wait && created.id) {
@@ -995,6 +1023,7 @@ export async function sandboxRun(args: string[], flags: Record<string, string>) 
   help(flags, 'run');
   validateFlags(flags, 'run', [
     ...SELECTION_FLAGS, ...POLL_FLAGS, 'command', 'timeout', 'cwd', 'metadata', 'keep', 'idempotency-key',
+    'max-lifetime', 'max-total-usd', 'verbose',
   ]);
   const command = commandFrom(args, flags, 'usage: xapi-to sandbox run --command <shell>');
   const opts = sandboxOptions(flags);
@@ -1008,6 +1037,13 @@ export async function sandboxRun(args: string[], flags: Record<string, string>) 
     ? jsonObject(flagValue(flags, 'metadata')!, 'metadata')
     : {};
   const keep = booleanFlag(flags, 'keep');
+  const verbose = booleanFlag(flags, 'verbose');
+  // Long enough for create, the command and cleanup; the server ends it after
+  // that even if this process is killed. --keep means the caller owns it.
+  const limits = limitPolicy(
+    flags,
+    keep ? undefined : 2 * (Math.ceil(settings.timeoutMs / 1_000) + timeoutSeconds) + 600,
+  );
   let id: string | undefined;
   let failure: unknown;
   let quote: any;
@@ -1039,7 +1075,7 @@ export async function sandboxRun(args: string[], flags: Record<string, string>) 
     created = await sandbox.sandboxCreate(opts, {
       selection: { quoteId: quote.quoteId },
       metadata: { ...metadata, client: 'xapi-cli', command: 'sandbox run' },
-      policy: { resumeOnAccess: false },
+      policy: { resumeOnAccess: false, ...limits },
       idempotencyKey,
     });
     id = created?.id;
@@ -1094,15 +1130,19 @@ export async function sandboxRun(args: string[], flags: Record<string, string>) 
     instanceId: id,
     clientIdempotencyKey: idempotencyKey,
     provider: opts.provider || 'auto',
-    offering: quote?.offering,
-    createdState: created?.observedState,
-    readyState: ready?.observedState,
+    // The full offering (resources, rate card) only on request; the name is enough to read a run.
+    offering: verbose ? quote?.offering : quote?.offering?.name ?? quote?.offering,
+    ...(verbose
+      ? { createdState: created?.observedState, readyState: ready?.observedState }
+      : {}),
     result,
     cleanup: keep
       ? { kept: true, warning: 'billing continues until terminated' }
       : cleanupSummary(cleanup),
     finalState: finalDetail?.observedState || (cleanup as any)?.sandbox?.observedState,
+    terminationReason: finalDetail?.terminationReason ?? (cleanup as any)?.sandbox?.terminationReason,
     totalCost: finalDetail?.totalCost || (cleanup as any)?.sandbox?.totalCost,
+    ...(Object.keys(limits).length ? { limits } : {}),
     ...(finalReadError ? { finalReadError } : {}),
   };
   sandboxOutput('run', summary, flags);

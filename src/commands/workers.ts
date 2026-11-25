@@ -15,13 +15,14 @@ import { listWorkerTemplates } from "../workers-templates.ts";
 import { importWranglerProject } from "../workers-wrangler-import.ts";
 import {
   prepareWorkerPlan,
+  type PlanClient,
   type WorkerDeploymentPlan,
 } from "../workers-plan.ts";
 import {
   formatWorkerPlan,
   useHumanWorkerPlanOutput,
 } from "../workers-plan-output.ts";
-import { pushWorkerProject, WorkerPushError } from "../workers-push.ts";
+import { pushWorkerProject, createLinkedWorkerProject, WorkerPushError } from "../workers-push.ts";
 import {
   formatWorkerPushResult,
   useHumanWorkerPushOutput,
@@ -57,6 +58,7 @@ import {
 import { loadWorkerProject } from "../workers-project.ts";
 import { WorkerProjectBuildError } from "../workers-project-build.ts";
 import { planD1Migrations, publicD1MigrationPlan, applyD1Migrations, D1MigrationError } from "../workers-d1-migrations.ts";
+import { exportWorkerData, DataExportError } from '../workers-data-export.ts';
 
 export const WORKERS_HELP = `xapi-to workers - Deploy and manage xAPI-hosted Cloudflare Workers
 
@@ -66,13 +68,22 @@ USAGE
 NORMAL PROJECT WORKFLOW (recommended)
   templates
   init [directory] --template TEMPLATE
-  plan --env preview|production
+  create --config xapi.worker.json     Create/link only; set Secrets before first push
+  plan --env preview|production [--local]
+                                       --local: build and plan a new, unlinked project
+                                       without an API key or any remote read
   push --env preview
   pull --env preview|production [--output deployment-snapshot.json]
   promote --to production [--artifact ARTIFACT_ID]
   rollback --env preview|production (--to previous | --deployment DEPLOYMENT_ID)
 
 INSPECTION AND OPERATIONS
+  d1 export [worker-id] --env preview|production --binding NAME --output fresh.sql
+    [--config PATH] [--export-id ID] (resume an existing job; poll at most 600s)
+  r2 export [worker-id] --env preview|production --binding NAME --output fresh-directory
+    [--config PATH] (live object listing, private manifest.jsonl; up to 4 downloads)
+    Requires workers:read for metadata plus separate workers:data:read for data.
+    Management read/write does not imply data access. Fresh output only.
   d1 migrations plan --binding NAME --env preview|production [--config PATH]
   d1 migrations apply --binding NAME --env preview|production [--config PATH]
     plan lists local SQL only; apply explicitly changes the selected remote D1.
@@ -102,7 +113,7 @@ RESOURCES, BILLING, AND LIFECYCLE
   environment <worker-id> <environment> [--daily-usd USD] [--data-location apac] [--placement smart]
   billing-status
   billing ledger <worker-id> --env ENV [--all] [--snapshot-time ISO] [--json]
-  retention show|quote|accept|pause|resume|keep-paused|delete <worker-id> --env ENV
+  retention show|quote|accept|resume|delete <worker-id> --env ENV
   billing prices|overview|usage|ledger|forecast|risk|lifecycle <worker-id> --env preview|production
   domains list <worker-id>
   domains challenge <worker-id> --env ENV --hostname HOSTNAME --format json
@@ -135,6 +146,7 @@ RESOURCES, BILLING, AND LIFECYCLE
 
 CHOOSING A WORKFLOW
   Normal application: init -> plan -> push -> promote
+  Required Secrets in CI: init -> create --config xapi.worker.json -> secrets apply -> plan -> push
   Read-only review: inspect; use plan when comparing local desired state
   workers plan runs the local build and validates the exact Artifact, then
   compares it with live state. It never writes to the xAPI control plane.
@@ -164,7 +176,7 @@ INIT FLAGS
   --build-main PATH                     Entrypoint inside a build-output directory
   --name NAME                           Worker display name
   --slug SLUG                           Stable lowercase Worker slug
-  --preview-budget USD|none            Default: none
+  --preview-budget USD|none            New agent/chat: 0.25; other templates/imports: none
   --production-budget USD|none         Default: none
   --data-location REGION                Default for newly created D1/R2 resources
   --placement off|smart                 Cloudflare Worker placement metadata
@@ -263,6 +275,8 @@ SECRET FLAGS
 
 AUTHORIZATION
   API keys need workers:read for reads and workers:write for mutations.
+  D1/R2 exports need workers:read for binding metadata plus workers:data:read.
+  The independent workers:data:read scope is not implied by workers:read/write.
   XAPI_KEY overrides XAPI_API_KEY and ~/.xapi/config.json.
 
 EXAMPLES
@@ -616,6 +630,28 @@ export async function workersCommand(
     return;
   }
   const [command, ...rest] = args;
+  if ((command === 'd1' || command === 'r2') && rest[0] === 'export') {
+    assertFlags(flags, ['env', 'binding', 'output', 'config', ...(command === 'd1' ? ['export-id'] : [])]);
+    if (rest.length > 2) err('usage: workers d1|r2 export [worker-id] --env ENV --binding NAME --output PATH');
+    const env = environment(flags.env);
+    const binding = required(flags.binding, '--binding');
+    const destination = required(flags.output, '--output');
+    if (flags.config !== undefined) required(flags.config, '--config');
+    if (flags['export-id'] !== undefined) required(flags['export-id'], '--export-id');
+    const apiOptions = options();
+    try {
+      const id = rest[1] || loadWorkerProject(process.cwd(), flags.config).config.workerId;
+      if (!id) err('Project has no workerId; link an existing Worker before exporting');
+      output(await exportWorkerData(command, client, apiOptions, {
+        workerId: id, environment: env, binding, output: destination, exportId: flags['export-id'],
+      }, { progress: state => console.error(JSON.stringify({ exportId: state.exportId, status: state.status })) }),
+      flags.format as OutputFormat | undefined);
+    } catch (error) {
+      if (error instanceof DataExportError) err(error.message, error.details);
+      err('Worker data export configuration failed');
+    }
+    return;
+  }
   switch (command) {
     case "d1": {
       assertFlags(flags, ["env", "binding", "config"]);
@@ -758,7 +794,7 @@ export async function workersCommand(
             slug: flags.slug === "true" ? undefined : flags.slug,
             previewDailyBudgetUsd: flags["preview-budget"]
               ? budget(flags["preview-budget"], "--preview-budget")
-              : null,
+              : undefined,
             productionDailyBudgetUsd: flags["production-budget"]
               ? budget(flags["production-budget"], "--production-budget")
               : null,
@@ -778,17 +814,30 @@ export async function workersCommand(
       return;
     }
     case "plan": {
-      assertFlags(flags, ["env", "config"]);
+      assertFlags(flags, ["env", "config", "local"]);
       if (rest.length) err("usage: xapi-to workers plan --env ENV");
       if (flags.config === "true" || flags.config === "") {
         err("--config requires a path");
+      }
+      if (flags.local !== undefined && flags.local !== "true") err("--local does not accept a value");
+      const local = flags.local === "true";
+      if (local && loadWorkerProject(process.cwd(), flags.config).config.workerId) {
+        err("--local plans a project that is not linked to a Worker yet; run plan without --local");
       }
       try {
         const prepared = await prepareWorkerPlan({
           environment: environment(flags.env) as "preview" | "production",
           configPath: flags.config,
-          clientOptions: options(),
+          ...(local
+            ? {
+                // An unlinked project only reads the Worker list (slug check);
+                // a local plan reads nothing remote and leaves that to create.
+                clientOptions: { apiHost: XAPI_API_HOST, apiKey: "" },
+                client: { listWorkers: async () => [] } as unknown as PlanClient,
+              }
+            : { clientOptions: options() }),
         });
+        if (local) console.error("Local plan: no remote state was read; workers create checks the slug.");
         printWorkerPlan(prepared.plan, flags.format);
       } catch (error) {
         if (error instanceof WorkerProjectBuildError) {
@@ -804,7 +853,7 @@ export async function workersCommand(
     case "retention": {
       assertFlags(flags, ["env", "type", "price-version", "yes", "json"]);
       const [action, id, ...extra] = rest;
-      if (!id || extra.length || !["show", "quote", "accept", "pause", "resume", "keep-paused", "delete"].includes(action)) err("usage: workers retention show|quote|accept|pause|resume|keep-paused|delete <worker-id> --env ENV");
+      if (!id || extra.length || !["show", "quote", "accept", "resume", "delete"].includes(action)) err("usage: workers retention show|quote|accept|resume|delete <worker-id> --env ENV");
       const env = environment(flags.env);
       const retentionOutputMode = workerBillingOutputMode(flags);
       if (["accept", "delete"].includes(action) && flags.yes !== "true") err("--yes is required to accept automatic reserve-exhaustion deletion or delete this environment");
@@ -822,7 +871,7 @@ export async function workersCommand(
         if (result.retentionHours) console.log(`Legacy retention estimate: ${result.retentionHours} hours. This does not authorize automatic deletion.`);
         if (result.estimateBasisHours) console.log(`Freeze estimate basis: ${result.estimateBasisHours} hours; minimum preservation is seven full days, not a fixed deletion deadline.`);
         if (result.policyVersion === "retention-v3" || state.retentionPolicyVersion === "retention-v3") {
-          console.log("Manual recovery does not happen just by recharging. At least seven full days are protected; afterward, remaining spendable retention funds extend preservation until exhausted, then system cleanup applies. Owner deletion is available at any time.");
+          console.log("Manual recovery does not happen just by recharging. At least seven full days are protected; afterward, remaining spendable retention funds extend preservation until exhausted, then system cleanup applies. User deletion is unavailable during financial retention; add sufficient funds and explicitly recover first. System cleanup remains independent.");
           if (result.environmentDeposit?.fundingMode === 'UNIFIED_WORKER_DEPOSIT_V1') console.log(`Environment deposit remaining: $${result.environmentDeposit.remainingUsd}; frozen funds are not an additional fee.`);
           if (result.reserveBudget) console.log(`Remaining for retention: $${result.reserveBudget.retentionSpendableUsd ?? "unknown"}; cleanup allowance: $${result.reserveBudget.cleanupReserveUsd ?? "unknown"}`);
         }
@@ -1058,6 +1107,7 @@ export async function workersCommand(
     }
     case "create": {
       assertFlags(flags, [
+        "config",
         "name",
         "slug",
         "description",
@@ -1068,6 +1118,17 @@ export async function workersCommand(
         "placement",
       ]);
       if (rest.length) err("usage: xapi-to workers create [flags]");
+      if (flags.config !== undefined) {
+        const explicit = ["name", "slug", "description", "template", "preview-budget", "production-budget", "data-location", "placement"].filter(flag => flags[flag] !== undefined);
+        if (explicit.length) err("workers create --config uses the project's settings; use either --config or explicit creation flags");
+        try {
+          output(await createLinkedWorkerProject({ configPath: required(flags.config, "--config"), clientOptions: options() }));
+        } catch (error) {
+          if (error instanceof WorkerPushError) err(error.message, error.recovery);
+          throw error;
+        }
+        return;
+      }
       const template = flags.template || "worker";
       if (!["worker", "agent"].includes(template))
         err("--template must be worker or agent");

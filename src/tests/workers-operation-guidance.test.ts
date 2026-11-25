@@ -13,11 +13,24 @@ import {
 const target = { workerId: "worker-1", environment: "preview" };
 
 describe("lifecycle observation guidance", () => {
-  it("shows the pending pause receipt without treating native upload or SKIPPED stop as completion", () => {
+  it("preserves system funding protection without owner-pause guidance", () => {
+    for (const pauseReason of ["INSUFFICIENT_BALANCE", "USER"]) {
+      const retained = Object.freeze({ state: "SUSPENDED_GRACE", pauseReason,
+        retentionStartedAt: "2026-10-11T00:00:00Z" });
+      const financial = workerLifecycleGuidance(retained).join("\n");
+      expect(financial).toContain("Financial retention is active");
+      expect(financial).toContain("recharge alone does not resume execution");
+      expect(financial).not.toContain("Owner pause keeps management available");
+    }
+    expect(workerLifecycleGuidance({ state: "SUSPENDED_GRACE", pauseReason: "USER" }).join("\n"))
+      .not.toContain("Owner pause keeps management available");
+  });
+
+  it("shows the pending system suspension receipt without treating native upload or SKIPPED stop as completion", () => {
     const response = { status: "ACCEPTED", state: "SUSPENDING", retryRequired: true,
       errorCode: "CONTAINER_STOP_PENDING", errorMessage: "https://provider.invalid/signed?secret=hidden" };
     const before = JSON.stringify(response);
-    const human = formatWorkerRetentionGuidance({ ...target, action: "pause", response });
+    const human = formatWorkerRetentionGuidance({ ...target, action: "show", response });
     expect(human).toContain("Request status: ACCEPTED");
     expect(human).toContain("Lifecycle SUSPENDING: work is pending");
     expect(human).toContain("Reported pending/error code: CONTAINER_STOP_PENDING");
@@ -32,8 +45,8 @@ describe("lifecycle observation guidance", () => {
     expect(JSON.stringify(response)).toBe(before);
   });
 
-  it("keeps legacy completed pause output and exposes the pending code on a follow-up read", () => {
-    const complete = formatWorkerRetentionGuidance({ ...target, action: "pause", response: { state: "SUSPENDED" } });
+  it("keeps system suspension output and exposes the pending code on a follow-up read", () => {
+    const complete = formatWorkerRetentionGuidance({ ...target, action: "show", response: { state: "SUSPENDED" } });
     expect(complete).toContain("Execution is paused");
     expect(complete).not.toContain("Container stop is not confirmed complete");
     const pending = formatWorkerRetentionGuidance({ ...target, action: "show", response: {
@@ -101,7 +114,7 @@ describe("lifecycle observation guidance", () => {
   });
 
   it("distinguishes paused storage and reported deletion from a refund", () => {
-    for (const action of ["show", "pause", "keep-paused"] as const) {
+    for (const action of ["show"] as const) {
       const response = Object.freeze({ lifecycle: Object.freeze({ state: "SUSPENDED_GRACE" }) });
       const human = formatWorkerRetentionGuidance({ ...target, action, response });
       expect(human).toContain("Retained storage is not deleted or refunded by pausing");

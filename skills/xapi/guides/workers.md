@@ -83,6 +83,18 @@ Choose the `init` form from the project you actually have:
 
 For a new service:
 
+The simple `agent`/`chat` templates now declare APP_TOKEN and MODEL_KEY separately:
+their generated Wrangler development toolchain requires Node.js 22.12.0 or newer.
+Use `npx xapi-to` for a published CLI build; for an unreleased checkout, use the
+same built local CLI used to initialize it. A local version is not release proof.
+POST /chat requires the application token, while /health remains public. Their
+new-project preview Worker budget defaults to $0.25/day (explicit values or
+`--preview-budget none` override it). Model usage is billed separately to
+MODEL_KEY. Read generated TEMPLATE.md and create/link the project, set runtime
+Secrets, then plan/push; the first push is not successful while Secrets are missing.
+Before you have a key or have created anything, `xapi workers plan --env preview --local`
+runs the local build and shows the plan without any remote read.
+
 ```bash
 xapi workers templates
 xapi workers init my-agent --template persistent-agent
@@ -830,7 +842,7 @@ An explicit later `push` can retry unchanged source after a terminal FAILED jour
 
 For deploy/rollback and Secret writes, an explicit `worker_control_operation_pending` admission response with `pendingReason=TARGET_BUSY`, `requestAccepted=false` and `requestDispatched=false` allows the CLI to wait up to 60 seconds. It reads only the blocking operation by ID, then submits the unchanged request when that operation releases its target with a confirmed result. Waiting progress is on stderr; the server has not queued this request. Generic errors, old pending responses without this evidence, unknown writes and transport timeouts are not automatically retried by this waiting mechanism. Cancellation and unavailable status reads stop waiting; no operation is forcibly unlocked. Requires the existing `workers:read` permission for status observation.
 
-Secret names are forwarded exactly as nonempty strings, including names accessed through `env[name]`; there is no xAPI 64-character name limit or 128-item batch limit. Provider validation, ownership and binding-conflict checks still apply. Optional automatic retention does not control resource deposit funding. Both environments prepare protected seven-day retention funds, separately tracked from operating reserves. Duplicate identities reuse their financial receipts; historical funds remain traceable. After at least 168 hours, preservation continues while spendable retention funds remain, with system cleanup on exhaustion. Owner deletion is available at any time.
+Secret names are forwarded exactly as nonempty strings, including names accessed through `env[name]`; there is no xAPI 64-character name limit or 128-item batch limit. Provider validation, ownership and binding-conflict checks still apply. Optional automatic retention does not control resource deposit funding. Both environments prepare protected seven-day retention funds, separately tracked from operating reserves. Duplicate identities reuse their financial receipts; historical funds remain traceable. After at least 168 hours, preservation continues while spendable retention funds remain, with system cleanup on exhaustion. User deletion is unavailable during financial retention; add sufficient funds and explicitly recover first. System cleanup remains independent.
 
 Container metering `container_location_pricing_gap` preserves independently observed CPU/memory/disk, withholds incomplete egress buckets and keeps source coverage unresolved. Missing egress is not a zero cost or a reason to delete the resource. See `skills/xapi-workers/references/billing.md` for reconciliation.
 
@@ -856,7 +868,7 @@ Queue resources remain owned by the selected Worker/environment and billed to it
 
 Configure HTTP Pull with `workers resources queue-consumer configure <worker-id> <resource-id> --env preview --body '{"type":"http_pull","settings":{"batch_size":10,"visibility_timeout_ms":30000}}'`. Use `workers resources queue-messages pull ... --body '{"batch_size":10}'` and `queue-messages ack ... --body '{"acks":[{"lease_id":"<returned-lease>"}],"retries":[]}'`. Messages/options retain native semantics. This uses the Queue management API and does not require a Worker handler or an obsolete Wrangler HTTP Pull declaration. See [resource reference](../../xapi-workers/references/resources.md) for full commands, explicit consumer type changes, lifecycle and billing semantics. Native Queue operations are billed from the existing Queue-ID collector, not from HTTP request count; no new fee or resource-level product is introduced.
 
-Completed pause/delete actions may include `accessPreparation` for publishing a denied runtime state, just as resume publishes an allowed state. `PENDING` publication does not replay or reverse a completed resource action. Native execution admitted during a platform-paused interval keeps usage evidence but incurs zero user charge with `PLATFORM_PAUSED` provenance; this is distinct from an ordinary application's billable 503 response and does not waive storage/retention charges. DO deletion financial close reuses the finalized exact namespace/class proof and preserves the 48-hour running tail.
+Completed system funding suspension or owner deletion may include `accessPreparation` for publishing a denied runtime state, just as resume publishes an allowed state. `PENDING` publication does not replay or reverse a completed resource action. Native execution admitted during a platform-paused interval keeps usage evidence but incurs zero user charge with `PLATFORM_PAUSED` provenance; this is distinct from an ordinary application's billable 503 response and does not waive storage/retention charges. DO deletion financial close reuses the finalized exact namespace/class proof and preserves the 48-hour running tail.
 
 Public build commands may contain paths such as `xapi-backend/worktrees/...`; that public prefix is not an API credential. Actual embedded credentials and credential fields still belong outside tracked project configuration. Upstream metering quota errors defer the current collection pass without changing unvisited cursors, user permissions, or prices; native usage remains pending until evidenced. Lifecycle status now uses the same seven-day policy for Preview and Production.
 
@@ -908,3 +920,38 @@ Link an existing Worker with top-level `workerId` in `xapi.worker.json`; do not 
 After an upload response is lost, the original operation remains UNKNOWN. Recovery reads the exact deployment and operation tags from CF. Only when **all** writes are confirmed and the native observation matches may a later explicit push create a new publication identity. It does not replay the old write. Script tags do not confirm Container or Workflow writes. Conflicting targets require evidence; unrelated targets are not gated. The immutable server execution deadline is capped at 15 minutes and each provider request uses the remaining time; local build and temporary upload deadlines remain separate.
 
 A complete native CF authentication rejection (HTTP 401, parsed failure envelope with code 10000) is recorded as REJECTED, not UNKNOWN. The platform must repair its credentials; this does not blame the user balance, grant new permissions or automatically replay the write. Incomplete bodies, connection loss and unrelated errors remain UNKNOWN. Historical UNKNOWN operations are not silently rewritten by this change.
+
+### Explicit D1/R2 data export
+
+Use `xapi workers d1 export [worker-id] --env preview|production --binding DB
+--output ./fresh-backup.sql` or `xapi workers r2 export [worker-id] --env
+preview|production --binding FILES --output ./fresh-directory`. Omit Worker ID to
+use project `workerId`; `--config PATH` selects another project file. Binding
+metadata requires `workers:read` **and** export needs separate
+`workers:data:read`; management read/write does not grant data access.
+
+D1 polls at most 600 seconds with `PENDING/COMPLETE/FAILED/EXPIRED` states. Use the
+displayed `exportId` with `--export-id ID` and a fresh output to resume the same
+job. Expired jobs need a new explicit start without that flag. If the first start
+response is lost without an ID, the user can explicitly re-run export for the
+same Worker/environment/binding with a fresh `--output` and no `--export-id`.
+The backend returns the original ID of an existing same-owner/resource `PENDING`
+job; an unconfirmed start already marked `FAILED` can allow a new job on this
+explicit re-execution. For HTTP 409 `worker_export_start_retry`, explicitly try
+again later with a fresh output, using the same scoped xAPI credentials.
+No POST or lost result is automatically replayed. R2 processes live pages (default 100, maximum
+200), with four reused download connections, `If-Match` and ETag/byte verification.
+Concurrent writes can change listing or objects: this is not an atomic snapshot.
+
+Fresh outputs are private (0700 directories, 0600 files), without symlink or
+clobbering. Safe hash filenames map original keys and response metadata in a
+private JSONL manifest. Failed/interrupted files remain partial; R2 restart uses
+a new directory. Ordinary output/errors omit object keys, signed URLs and raw
+upstream errors. Direct unexpired HTTPS GET downloads allow only
+`.r2.cloudflarestorage.com`, no credentials/explicit ports/redirects, and optional
+`If-Match`. Preserve signed URL/header bytes; never send xAPI credentials to CF.
+Connection/header and idle budgets are 30/60 seconds, with no short total cap on
+progress. Read [the export workflow](../../xapi-workers/references/resources.md#export-d1-and-r2-business-data)
+for manifests and recovery. Local key safety does not establish native CF key
+support. Imports are outside this feature; optional Container scripts/bridges are
+not required. Export completion does not establish migration completion.

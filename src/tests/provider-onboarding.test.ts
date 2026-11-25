@@ -97,6 +97,105 @@ describe('provider lifecycle commands', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('imports YAML with its schema, auth, extensions and server-side Swagger conversion intact', async () => {
+    respond = () => json({ success: true, apiService: { id: 'svc', activeVersion: { id: 'rev', state: 'SANDBOX' } } });
+    const path = join(dir, 'openapi.yaml');
+    await writeFile(path, `openapi: 3.0.3
+info:
+  title: Weather
+  version: '1.0'
+  x-xapi-host: weather
+servers:
+  - url: https://weather.example.com
+components:
+  securitySchemes:
+    apiKey: {type: apiKey, in: header, name: X-Key}
+paths:
+  /forecast:
+    post:
+      summary: Forecast
+      x-xapi-billing: {type: PER_CALL, costPerCall: 0.01}
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [city]
+              properties:
+                city: {type: string, enum: [London, Tokyo]}
+`);
+    await provider(['import'], { file: path });
+    const spec = calls[0].body.openApiSpec;
+    expect(spec.info['x-xapi-host']).toBe('weather');
+    expect(spec.components.securitySchemes.apiKey.name).toBe('X-Key');
+    expect(spec.paths['/forecast'].post.requestBody.content['application/json'].schema).toEqual({
+      type: 'object', required: ['city'], properties: { city: { type: 'string', enum: ['London', 'Tokyo'] } },
+    });
+    const swagger = { swagger: '2.0', host: 'weather.example.com', basePath: '/v1', paths: {
+      '/forecast': { get: { 'x-xapi-billing': { costPerCall: 0 } } },
+    } };
+    await provider(['import'], { file: await file(swagger) });
+    expect(calls[1].body.openApiSpec).toEqual(swagger);
+  });
+
+  it('requires explicit missing-price choices and preserves authored billing, including hidden operations', async () => {
+    respond = () => json({ success: true, apiService: { id: 'svc', activeVersionId: 'rev' } });
+    const spec = { openapi: '3.0.3', paths: {
+      '/missing': { get: { summary: 'Missing' } },
+      '/typed': { post: { 'x-xapi-billing': { type: 'PER_CALL' } } },
+      '/empty-type': { GET: { 'x-xapi-billing': { type: '' } } },
+      '/hidden': { get: { 'x-xapi-hidden': true } },
+      '/priced': { get: { 'x-xapi-billing': { costPerCall: 0.25 } } },
+      '/free': { get: { 'x-xapi-billing': { type: 'PER_CALL', costPerCall: 0 } } },
+      '/resource': { get: { 'x-xapi-billing': { type: 'PER_RESOURCE', costPerResource: 0.03 } } },
+      '/token': { post: { 'x-xapi-billing': { type: 'PER_TOKEN', tokenPricing: { default: { inputPricePerToken: 0 } } } } },
+    } };
+    const path = await file(spec);
+    await expect(provider(['import'], { file: path })).rejects.toThrow('cli error');
+    expect(errSpy.mock.calls.at(-1)?.[1]).toContain('--default-price');
+    expect(calls).toHaveLength(0);
+    for (const price of ['0', '0.002']) {
+      await provider(['import'], { file: path, 'default-price': price });
+      const paths = calls.at(-1)!.body.openApiSpec.paths;
+      for (const [route, method] of [['/missing', 'get'], ['/typed', 'post'], ['/hidden', 'get'], ['/empty-type', 'GET']]) {
+        expect(paths[route!][method!]['x-xapi-billing'].costPerCall).toBe(Number(price));
+      }
+      expect(paths['/hidden'].get['x-xapi-hidden']).toBe(true);
+      for (const route of ['/priced', '/free', '/resource', '/token']) {
+        expect(paths[route]).toEqual(spec.paths[route as keyof typeof spec.paths]);
+      }
+    }
+  });
+
+  it('rejects absent specialized prices and invalid defaults before making an import write', async () => {
+    for (const billing of [
+      { type: 'PER_RESOURCE' }, { type: 'PER_TOKEN' }, { type: 'PER_TOKEN', tokenPricing: {} },
+      { type: 'PER_TOKEN', tokenPricing: { default: {} } }, { type: 'DYNAMIC' },
+    ]) {
+      await expect(provider(['import'], { file: await file({ paths: { '/a': { get: { 'x-xapi-billing': billing } } } }),
+        'default-price': '0' })).rejects.toThrow('cli error');
+    }
+    for (const price of ['-1', 'Infinity', 'NaN', ' ', 'true']) {
+      await expect(provider(['import'], { file: await file({}), 'default-price': price })).rejects.toThrow('cli error');
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it('keeps configuration and credential inputs JSON-only and rejects invalid YAML without leaking secrets', async () => {
+    const path = join(dir, 'bad.yaml');
+    for (const text of ['privateHeaders: [upstream-secret', 'privateHeaders: &a {self: *a}',
+      'privateHeaders: upstream-secret\n---\nother: upstream-secret', 'key: upstream-secret\nkey: duplicate',
+      'costPerCall: .nan', 'costPerCall: .inf']) {
+      await writeFile(path, text);
+      await expect(provider(['import'], { file: path })).rejects.toThrow('cli error');
+    }
+    await writeFile(path, 'Authorization: upstream-secret');
+    await expect(provider(['import'], { file: await file({}), 'private-headers-file': path })).rejects.toThrow('cli error');
+    await expect(provider(['update', 'svc'], { revision: 'rev', file: path })).rejects.toThrow('cli error');
+    expect(calls).toHaveLength(0);
+    expect(JSON.stringify(errSpy.mock.calls)).not.toContain('upstream-secret');
+  });
+
   it('guards endpoint merges while allowing explicit additions and full replacements', async () => {
     respond = () => json({ state: 'SANDBOX' });
     const path = await file({ endpoints: [{ name: 'search', method: 'GET', path: '/search' }] });

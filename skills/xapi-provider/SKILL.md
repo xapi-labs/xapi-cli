@@ -49,16 +49,33 @@ scope. Do not try unrelated keys.
 - Fixed, token, resource, or zero-price billing: read
   [billing](reference/billing-modes.md) and
   [free access](reference/free-api-access.md).
-- AI models or token accounting: read
+- AI models, typed Decisions, token accounting or upstream-cost billing: read
   [AI services](reference/ai-spec-and-models.md).
+- HTTP/2 upstreams or transport metadata in OpenAPI contracts: read
+  [HTTP transport](reference/http-transport.md). CLI import/update already
+  passes the configuration; no HTTP/2 CLI flag is needed.
+- Tripo model generation, texture or conversion: read
+  [Tripo asynchronous tasks](reference/tripo-async.md). Verify the target backend
+  has the adapter and migration before registering a private draft.
 - WebSocket endpoints: read
   [WebSocket endpoints](reference/websocket-endpoints.md).
 - OAuth user-context endpoints: read
   [OAuth user context](reference/oauth-user-context.md).
 - Relay or aggregator onboarding: read
   [relay onboarding](reference/onboarding-openai-relay.md).
+- Importing raw OpenAPI JSON/YAML: read the OpenAPI import section of the
+  [validation checklist](reference/validation-checklist.md) for explicit missing
+  price choices, including `--default-price 0` for intentionally free calls.
+- Public endpoint hints for consuming agents: use operation-level
+  `x-xapi-agent-notes`; see
+  [lifecycle management](reference/lifecycle-management.md#provider-authored-agent-notes).
 - Before any create or publish: apply the
   [validation checklist](reference/validation-checklist.md).
+
+For a local service LOGO, use `provider create --file ./service.json --logo-file
+./logo.png` after checking command help. Read the local LOGO section in
+[lifecycle management](reference/lifecycle-management.md) for limits, scope,
+conflict rules and upload failure handling.
 
 ## Standard lifecycle
 
@@ -72,7 +89,9 @@ npx xapi-to provider versions <service-id>
 ```
 
 Use the returned version ID for contract changes. PATCH merges supplied fields;
-`--replace` sends a full replacement:
+`--replace` sends a full replacement. Preserve each endpoint's `endpointKey`
+across working-revision clones and use the working endpoint ID for partial
+patches; see the lifecycle reference for exact matching rules:
 
 ```bash
 npx xapi-to provider version update \
@@ -81,7 +100,9 @@ npx xapi-to provider diff <service-id> <major>
 ```
 
 Submit only after inspecting the diff. Publishing can change live behavior and
-the CLI deliberately does not retry an ambiguous write:
+the CLI deliberately does not retry an ambiguous write. A passing review can
+automatically publish and switch the serving revision; submission is not a
+dry run:
 
 ```bash
 npx xapi-to provider publish \
@@ -124,22 +145,50 @@ npx xapi-to provider skill context <service-id>
 ```
 
 The scaffold command refuses to overwrite an existing file unless `--force` is
-explicit. Link only a Skill owned by the same provider. If `skill context`
+explicit. Check its public URL, HTTP method, body and media types against the
+serving contract before submitting; generated text can require correction.
+On updated backends, scaffolds include discovery/get commands and bounded input
+schemas. Fill and validate input.json before executing a generated call; the
+schema block is not a ready-to-send payload. Non-JSON and WebSocket endpoints
+use their documented direct-proxy or WebSocket instructions. If get exposes
+responseContract, distinguish supplied examples from a declared success schema;
+older servers may omit this optional metadata.
+Response schemas may preserve `$ref`; details and exports include the required
+definitions. Multiple examples share their response schema rather than copying it.
+Link only a Skill owned by the same provider. If `skill context`
 reports contract drift, update and resubmit the Skill before recording a new
-fingerprint. Use `provider skill unlink <service-id>` to remove the association.
+fingerprint. `drift: false` does not prove schemas, media types or transport
+are unchanged; the current fingerprint tracks host, major and endpoint keys.
+Use `provider skill unlink <service-id>` to remove the association.
 
 ## Observe, recover, and earn
 
 ```bash
 npx xapi-to provider metrics --days 30
 npx xapi-to provider metrics <service-id> --days 7
-npx xapi-to provider events --limit 50
-npx xapi-to provider events --after '<opaque-next-cursor>' --limit 50
 npx xapi-to usage wait <request-id> --timeout 1m
 ```
 
-Pass event cursors back unchanged. Inspect the target before changing live
-routing:
+`provider events` is deprecated: the platform no longer records new agent
+events, and previously recorded events are being removed. Use
+`provider metrics` for service health and `usage wait` for a single call's
+finalized result.
+
+To see what happened to one service — review
+submissions and outcomes, platform actions such as a pause or rollback, and its
+creation, newest first — read its timeline:
+
+```bash
+npx xapi-to provider timeline <service-id> --limit 50
+npx xapi-to provider timeline <service-id> \
+  --before '<nextBefore>' --before-id '<nextBeforeId>'
+```
+
+Page with both `nextBefore` and `nextBeforeId` from the previous response,
+unchanged: a review and its outcome can share one timestamp. Actors are reported
+only as `provider`, `platform` or `system`.
+
+Inspect the target before changing live routing:
 
 ```bash
 npx xapi-to provider rollback \
@@ -169,12 +218,17 @@ npx xapi-to earnings transfer 1 --idempotency-key <stable-operation-key>
 Transfer is one-way. Confirm the amount and settled balance first. Retry only
 with the same idempotency key and amount.
 
+Before submitting, or after a `REVIEW_INTERRUPTED` notification, read
+[submission readiness and review recovery](reference/submission-readiness-and-review-recovery.md).
+The readiness HTTP route needs `service:read` plus ownership; it does not submit
+or prove upstream health. Dedicated CLI readiness support is still pending.
+
 ## Scope map
 
 | CLI operation | Required scope |
 |---|---|
 | `provider create` | `service:create` |
-| `provider list/get/versions/review/diff`, `provider skill context/scaffold` | `service:read` |
+| `provider list/get/versions/review/diff/timeline`, `provider skill context/scaffold` | `service:read` |
 | `provider update`, `provider version update`, Skill link/unlink/fingerprint | `service:update` |
 | `provider major create`, `provider revision start` | `version:create` |
 | `provider publish` | `service:publish` |

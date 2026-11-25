@@ -169,11 +169,8 @@ export interface WorkerPushResult {
   routing?: { mode?: string; webAppReady: boolean; publicOrigin?: string; publicBasePath?: string };
   health: { url: string; status: number; attempts: number };
   healthReady: boolean;
-  paused?: true;
-  publicAccessStatus?: "PAUSED";
-  message?: string;
   inspection: WorkerInspection;
-  commands: { inspect: string; logs: string; promote: string; resume?: string };
+  commands: { inspect: string; logs: string; promote: string };
 }
 
 export class WorkerPushError extends Error {
@@ -328,8 +325,9 @@ function persistWorkerId(
 async function ensureWorker(
   project: LoadedWorkerProject,
   initialConfigSha256: string,
-  api: PushClient,
+  api: Pick<PushClient, "getWorker" | "createWorker" | "listWorkers">,
   options: WorkersClientOptions,
+  priorWorkerIds?: ReadonlySet<string> | null,
 ): Promise<{ worker: UnknownRecord; id: string; created: boolean }> {
   if (project.config.workerId) {
     const worker = record(
@@ -366,13 +364,14 @@ async function ensureWorker(
       "created Worker",
     );
   } catch (error) {
-    if (!shouldReconcileWrite(error)) throw error;
+    if (!shouldReconcileWrite(error) || priorWorkerIds === null) throw error;
     const matches = records(
       await api.listWorkers(options),
       "Workers list",
     ).filter(
       (item) =>
-        item.slug === desired.worker.slug && item.name === desired.worker.name,
+        item.slug === desired.worker.slug && item.name === desired.worker.name &&
+        (!priorWorkerIds || !priorWorkerIds.has(String(item.id))),
     );
     if (matches.length !== 1) throw error;
     created = matches[0];
@@ -380,6 +379,40 @@ async function ensureWorker(
   const id = validateWorkerId(created.id);
   persistWorkerId(project, initialConfigSha256, id);
   return { worker: created, id, created: true };
+}
+
+/** Create/link the project record only; no build, resource provisioning or publish. */
+export async function createLinkedWorkerProject(options: {
+  cwd?: string;
+  configPath: string;
+  clientOptions: WorkersClientOptions;
+  client?: Pick<PushClient, "getWorker" | "createWorker" | "listWorkers">;
+}): Promise<UnknownRecord> {
+  const project = loadWorkerProject(options.cwd, options.configPath);
+  const configHash = sha256(readFileSync(project.configPath, "utf8"));
+  const api = options.client || workersClient;
+  let priorWorkerIds: Set<string> | null = null;
+  if (!project.config.workerId) {
+    try {
+      priorWorkerIds = new Set(records(await api.listWorkers(options.clientOptions), "Workers list")
+        .map(worker => validateWorkerId(worker.id)));
+    } catch {
+      // Listing is not a prerequisite for a successful create. Without a
+      // baseline, an uncertain result must not adopt another existing Worker.
+    }
+  }
+  const result = await ensureWorker(project, configHash, api, options.clientOptions, priorWorkerIds);
+  return {
+    ...result.worker,
+    project: { configPath: project.configPath, linked: true, created: result.created },
+    next: [
+      "If an environment requires Secrets, set values for that environment explicitly.",
+      `Preview: xapi workers secrets apply ${result.id} --env preview --env-file .env.preview`,
+      `Production: xapi workers secrets apply ${result.id} --env production --env-file .env.production`,
+      "These file names are examples; select the file containing values for the target environment.",
+      "Then plan/push preview or promote to production.",
+    ].join("\n"),
+  };
 }
 
 async function ensureEnvironment(
@@ -766,7 +799,7 @@ export async function ensureActiveDeployment(
   workerId: string,
   artifactId: string,
   environment: "preview" | "production",
-  compatibility: ReturnType<typeof readWranglerDeploymentSettings>,
+  compatibility: Omit<ReturnType<typeof readWranglerDeploymentSettings>, "assets">,
   sleep: (milliseconds: number) => Promise<void>,
   retentionPriceVersion?: string,
   desiredBindings?: string[],
@@ -1016,35 +1049,6 @@ export async function checkWorkerHealth(
   );
 }
 
-// Public responses are tenant-controlled. Only authenticated, matching control
-// plane observations can explain a 403 as an intentionally paused environment.
-async function ownerPausedDeployment(
-  api: PushClient,
-  options: WorkersClientOptions,
-  workerId: string,
-  environmentId: string,
-  deploymentId: string,
-): Promise<boolean> {
-  if (!api.workerRetention) return false;
-  try {
-    const retention = record(await api.workerRetention(options, workerId, "preview"), "retention");
-    const lifecycle = record(retention.lifecycle, "lifecycle");
-    if (retention.enabled !== true || lifecycle.workerId !== workerId ||
-        lifecycle.environmentId !== environmentId || lifecycle.state !== "SUSPENDED_GRACE" ||
-        lifecycle.pauseReason !== "USER" || lifecycle.manualDeletionRequestedAt !== null ||
-        lifecycle.resumeRequestedAt !== null) return false;
-    const worker = record(await api.getWorker(options, workerId), "Worker");
-    const environment = environmentOf(worker, "preview");
-    return worker.id === workerId && environment.id === environmentId &&
-      environment.enabled === false && environment.activeDeploymentId === deploymentId &&
-      records(worker.deployments, "Deployments").some(item => item.id === deploymentId &&
-        item.environmentId === environmentId && item.status === "ACTIVE");
-  } catch {
-    // Unavailable or incomplete status evidence retains the original failure.
-    return false;
-  }
-}
-
 function unsafePlanBlockers(
   plan: WorkerDeploymentPlan,
   unlinked: boolean,
@@ -1103,8 +1107,10 @@ export async function pushWorkerProject(
   options.onPlan?.(initialPlan);
   const blockers = unsafePlanBlockers(initialPlan, !project.config.workerId);
   if (blockers.length || (options.nonInteractive && !initialPlan.canApply)) {
+    const missing = initialPlan.actions.filter(action => action.kind === "secret" && action.operation === "BLOCKED").map(action => action.key);
+    const firstSetup = !project.config.workerId && missing.length > 0 && blockers.length === 0;
     throw new WorkerPushError(
-      "Preview plan requires reconciliation and no changes were applied",
+      firstSetup ? "New project requires Secret setup; no changes were applied" : "Preview plan requires reconciliation and no changes were applied",
       {
         blockers:
           blockers.length > 0
@@ -1118,7 +1124,11 @@ export async function pushWorkerProject(
                 )
                 .map((action) => `${action.kind}:${action.key}`),
         details: initialPlan.actions.filter(action => action.operation === "BLOCKED" || action.operation === "MANUAL").map(action => ({ kind: action.kind, key: action.key, message: action.message })),
-        next: "Resolve BLOCKED and MANUAL resource items, then rerun xapi workers plan --env preview",
+        ...(firstSetup ? {
+          missingSecrets: missing,
+          setup: { command: "xapi", args: ["workers", "create", "--config", project.configPath] },
+          next: "Run setup.command with setup.args to create and save workerId without provisioning resources, set the required Secrets with secrets apply/set, then rerun the original push command",
+        } : { next: "Resolve BLOCKED and MANUAL resource items, then rerun xapi workers plan --env preview" }),
       },
     );
   }
@@ -1240,29 +1250,14 @@ export async function pushWorkerProject(
       "Worker",
     );
     const finalEnvironment = environmentOf(finalWorker, "preview");
-    let health: WorkerPushResult["health"];
-    let paused = false;
-    try {
-      health = await checkWorkerHealth(
-        finalWorker,
-        "preview",
-        linkedProject.config.environments.preview.healthCheck,
-        options.fetchPublic || fetch,
-        options.sleep ||
-          ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))),
-      );
-    } catch (error) {
-      if (!(error instanceof WorkerPushError) || error.recovery.lastStatus !== 403 ||
-          finalWorker.id !== workerState.id || deployed.deployment.environmentId !== finalEnvironment.id ||
-          !await ownerPausedDeployment(api, options.clientOptions, workerState.id,
-            text(finalEnvironment.id)!, deploymentId)) throw error;
-      paused = true;
-      health = {
-        url: error.recovery.healthUrl as string,
-        status: 403,
-        attempts: error.recovery.attempts as number,
-      };
-    }
+    const health = await checkWorkerHealth(
+      finalWorker,
+      "preview",
+      linkedProject.config.environments.preview.healthCheck,
+      options.fetchPublic || fetch,
+      options.sleep ||
+        ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))),
+    );
     const publicUrl = text(environmentOf(finalWorker, "preview").publicUrl)!;
     const inspection = await inspectWorker({
       workerId: workerState.id,
@@ -1301,18 +1296,12 @@ export async function pushWorkerProject(
         publicBasePath: text(finalEnvironment.publicBasePath),
       } } : {}),
       health,
-      healthReady: !paused,
-      ...(paused ? {
-        paused: true as const,
-        publicAccessStatus: "PAUSED" as const,
-        message: "Deployment succeeded. The environment remains owner-paused; public access is closed. Resume the environment before checking health and business access; do not republish to retry health.",
-      } : {}),
+      healthReady: true,
       inspection,
       commands: {
         inspect: `xapi workers inspect ${workerState.id} --env preview`,
         logs: `xapi workers logs ${workerState.id} --env preview`,
         promote: "xapi workers promote --to production",
-        ...(paused ? { resume: `xapi workers retention resume ${workerState.id} --env preview` } : {}),
       },
     };
   } catch (error) {

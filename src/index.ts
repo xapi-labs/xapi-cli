@@ -76,6 +76,7 @@ COMMANDS
   call <id> --input '{"key":"val"}'  Execute an action
     --method GET|POST|...            Override HTTP method
     --output <path>                   Save a raw binary response to a new file
+    --output-json <path>              Save the full JSON response to a new private file
     --stream                          Forward HTTP SSE frames unchanged
     --code <target>                  Generate code snippet instead of executing
     Variants: python.requests, python.httpx, javascript.fetch, javascript.axios

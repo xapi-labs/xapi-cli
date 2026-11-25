@@ -538,7 +538,7 @@ describe('oauth commands', () => {
       const { actionCall } = await import('../client.ts');
       await expect(
         actionCall('some-api-id', {}, { actionHost: 'action.xapi.to', apiKey: 'sk-test' }),
-      ).rejects.toThrow('Run "xapi-to oauth bind"');
+      ).rejects.toThrow('only if the endpoint requires your OAuth account');
 
       fetchSpy.mockRestore();
     });

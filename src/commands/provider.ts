@@ -4,6 +4,7 @@ import { mkdir, open, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { apiKeyApiRequest, HttpError } from '../client.ts';
 import { providerOnboarding, PROVIDER_ONBOARDING_HELP } from './provider-onboarding.ts';
+import { uploadProviderLogo } from '../provider-logo.ts';
 import { redactProvider } from '../provider-client.ts';
 import {
   getConfig,
@@ -20,13 +21,13 @@ export const PROVIDER_HELP = `xapi-to provider - Manage provider services and th
 
 USAGE
   xapi-to provider spec-rules
-  xapi-to provider import --file <openapi.json> [--private-headers-file <path>]
+  xapi-to provider import --file <openapi.json|yaml> [--default-price <USD>] [--private-headers-file <path>]
   xapi-to provider update <service-id> --revision <id> --file <contract.json>
   xapi-to provider submit <service-id> --revision <id> [--changelog <text>]
   xapi-to provider wait <service-id> --revision <id> [--interval 2s] [--timeout 10m]
   xapi-to provider list
   xapi-to provider get <service-id> [--version <version>]
-  xapi-to provider create --file <service.json> [rate-limit flags]
+  xapi-to provider create --file <service.json> [--logo-file <path>] [rate-limit flags]
   xapi-to provider update <service-id> [metadata/rate-limit flags]
   xapi-to provider versions <service-id>
   ${VERSION_UPDATE_USAGE}
@@ -39,7 +40,8 @@ USAGE
   xapi-to provider review <service-id> <revision-id>
   xapi-to provider diff <service-id> <major>
   xapi-to provider metrics [service-id] [--days 30]
-  xapi-to provider events [--after <cursor>] [--limit 50]
+  xapi-to provider events [--after <cursor>] [--limit 50]   (deprecated; no new events are recorded)
+  xapi-to provider timeline <service-id> [--limit 50] [--before <at> --before-id <id>]
   xapi-to provider skill context <service-id>
   xapi-to provider skill scaffold <service-id> --output <SKILL.md> [--force]
   xapi-to provider skill link <service-id> <skill-id>
@@ -59,6 +61,10 @@ METADATA FLAGS
   --clear-website                  Clear website
   --logo-url <url>                 Service logo URL
   --category <category>            Marketplace category
+
+CREATE LOGO
+  --logo-file <path>              Upload a local JPG, PNG, GIF or WebP (up to 10 MB)
+                                  Requires service:create; conflicts with JSON logoUrl
 
 SERVICE RATE-LIMIT FLAGS
   --rate-limit-requests <count>          Allowed requests per period (1-1000000)
@@ -84,7 +90,7 @@ authenticates the gateway credential, then reads both opaque request headers:
   X-XAPI-Key-Subject       Identifies one API key within this service for audit.
 
 SCOPES
-  list/get/versions/review/diff/skill context: service:read
+  list/get/versions/review/diff/timeline/skill context: service:read
   create: service:create
   update/version update/skill link/fingerprint: service:update
   major/revision start: version:create
@@ -249,6 +255,9 @@ export async function provider(args: string[], flags: Record<string, string>) {
   if (forwarding !== undefined && (args[0] !== 'version' || args[1] !== 'update')) {
     err('--forward-caller-identity is only supported by provider version update');
   }
+  if (flags['logo-file'] !== undefined && args[0] !== 'create') {
+    err('--logo-file is only supported by provider create');
+  }
   if (onboardingCommand || revisionAlias) return providerOnboarding(args, flags);
   const cfg = getConfig();
   requireApiKey(cfg);
@@ -274,6 +283,13 @@ export async function provider(args: string[], flags: Record<string, string>) {
       case 'create': {
         const body = await readJsonObject(required(flags.file, 'xapi-to provider create --file <service.json>'));
         applyRateLimitFlags(body, flags);
+        if (flags['logo-file'] !== undefined) {
+          const logoFile = requiredFlag(flags['logo-file'], 'xapi-to provider create --file <service.json> --logo-file <path>');
+          if ((body.logoUrl !== undefined && body.logoUrl !== null && body.logoUrl !== '') || flags['logo-url'] !== undefined) {
+            err('--logo-file conflicts with logoUrl or --logo-url', 'Use either a local LOGO file or an existing URL.');
+          }
+          body.logoUrl = await uploadProviderLogo(XAPI_API_HOST, apiKey, logoFile);
+        }
         result = await apiKeyApiRequest(XAPI_API_HOST, apiKey, `${BASE}/services`, {
           method: 'POST',
           body,
@@ -406,6 +422,22 @@ export async function provider(args: string[], flags: Record<string, string>) {
         const after = optionalFlag(flags.after, '--after');
         if (after !== undefined) path.searchParams.set('after', after);
         if (limit) path.searchParams.set('limit', String(limit));
+        result = await apiKeyApiRequest(XAPI_API_HOST, apiKey, `${path.pathname}${path.search}`, { retries: READ_RETRIES });
+        break;
+      }
+
+      case 'timeline': {
+        // Review attempts, platform actions and creation for one service, newest first. Page with the previous
+        // response's nextBefore + nextBeforeId, passed back unchanged: entries written in one transaction share a timestamp.
+        const id = required(rest[0], 'xapi-to provider timeline <service-id> [--limit 50] [--before <at> --before-id <id>]');
+        const limit = positiveInt(flags.limit, 'limit', 200);
+        const before = optionalFlag(flags.before, '--before');
+        const beforeId = optionalFlag(flags['before-id'], '--before-id');
+        if (beforeId !== undefined && before === undefined) err('--before-id requires --before', 'Pass both values from the previous page unchanged.');
+        const path = new URL(`https://placeholder${servicePath(id, '/lifecycle-events')}`);
+        if (limit) path.searchParams.set('limit', String(limit));
+        if (before !== undefined) path.searchParams.set('before', before);
+        if (beforeId !== undefined) path.searchParams.set('beforeId', beforeId);
         result = await apiKeyApiRequest(XAPI_API_HOST, apiKey, `${path.pathname}${path.search}`, { retries: READ_RETRIES });
         break;
       }

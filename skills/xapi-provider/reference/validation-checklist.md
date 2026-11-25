@@ -9,8 +9,21 @@ before `provider version update --replace`, and again before publication.
   `QUERY`.
 - `host`, if supplied, normalizes to a lowercase DNS label and is not a reserved
   platform name.
-- `category` uses a platform category such as `Public-Utils`, `AI-Models`,
-  `Social`, `Data-Analysis`, or `Crypto`.
+- `category` is one ID from the official catalogue: `AI-Models`, `Sandbox`,
+  `Search`, `Web-Scraping`, `Social`, `Communication`, `Finance`, `Crypto`,
+  `Commerce`, `Business-Data`, `News`, `Media`, `Maps-Location`,
+  `Weather-Environment`, `Data-Analysis`, `Dev-Tools`, `Security`,
+  `Entertainment-Sports`, `Public-Utils` or `Other`. Administrators can change
+  the catalogue, and the server rejects an ID that is not in its current
+  catalogue; ask the user instead of guessing a near match.
+- `tags`, if supplied, is an array of at most 8 labels, 1–24 characters each,
+  without commas or control characters. The server trims them, collapses
+  spaces and drops case-insensitive duplicates. Tags are display labels next to
+  the category. Discovery can match these provider labels, but they do not earn
+  platform classifications. On updated backends, `meta.provider_tags` carries
+  authored labels, `meta.platform_tags` carries platform-derived classifications,
+  and legacy `meta.tags` merges both. The same word can appear as an authored
+  label. An authored label such as `fast` or `free` is only a provider claim.
 - `accessMode` is `PROXY` or `DIRECT`. Use `PROXY` for gateway billing,
   observability, or service rate limiting.
 - `baseUrl` and named `baseUrls` are public HTTP(S) URLs. A pure WebSocket
@@ -20,15 +33,69 @@ before `provider version update --replace`, and again before publication.
 ## Endpoints
 
 - Every new endpoint has `name`, `method`, and `path`.
-- Existing endpoint patches include `id`; otherwise the backend treats the item
-  as new.
+- Existing endpoint patches use the ID from the working revision. The backend
+  can also match a stable method/path through its derived endpoint key; missing
+  `id` does not always mean new. Preserve the stored `endpointKey` across
+  revisions and use the working ID when changing a path; inspect the diff for
+  unintended additions or removals.
 - Path parameters use `:name` and have matching `pathParams` descriptions.
 - Billing fields match the chosen `billingType`; pre-charge estimates are
-  realistic.
+  realistic. No price is negative.
+- A `PER_TOKEN` HTTP endpoint keeps usage readable: its protocol supplies usage
+  paths, `tokenJsonPaths` names `inputTokens` or `outputTokens`, or
+  `tokenJsonPaths` is omitted (OpenAI-style defaults). Both paths empty is
+  rejected on a live-service save and on review submission; see
+  [billing](billing-modes.md).
 - Streaming endpoints set both `supportsStreaming` and `streamFormat`.
+- AI billing and protocol are chosen independently: PER_TOKEN uses model keys
+  in `tokenPricing`; DYNAMIC/PER_CALL/PER_RESOURCE AI uses `servedModels`.
+  Confirm saved Canonical mappings and detection rather than claiming trust
+  with provider-supplied `aiSpecDetectedBy`.
+- Decisions retains `state` and named typed `questions`, sets
+  `supportsStreaming: false`, and preserves DYNAMIC rules and model variants.
+  `:free` must not route to a paid base; `:batch` is not synchronous Decisions.
+- HTTP/2 uses numeric `info.x-xapi-upstream-http-version: 2` in `openApiSpec`,
+  HTTPS default/named bases and a compatible deployed runtime. Review whole-spec
+  replacement/clear semantics and the independent xhub manifest string option
+  in [HTTP transport](http-transport.md).
 - WebSocket endpoints set `protocol: "WEBSOCKET"`, a supported adapter, a
   public `wsConfig.upstreamUrl`, and a valid `wsBilling` object.
 - OAuth user-context endpoints retain their approved `userOAuthProviderId`.
+
+## OpenAPI import
+
+`provider import` accepts a raw JSON or single-document YAML object, including
+`--file -` for stdin. YAML is parsed locally; the resulting document follows the
+same server registration and validation path as JSON. Configuration files for
+`create`/`update` and `--private-headers-file` remain JSON-only. URL fetching,
+external-reference fetching and local Swagger conversion are not provided.
+The server supports OpenAPI 3.x and converts Swagger 2.0 (host and base path,
+security schemes, body and form parameters, responses); its `spec-rules` and
+structured validation determine accepted versions and unsupported features.
+Do not rewrite a version label to bypass validation.
+
+Every imported operation needs an explicit price or billing configuration.
+For missing `PER_CALL` prices (including operations with no billing extension),
+choose the price with the user and pass `--default-price <USD>`, or add
+`x-xapi-billing.costPerCall` to the spec. `--default-price 0` explicitly chooses
+free access. The default fills only missing per-call prices, including hidden
+operations; it preserves explicit prices, including zero, and never changes a
+billing type. Hidden operations remain callable and still need pricing.
+`PER_RESOURCE` needs `costPerResource`, `PER_TOKEN` needs non-empty
+`tokenPricing` with a rate for each listed model, and `DYNAMIC` needs
+`dynamicRules`; configure those in the spec rather than using the per-call
+default. A default is a deliberate price choice, not a suggested market rate.
+
+```bash
+npx xapi-to provider import --file ./openapi.yaml --default-price 0.001
+# Only when zero-price access is intended:
+npx xapi-to provider import --file ./openapi.yaml --default-price 0
+```
+
+Path-level parameters apply to every operation of the path; an operation-level
+parameter with the same name and location replaces it. Check the imported
+contract, auth, prices and returned revision state with `provider get` before
+publishing.
 
 ## Before create or update
 

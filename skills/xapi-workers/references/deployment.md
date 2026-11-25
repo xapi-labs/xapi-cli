@@ -146,6 +146,8 @@ production acceptance deployment can therefore use `api.xapi.to` with
 
 For an existing project use `xapi workers init --from-wrangler ./wrangler.jsonc` (TOML also supported). Generated framework configs may live below the project root, for example `dist/server/wrangler.json`; run the command from the package directory so xAPI writes `xapi.worker.json` beside `package.json` and resolves generated asset paths back to that root. Read its import report; do not auto-accept unsupported settings. xAPI creates environment-specific resources; do not copy another Cloudflare account's IDs.
 
+Cloudflare Vite projects may omit `assets.directory` in the source Wrangler config. Import keeps the asset routing there; plan/push runs the native build and reads the actual directory from the generated config referenced by `.wrangler/deploy/config.json`. Do not guess `dist/client` or add a directory merely to pass import. If the build does not produce that pointer and directory, the CLI reports the missing build output before any deployment write. Importing an existing generated config remains supported.
+
 An initial Wrangler Durable Object migration containing only
 `new_sqlite_classes` is managed when its class set exactly matches the imported
 Durable Object bindings. xAPI creates those SQLite classes through managed
@@ -154,7 +156,7 @@ Renames, deletions, regular-class migrations, repeated classes, and partial
 class sets remain blocked because they need an explicit state migration plan.
 `preview_urls` is also not copied: xAPI assigns the environment hostname.
 
-When importing Wrangler, `--name` and `--slug` are template flags and cannot be combined with `--from-wrangler`; the imported name initializes the project. Review `worker.name` and `worker.slug` in the generated file if you need different xAPI names. To link an existing owned Worker, set the **top-level** `workerId` in `xapi.worker.json`, for example `"workerId": "<owned-worker-id>"`, and keep the other generated fields. Neither `worker.id` nor `worker.workerId` is a valid field. A fresh project without `workerId` is created and linked by `push`; a separate `workers create` is not required.
+When importing Wrangler, `--name` and `--slug` are template flags and cannot be combined with `--from-wrangler`; the imported name initializes the project. Review `worker.name` and `worker.slug` in the generated file if you need different xAPI names. To link an existing owned Worker, set the **top-level** `workerId` in `xapi.worker.json`, for example `"workerId": "<owned-worker-id>"`, and keep the other generated fields. Neither `worker.id` nor `worker.workerId` is a valid field. Interactive `push` can create and link a fresh project. For required Secrets in CI or before provisioning resources, use `workers create --config xapi.worker.json`, set Secrets, then plan/push; non-interactive push does not create a missing-Secret project.
 
 `xapi.worker.json` holds desired xAPI state and Worker ID; Wrangler holds entrypoint, compatibility and binding declarations. The persistent-agent template declares the six ordinary managed binding types so it can demonstrate the platform; Containers remain deployment-owned and must be declared explicitly. An ordinary application should declare only the resources its business logic uses. Do not add unrelated bindings merely to complete an acceptance checklist. Test the full resource matrix in a separate disposable Worker or environment, then clean up only that isolated test state. Install/build according to the generated project instructions. Inspect plans for missing permissions, prices, secrets, budget, and policy requirements.
 
@@ -166,7 +168,7 @@ xapi workers get <worker-id> --format json
 xapi workers logs <worker-id> --env preview --since 10m
 ```
 
-Plan displays the server funding estimate. The server performs atomic funding checks; the CLI does not require a separate per-resource quote or mandatory price-version argument. An explicitly selected `--retention-price-version VERSION` is forwarded unchanged; do not invent a version. Configure public vars and credentials with [secrets.md](secrets.md), including its interactive bootstrap and non-interactive first-project setup. Public vars take effect with the Artifact deployment; Secret writes and retention are independent. Never report a blocked preflight as successful deployment.
+Plan displays the server funding estimate. The server performs atomic funding checks; the CLI does not require a separate per-resource quote or mandatory price-version argument. An explicitly selected `--retention-price-version VERSION` is forwarded unchanged; do not invent a version. Configure public vars and credentials with [secrets.md](secrets.md), including its interactive bootstrap and non-interactive first-project setup. Public vars take effect with the Artifact deployment; Secret values are managed independently of deployment. Financial retention blocks user writes until successful funding recovery; see [billing.md](billing.md). Never report a blocked preflight as successful deployment.
 
 Use the Node and package-manager version required by the application before `plan` or `push`; the CLI runs the configured build command unchanged. If the project declares `engines.node`, activate a compatible runtime first. A build-runtime failure is an application build failure and must occur before any deployment write; rerun the same push only after correcting the local runtime.
 
@@ -360,17 +362,12 @@ TLS, root-relative assets or OAuth callback readiness.
 
 After deployment reaches ACTIVE, run health plus business persistence and asynchronous completion checks in resources.md.
 
-For `workers push`, a public health HTTP 403 is an expected access closure only
-when authenticated management reads confirm the same Worker/environment is
-owner-paused (`SUSPENDED_GRACE`, `pauseReason=USER`, no pending resume or deletion),
-disabled, and still points to this ACTIVE deployment. The CLI then exits 0 for
-deployment success while reporting `paused=true`, `publicAccessStatus=PAUSED`
-and `healthReady=false`; this does not prove application health or business
-acceptance. Preserve the full deployment ID, inspect the environment, and use
-the returned `retention resume` command only with user authorization to resume.
-After recovery, verify health and business access; do not push again to open
-access. Never trust a tenant's 403 body as pause evidence. Missing, failed or
-mismatched management evidence and ordinary health failures remain failures;
+`workers push` requires a successful public health response to report success.
+HTTP 403 and ordinary health failures remain nonzero failures even when the
+deployment is ACTIVE. Preserve the
+released deployment ID and inspect status and logs before choosing recovery.
+System funding protection requires sufficient funds and explicit `retention resume`
+when recovery is intended; recharge or deployment does not resume execution.
 UNKNOWN deployment outcomes are not replayed.
 
 `ACTIVE` does not mean public access authorization is ready. For exactly

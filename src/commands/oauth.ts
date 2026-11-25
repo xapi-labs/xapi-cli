@@ -16,8 +16,8 @@
 
 import { spawnSync } from 'child_process';
 import { XAPI_API_HOST, getConfig, requireApiKey } from '../config.ts';
+import { sessionToken } from '../session.ts';
 import {
-  loginWithApiKey,
   listKeys,
   enableOAuthForKey,
   listOAuthProviders,
@@ -196,11 +196,7 @@ export async function pollForBinding(
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 async function loginAndGetJwt(apiKey: string): Promise<string> {
-  const result = await loginWithApiKey(apiKey, XAPI_API_HOST) as any;
-  if (!result?.accessToken) {
-    throw new Error('Login failed: no access token returned');
-  }
-  return result.accessToken;
+  return sessionToken(apiKey, XAPI_API_HOST);
 }
 
 /**

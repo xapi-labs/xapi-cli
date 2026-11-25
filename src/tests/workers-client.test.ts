@@ -30,8 +30,9 @@ import {
   updateWorkerEnvironment,
   workerRetention,
   deleteWorker,
+  WorkerWriteUnknownError,
 } from "../workers-client.ts";
-import { RequestTimeoutError } from "../client.ts";
+import { HttpError, RequestTimeoutError } from "../client.ts";
 
 const options = { apiHost: "test.xapi.to", apiKey: "sk-test-value" };
 let fetchSpy: ReturnType<typeof spyOn> | undefined;
@@ -66,6 +67,70 @@ describe("workers client", () => {
     expect(target).toEndWith('/worker-1');
     expect(init.method).toBe('DELETE');
   });
+  for (const action of ['resume', 'delete', 'whole-worker-delete']) {
+    for (const code of ['UND_ERR_SOCKET', 'ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED', 'UND_ERR_HEADERS_OVERFLOW', 'FUTURE_TRANSPORT_FAILURE']) {
+      it(`preserves ${code} and read-only recovery for ${action} without replay`, async () => {
+        const cause = Object.assign(new Error('socket disconnected'), { code });
+        const original = new TypeError('fetch failed', { cause });
+        fetchSpy = spyOn(globalThis, 'fetch').mockRejectedValue(original) as any;
+        const pending = action === 'whole-worker-delete'
+          ? deleteWorker(options, 'worker-1')
+          : workerRetention(options, 'worker-1', 'preview', '/actions', { action });
+        const error = await pending.catch(error => error);
+        expect(error).toBeInstanceOf(WorkerWriteUnknownError);
+        if (!(error instanceof WorkerWriteUnknownError)) throw error;
+        expect(error.cause).toBe(original);
+        expect((error.cause as Error).cause).toBe(cause);
+        expect(error.code).toBe(code);
+        expect(error.message).toContain(code);
+        expect(error.message).toContain(action === 'whole-worker-delete'
+          ? 'xapi workers get worker-1 --format json'
+          : 'xapi workers retention show worker-1 --env preview --format json');
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+      });
+    }
+  }
+  for (const action of ['resume', 'delete', 'whole-worker-delete']) {
+    for (const code of ['ECONNABORTED', 'UND_ERR_HEADERS_OVERFLOW', 'ECONNFUTURE']) {
+      it(`reports directly thrown ${code} as unknown for ${action} without replay`, async () => {
+        const original = Object.assign(new Error('transport disconnected'), { code });
+        fetchSpy = spyOn(globalThis, 'fetch').mockRejectedValue(original) as any;
+        const error = await (action === 'whole-worker-delete'
+          ? deleteWorker(options, 'worker-1')
+          : workerRetention(options, 'worker-1', 'preview', '/actions', { action })).catch(error => error);
+        expect(error).toBeInstanceOf(WorkerWriteUnknownError);
+        if (!(error instanceof WorkerWriteUnknownError)) throw error;
+        expect(error.cause).toBe(original);
+        expect(error.code).toBe(code);
+        expect(error.message).toContain(action === 'whole-worker-delete'
+          ? 'xapi workers get worker-1 --format json'
+          : 'xapi workers retention show worker-1 --env preview --format json');
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+      });
+    }
+  }
+  for (const original of [
+    new TypeError('invalid request option'),
+    new TypeError('fetch failed', { cause: Object.assign(new Error('invalid onError method'), { code: 'UND_ERR_INVALID_ARG' }) }),
+    Object.assign(new Error('application validation failed'), { code: 'CUSTOM_VALIDATION' }),
+    new TypeError('fetch failed', { cause: Object.assign(new Error('invalid argument'), { code: 'ERR_INVALID_ARG_VALUE' }) }),
+    new DOMException('cancelled', 'AbortError'),
+    new SyntaxError('invalid JSON'),
+  ]) {
+    it(`preserves non-transport failure ${original.message}`, async () => {
+      fetchSpy = spyOn(globalThis, 'fetch').mockRejectedValue(original) as any;
+      expect(await deleteWorker(options, 'worker-1').catch(error => error)).toBe(original);
+      expect(await workerRetention(options, 'worker-1', 'preview', '/actions', { action: 'resume' }).catch(error => error)).toBe(original);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+  }
+  it('does not relabel a non-lifecycle retention write', async () => {
+    const original = new TypeError('fetch failed');
+    fetchSpy = spyOn(globalThis, 'fetch').mockRejectedValue(original) as any;
+    expect(await workerRetention(options, 'worker-1', 'preview', '/accept', {}).catch(error => error)).toBe(original);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves upstream whole-Worker deletion conflicts", async () => {
     fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response('upstream conflict', { status: 409 })) as any;
     await expect(deleteWorker(options, 'worker-1')).rejects.toThrow('HTTP 409: upstream conflict');
@@ -87,6 +152,20 @@ describe("workers client", () => {
     await expect(workerRetention(options, "worker-1", "preview", "/actions", { action: "delete" }))
       .rejects.toThrow("HTTP 409: workflow is running");
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+  it('preserves definite business responses even with a transport-shaped response code', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () => new Response(JSON.stringify({
+      code: 'ECONNABORTED', message: 'financial recovery required',
+    }), { status: 409, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch) as any;
+    for (const write of [() => deleteWorker(options, 'worker-1'),
+      () => workerRetention(options, 'worker-1', 'preview', '/actions', { action: 'resume' })]) {
+      const error = await write().catch(error => error);
+      expect(error).toBeInstanceOf(HttpError);
+      expect(error).not.toBeInstanceOf(WorkerWriteUnknownError);
+      if (!(error instanceof HttpError)) throw error;
+      expect(error.status).toBe(409);
+    }
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
   it("applies secret mutations without retrying or exposing values in the URL", async () => {
     fetchSpy = spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({status:"ACTIVE"}),{status:200,headers:{"content-type":"application/json"}})) as any;
@@ -185,9 +264,12 @@ describe("workers client", () => {
   });
 
   it("uploads a bundled module as an immutable artifact", async () => {
-    fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (target:any) => new Response(JSON.stringify(
-      String(target).endsWith("/artifact-provider/status")?{directUpload:false}:{id:"artifact-1"}
-    ),{status:200,headers:{"content-type":"application/json"}})) as any);
+    let uploaded: any;
+    fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (target:any, init:any) => {
+      if (String(target).endsWith('/artifact-provider/status')) return Response.json({directUpload:false});
+      uploaded = await new Request(target, init).json();
+      return Response.json({id:"artifact-1"});
+    }) as any);
     await uploadWorkerArtifact(options, "worker/id", {
       moduleCode: "export default {}",
       idempotencyKey: "showcase-upload-v1",
@@ -196,13 +278,16 @@ describe("workers client", () => {
     expect(target).toBe(
       "https://test.xapi.to/api/v1/workers/worker%2Fid/artifacts",
     );
-    expect(JSON.parse(init.body).idempotencyKey).toBe("showcase-upload-v1");
+    expect(uploaded.idempotencyKey).toBe("showcase-upload-v1");
   });
 
   it("uploads a multi-module bundle in one immutable artifact request", async () => {
-    fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (target:any) => new Response(JSON.stringify(
-      String(target).endsWith("/artifact-provider/status")?{directUpload:false}:{id:"artifact-2"}
-    ),{status:200,headers:{"content-type":"application/json"}})) as any);
+    let uploaded: any;
+    fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (target:any, init:any) => {
+      if (String(target).endsWith('/artifact-provider/status')) return Response.json({directUpload:false});
+      uploaded = await new Request(target, init).json();
+      return Response.json({id:"artifact-2"});
+    }) as any);
     const bundle = {
       version: 1 as const,
       mainModule: "worker.js",
@@ -225,8 +310,7 @@ describe("workers client", () => {
       bundle,
       idempotencyKey: "showcase-bundle-v1",
     });
-    const [, init] = fetchSpy.mock.calls[1] as any[];
-    expect(JSON.parse(init.body)).toEqual({
+    expect(uploaded).toEqual({
       bundle,
       idempotencyKey: "showcase-bundle-v1",
     });
@@ -253,8 +337,10 @@ describe("workers client", () => {
   });
 
   it("preserves explicit Artifact rejection and never retries on a legacy endpoint", async () => {
-    fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (target: any) => {
+    let uploaded: any;
+    fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (target: any, init: any) => {
       if (String(target).endsWith('/artifact-provider/status'))return Response.json({directUpload:false});
+      uploaded = await new Request(target, init).json();
       return Response.json({message:'Cannot POST /artifacts'},{status:404});
     }) as typeof fetch) as any;
     const input = {bundle:{version:1 as const,mainModule:'worker.js',modules:[{
@@ -265,14 +351,15 @@ describe("workers client", () => {
     expect(fetchSpy.mock.calls[0][0]).toEndWith('/artifact-provider/status');
     expect(fetchSpy.mock.calls[1][0]).toEndWith('/artifacts');
     expect(fetchSpy.mock.calls[1][1].method).toBe('POST');
-    expect(JSON.parse(fetchSpy.mock.calls[1][1].body)).toEqual(input);
+    expect(uploaded).toEqual(input);
   });
 
   it("keeps a large bundle on its multipart channel without a legacy-size user gate", async () => {
     fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (target: any,init:any) => {
       if(String(target).endsWith('/artifact-provider/status'))return Response.json({directUpload:false});
       expect(String(target)).toEndWith('/artifacts/bundle');
-      expect(init.body instanceof FormData).toBe(true);
+      expect(new Headers(init.headers).get('content-type')).toMatch(/^multipart\/form-data; boundary=/);
+      expect(init.body instanceof ReadableStream).toBe(true);
       return Response.json({message:'Cannot POST /artifacts/bundle'},{status:404});
     }) as typeof fetch) as any;
     const input={bundle:{version:1 as const,mainModule:'worker.js',modules:[{
@@ -513,8 +600,8 @@ it('uploads a large binary bundle over multipart with the server manifest protoc
   fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (target: any, init: any) => {
     if(String(target).endsWith('/artifact-provider/status'))return new Response(JSON.stringify({directUpload:false}));
     expect(target).toBe('https://test.xapi.to/api/v1/workers/worker%2Fid/artifacts/bundle');
-    expect(init.headers['XAPI-KEY']).toBe(options.apiKey);
-    expect(init.headers['Content-Type']).toBeUndefined();
+    expect(new Headers(init.headers).get('XAPI-KEY')).toBe(options.apiKey);
+    expect(new Headers(init.headers).get('Content-Type')).toMatch(/^multipart\/form-data; boundary=/);
     expect(init.redirect).toBe('manual');
     // Serialize the real Request body before parsing its multipart wire format.
     const outgoing = new Request(target, init);

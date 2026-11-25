@@ -21,7 +21,8 @@ USAGE
   xapi-to usage <request-id> [--format json|pretty|table]
   xapi-to usage wait <request-id> [--interval 1s] [--timeout 30s]
 
-Use the request ID returned in X-XAPI-Request-Id or the final xapi.usage SSE event.
+Use a request ID from the call's billing.request_ids, the X-XAPI-Request-Ids
+header, or the final xapi.usage SSE event.
 The receipt is visible only to the API key that made the request.
 
 "usage wait" polls through the normal finalization window. A 404 means the

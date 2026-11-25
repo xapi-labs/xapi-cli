@@ -457,7 +457,7 @@ function compareSecrets(
         "BLOCKED",
         "secret",
         name,
-        "Secret value is missing; set it before build or deployment",
+        "Secret value is missing; create/link the project if needed, then set it before deployment",
         { bindingName: name },
       );
     }

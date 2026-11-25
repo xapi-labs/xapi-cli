@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -19,7 +20,11 @@ function running(pid: number) {
 // rather than a mocked ChildProcess or Bun's differing signal implementation.
 async function fixture(mode: "normal" | "stubborn" | "pipes", timeoutMs: number) {
   const root = mkdtempSync(join(tmpdir(), "xapi-build-process-"));
-  symlinkSync(new URL("../../node_modules", import.meta.url).pathname, join(root, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+  symlinkSync(fileURLToPath(new URL("../../node_modules", import.meta.url)), join(root, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+  // Always cover URL escaping, even when the checkout path has no spaces.
+  const source = join(root, "source files #%");
+  symlinkSync(fileURLToPath(new URL("../", import.meta.url)), source, process.platform === "win32" ? "junction" : "dir");
+  const buildModule = pathToFileURL(join(source, "workers-project-build.ts"));
   writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module", scripts: { build: "node parent.cjs" } }));
   writeFileSync(join(root, "parent.cjs"), `
     const {spawn} = require('node:child_process');
@@ -38,7 +43,7 @@ async function fixture(mode: "normal" | "stubborn" | "pipes", timeoutMs: number)
     ${mode === "normal" ? "writeFileSync('worker.mjs', 'export default {}');" : "setTimeout(() => {writeFileSync('late-output', 'must not happen'); console.log('late-stdout'); console.error('late-stderr');}, 4000); setInterval(() => {}, 1000);"}
   `);
   writeFileSync(join(root, "runner.ts"), `
-    import {runWorkerProjectBuild} from ${JSON.stringify(new URL("../workers-project-build.ts", import.meta.url).pathname)};
+    import {runWorkerProjectBuild} from ${JSON.stringify(fileURLToPath(buildModule))};
     try { await runWorkerProjectBuild('npm run build', ${JSON.stringify(root)}, ${timeoutMs}); console.log('build-complete'); }
     catch(error) { console.error(error.message); process.exitCode = 1; }
   `);
