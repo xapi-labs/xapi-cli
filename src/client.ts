@@ -124,10 +124,10 @@ export interface ClientOptions {
 }
 
 /** Backends that predate preview reject the body field (`property include_preview should not exist`). */
+export const PREVIEW_UNSUPPORTED_HINT = '--preview needs an xAPI backend with preview support; on older backends a key with the legacy sandbox permission reaches your own unpublished services without --preview';
+
 export function withPreviewHint(status: number, message: string): string {
-  return status === 400 && message.includes('include_preview')
-    ? `${message} (--preview needs an xAPI backend with preview support; on older backends a key with the legacy sandbox permission reaches your own unpublished services without --preview)`
-    : message;
+  return status === 400 && message.includes('include_preview') ? `${message} (${PREVIEW_UNSUPPORTED_HINT})` : message;
 }
 
 /** Older backends may reject unknown body fields, so send include_preview only when requested. */
