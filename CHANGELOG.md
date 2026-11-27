@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.3](https://github.com/xapi-labs/xapi-cli/compare/v0.3.2...v0.3.3) (2026-11-27)
+
+
+### Features
+
+* **cli:** accept PREVIEW revision state and add --preview flag ([8dfc574](https://github.com/xapi-labs/xapi-cli/commit/8dfc5742449f5580b18a2cf4dc5c436a49a50155))
+* **cli:** add --preview to get, get-batch and categories ([b2b4f85](https://github.com/xapi-labs/xapi-cli/commit/b2b4f8558c2f18231e6aa389cd6b7d80a4bb09e0))
+* **cli:** promote the PREVIEW lifecycle state and --preview to staging ([e968136](https://github.com/xapi-labs/xapi-cli/commit/e9681365d310ef4c745696b2158cd531dbfef7fc))
+* **cli:** support preview services in discovery and action calls ([ad476ba](https://github.com/xapi-labs/xapi-cli/commit/ad476ba385d1343aff2dae5a760f7f4cb53cf850))
+* **provider:** explain default-major takedown conflicts and document endpoint delisting ([8766527](https://github.com/xapi-labs/xapi-cli/commit/8766527c66af09cf55780b86703f30ecda67cf54))
+* **skill:** explain service-limited keys and permission errors ([42aad1b](https://github.com/xapi-labs/xapi-cli/commit/42aad1b4f45843eb40408bf79b132eda85ba56c3))
+
+
+### Bug Fixes
+
+* **cli:** carry --preview into --code snippets and explain old-backend 400s ([2db03b2](https://github.com/xapi-labs/xapi-cli/commit/2db03b252b6dce9df3f10151abfcdd3f22285167))
+* **cli:** promote the call --preview old-backend hint to staging ([7d4f3ba](https://github.com/xapi-labs/xapi-cli/commit/7d4f3ba31ad97bd5ff2b9333b9516ca67a82485c))
+* **cli:** show the old-backend hint when call --preview gets a 400 ([2a68a15](https://github.com/xapi-labs/xapi-cli/commit/2a68a1589756f9290cb418e1aa25a27910398fde))
+
 ## [0.3.2](https://github.com/xapi-labs/xapi-cli/compare/v0.3.1...v0.3.2) (2026-11-19)
 
 
