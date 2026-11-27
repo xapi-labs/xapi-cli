@@ -38,7 +38,10 @@ before `provider version update --replace`, and again before publication.
   `id` does not always mean new. Preserve the stored `endpointKey` across
   revisions and use the working ID when changing a path; inspect the diff for
   unintended additions or removals.
-- Path parameters use `:name` and have matching `pathParams` descriptions.
+- Use `:name` at the end of a path segment, or `{name}` before a literal
+  suffix (for example, `/files/{id}.json`). In OpenAPI, use `{name}`. Add a
+  matching `pathParams` description and use each parameter name once when
+  creating an endpoint or changing its path.
 - Billing fields match the chosen `billingType`; pre-charge estimates are
   realistic. No price is negative.
 - A `PER_TOKEN` HTTP endpoint keeps usage readable: its protocol supplies usage
