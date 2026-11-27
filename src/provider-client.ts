@@ -78,3 +78,16 @@ export function redactProvider(value: unknown, knownSecrets: string[] = []): unk
   }
   return visit(value);
 }
+
+// The backend rejects the old endpoint field names (`hidden`, `x-xapi-hidden`) with a fixed
+// rename notice. It names only the field and the spec location, never request values, so it is
+// safe to print; every other 400 body stays hidden because it may echo submitted configuration.
+const LEGACY_FIELD_NOTICE = /no longer supported: it was renamed to `(x-xapi-)?delisted`/;
+
+export function legacyFieldNotice(error: { status: number; responseBody?: unknown }): string | undefined {
+  if (error.status !== 400) return undefined;
+  const body = error.responseBody as { message?: unknown } | undefined;
+  const messages = Array.isArray(body?.message) ? body.message : [body?.message];
+  const notice = messages.find((m): m is string => typeof m === 'string' && LEGACY_FIELD_NOTICE.test(m));
+  return notice ? `HTTP 400: ${notice}` : undefined;
+}

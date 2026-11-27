@@ -114,6 +114,29 @@ npx xapi-to provider revision start <service-id> <major>
 npx xapi-to provider major create <service-id>
 ```
 
+To delist one endpoint, set `delisted: true` on it in a working revision and
+publish. `x-xapi-delisted: true` in OpenAPI only applies to endpoints an import
+creates; re-importing keeps an existing endpoint's state, so use the patch below.
+If delisting is the revision's only change, it skips the upstream review test;
+other pending edits in the same working revision are still reviewed. Callers
+then get `410 EndpointDelisted` (host calls and Actions), and the endpoint
+leaves docs, Marketplace and Tools. Set it back to `false` and
+publish to restore it; delete the endpoint instead only to remove it for good.
+For TIME_RENTAL, delist only the CREATE endpoint: submission rejects a delisted
+TERMINATE or STATUS endpoint because open rentals could no longer be stopped.
+SANDBOX endpoints cannot be delisted one by one (submission returns
+`SANDBOX_ENDPOINT_DELISTED`); remove a size from `sandboxConfig.offerings` instead.
+With merge mode, the patch carries only the endpoint ID from the working
+revision (`currentVersion.endpoints` after `provider get`):
+
+```bash
+echo '{"endpoints":[{"id":"ENDPOINT_ID","delisted":true}]}' > delist.json
+npx xapi-to provider update <service-id> --revision <working-revision-id> --file delist.json
+```
+
+The old names `hidden` / `x-xapi-hidden` are rejected with HTTP 400; use
+`delisted` / `x-xapi-delisted`.
+
 ## Marketplace content and usage Skill
 
 Update service-card content separately from the version contract:
@@ -193,6 +216,11 @@ npx xapi-to provider default-major <service-id> <major>
 npx xapi-to provider deprecate <service-id> <major>
 npx xapi-to provider restore <service-id> <major>
 ```
+
+`deprecate` on the default major is refused with `409
+DEFAULT_MAJOR_HAS_LIVE_MAJORS` while another major is live: run `default-major`
+to a live major first. Deprecating the only live major pauses the whole service.
+A deprecated major answers `410 MajorVersionDelisted` to `X-Xapi-Version` calls.
 
 Do not automatically retry an ambiguous rollback response. Read `versions` and
 `review` first. Deletion requires both `service:delete` and the explicit service

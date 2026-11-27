@@ -4,7 +4,7 @@ import { getConfig, requireApiKey } from '../config.ts';
 import { HttpError, isRetryableRequestError } from '../client.ts';
 import { output, err, type OutputFormat } from '../format.ts';
 import { waitForPoll } from '../poll-wait.ts';
-import { providerRequest, object, redactProvider, collectProviderSecrets, type ProviderObject } from '../provider-client.ts';
+import { providerRequest, object, redactProvider, collectProviderSecrets, legacyFieldNotice, type ProviderObject } from '../provider-client.ts';
 
 export const PROVIDER_ONBOARDING_HELP = `xapi-to provider - Import and publish your API services
 
@@ -33,7 +33,7 @@ COMMON FLAGS
 configuration and credential files remain JSON. Swagger 2.0 conversion and
 OpenAPI validation happen on the server. Missing prices require an explicit
 choice; --default-price affects only unpriced PER_CALL operations, including
-hidden ones, and preserves existing prices and other billing types.
+delisted ones, and preserves existing prices and other billing types.
 Merge updates to existing endpoints require their IDs. Use --mode replace
 to replace the endpoint list, or --allow-new-endpoints to intentionally add.
 Creation with endpoints starts in PREVIEW (formerly SANDBOX); empty services
@@ -289,7 +289,8 @@ export async function providerOnboarding(args: string[], flags: Record<string, s
       else if (e.status === 409 && /"code"\s*:\s*"REVISION_NOT_EDITABLE"/.test(e.message)) {
         message += ': revision is not editable. Only DRAFT or PREVIEW can be updated; use a working revision for changes to a published API';
       }
-      if (['import', 'update', 'submit'].includes(command)) message += '. No automatic retry was made; inspect provider list/get/review before retrying';
+      message = legacyFieldNotice(e) ?? message;
+      if (['import', 'update', 'submit'].includes(command)) message += `${message.endsWith('.') ? '' : '.'} No automatic retry was made; inspect provider list/get/review before retrying`;
     } else message = e instanceof SyntaxError ? 'Invalid JSON response from provider API' : e instanceof Error ? e.message : 'Unknown error';
     err(`provider ${command} failed`, redactProvider(message, secrets));
   }

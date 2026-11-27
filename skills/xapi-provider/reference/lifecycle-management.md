@@ -313,6 +313,26 @@ npx xapi-to provider deprecate <service-id> <major>
 npx xapi-to provider restore <service-id> <major>
 ```
 
+Deprecating a non-default major takes only that major offline; the service stays
+active. Deprecating the default major pauses the whole service, so it is allowed
+only when no other major is live. Otherwise the API returns `409
+DEFAULT_MAJOR_HAS_LIVE_MAJORS` with `liveMajors`; switch the default to one of
+them first, then deprecate. Calls that pin a deprecated major with
+`X-Xapi-Version` get `410 MajorVersionDelisted`.
+
+To delist a single endpoint without touching the major, set `delisted: true` on
+it in a working revision and publish (`x-xapi-delisted: true` in OpenAPI only
+applies to endpoints an import creates). A delist-only revision skips the
+upstream review test, and callers get `410 EndpointDelisted`; publishing
+`delisted: false` restores it. TIME_RENTAL
+groups may delist CREATE only. A revision with a delisted TERMINATE or STATUS
+endpoint fails submission readiness with `RENTAL_LIFECYCLE_DELISTED`. If a revision
+already in review has this configuration, it cannot take traffic. Automatic
+review returns it for edits. A manual approval is rejected and the reviewer can
+send it back. Restore the affected routes in the editable revision and submit
+again. A rollback that would activate that revision also returns
+`400 RENTAL_LIFECYCLE_DELISTED`.
+
 Read `versions` after an ambiguous write. Delete only when the user intends to
 remove the service and has identified it by name or ID:
 

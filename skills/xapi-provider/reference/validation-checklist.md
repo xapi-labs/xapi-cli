@@ -38,7 +38,10 @@ before `provider version update --replace`, and again before publication.
   `id` does not always mean new. Preserve the stored `endpointKey` across
   revisions and use the working ID when changing a path; inspect the diff for
   unintended additions or removals.
-- Path parameters use `:name` and have matching `pathParams` descriptions.
+- Use `:name` at the end of a path segment, or `{name}` before a literal
+  suffix (for example, `/files/{id}.json`). In OpenAPI, use `{name}`. Add a
+  matching `pathParams` description and use each parameter name once when
+  creating an endpoint or changing its path.
 - Billing fields match the chosen `billingType`; pre-charge estimates are
   realistic. No price is negative.
 - A `PER_TOKEN` HTTP endpoint keeps usage readable: its protocol supplies usage
@@ -78,9 +81,10 @@ Every imported operation needs an explicit price or billing configuration.
 For missing `PER_CALL` prices (including operations with no billing extension),
 choose the price with the user and pass `--default-price <USD>`, or add
 `x-xapi-billing.costPerCall` to the spec. `--default-price 0` explicitly chooses
-free access. The default fills only missing per-call prices, including hidden
+free access. The default fills only missing per-call prices, including delisted
 operations; it preserves explicit prices, including zero, and never changes a
-billing type. Hidden operations remain callable and still need pricing.
+billing type. Delisted (`x-xapi-delisted: true`) operations are not callable (the gateway
+returns 410) but still need pricing, because they can be restored.
 `PER_RESOURCE` needs `costPerResource`, `PER_TOKEN` needs non-empty
 `tokenPricing` with a rate for each listed model, and `DYNAMIC` needs
 `dynamicRules`; configure those in the spec rather than using the per-call
